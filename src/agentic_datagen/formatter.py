@@ -389,15 +389,63 @@ def _strip_markers_and_collect_spans(text: str, markers: list[tuple[str, str]]) 
     cleaned_text = "".join(cleaned_parts)
     if not spans:
         return cleaned_text, []
-    spans.sort()
-    merged_spans: list[tuple[int, int]] = [spans[0]]
-    for start, end in spans[1:]:
+    return cleaned_text, _merge_spans(spans)
+
+
+def _merge_spans(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    if not spans:
+        return []
+    ordered_spans = sorted(spans)
+    merged_spans: list[tuple[int, int]] = [ordered_spans[0]]
+    for start, end in ordered_spans[1:]:
         last_start, last_end = merged_spans[-1]
         if start <= last_end:
             merged_spans[-1] = (last_start, max(last_end, end))
         else:
             merged_spans.append((start, end))
-    return cleaned_text, merged_spans
+    return merged_spans
+
+
+def _expand_span_to_assistant_block(text: str, start: int, end: int) -> tuple[int, int] | None:
+    assistant_start_tokens = (
+        "<|im_start|>assistant\n",
+        "<|assistant|>\n",
+        "<|assistant|>",
+        "<assistant>",
+    )
+    assistant_end_tokens = (
+        "<|im_end|>",
+        "</assistant>",
+        "</s>",
+    )
+    block_start = -1
+    for token in assistant_start_tokens:
+        token_start = text.rfind(token, 0, start)
+        if token_start > block_start:
+            block_start = token_start
+    if block_start < 0:
+        return None
+    block_end = -1
+    for token in assistant_end_tokens:
+        token_end_start = text.find(token, end)
+        if token_end_start >= 0 and (block_end < 0 or token_end_start < block_end):
+            block_end = token_end_start + len(token)
+    if block_end < 0:
+        return None
+    while block_end < len(text) and text[block_end] in "\r\n":
+        block_end += 1
+    return block_start, block_end
+
+
+def _expand_supervised_spans(text: str, supervised_spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    expanded_spans: list[tuple[int, int]] = []
+    for start, end in supervised_spans:
+        expanded_span = _expand_span_to_assistant_block(text, start, end)
+        if expanded_span is None:
+            expanded_spans.append((start, end))
+        else:
+            expanded_spans.append(expanded_span)
+    return _merge_spans(expanded_spans)
 
 
 def _labels_from_offsets(
@@ -438,6 +486,7 @@ def _offset_mask_row(
     if stripped is None:
         return None
     formatted_text, supervised_spans = stripped
+    supervised_spans = _expand_supervised_spans(formatted_text, supervised_spans)
     encoded = _tokenize_text_with_offsets(text_tokenizer, formatted_text)
     if encoded is None:
         return None
