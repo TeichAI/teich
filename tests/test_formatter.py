@@ -64,6 +64,13 @@ class FakeTokenizer:
         return "".join(self._reverse_vocab[token_id] for token_id in token_ids)
 
 
+class RequiresUserTokenizer(FakeTokenizer):
+    def apply_chat_template(self, messages, **kwargs):
+        if not any(message.get("role") == "user" for message in messages):
+            raise ValueError("No user query found in messages.")
+        return super().apply_chat_template(messages, **kwargs)
+
+
 class FakeProcessor:
     def __init__(self):
         self.tokenizer = FakeTokenizer()
@@ -358,3 +365,30 @@ def test_format_and_mask_handles_non_prefix_stable_templates_around_tool_turns()
         [token_id for token_id, label in zip(row["input_ids"], row["labels"]) if label == -100]
     )
     assert "<tool>file_a.py</tool>" in masked_text
+
+
+def test_format_and_mask_skips_unrenderable_prefixes_before_first_user_message():
+    tokenizer = RequiresUserTokenizer()
+    dataset = Dataset.from_list(
+        [
+            {
+                "messages": [
+                    {"role": "system", "content": "system rules"},
+                    {"role": "user", "content": "hello"},
+                    {"role": "assistant", "content": "world", "reasoning_content": "think"},
+                ],
+                "tools": [],
+            }
+        ]
+    )
+
+    training_data = format_and_mask(dataset, tokenizer)
+
+    row = training_data[0]
+    supervised_text = tokenizer.decode([token for token in row["labels"] if token != -100])
+    assert supervised_text == "<assistant><think>think</think>world</assistant>"
+    masked_text = tokenizer.decode(
+        [token_id for token_id, label in zip(row["input_ids"], row["labels"]) if label == -100]
+    )
+    assert "<system>system rules</system>" in masked_text
+    assert "<user>hello</user>" in masked_text

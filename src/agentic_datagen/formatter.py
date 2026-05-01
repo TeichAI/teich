@@ -89,6 +89,31 @@ def _chat_template_supports_assistant_mask(renderer: Any) -> bool:
     return bool(re.search(r"\{%-?\s*generation\s*-?%\}", template))
 
 
+def _has_user_message(messages: list[dict[str, Any]]) -> bool:
+    return any(isinstance(message, dict) and message.get("role") == "user" for message in messages)
+
+
+def _is_skippable_prefix_exception(exc: Exception) -> bool:
+    message = str(exc)
+    return "No user query found in messages." in message
+
+
+def _try_render_prefix(
+    renderer: Any,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    chat_template_kwargs: dict[str, Any],
+) -> str | None:
+    if not _has_user_message(messages):
+        return None
+    try:
+        return _render_chat(renderer, messages, tools, chat_template_kwargs)
+    except Exception as exc:
+        if _is_skippable_prefix_exception(exc):
+            return None
+        raise
+
+
 def _extract_token_sequence(values: Any) -> list[int] | None:
     if values is None:
         return None
@@ -198,11 +223,13 @@ def _mask_row(
 
     formatted_text = _render_chat(renderer, messages, tools, chat_template_kwargs)
     input_ids, attention_mask = _tokenize_text(text_tokenizer, formatted_text)
-    _, current_ids = _initial_prefix_length(renderer, text_tokenizer, tools, chat_template_kwargs)
-    labels = [-100] * len(current_ids)
+    current_ids: list[int] = []
+    labels: list[int] = []
 
     for index, message in enumerate(messages, start=1):
-        prefix_text = _render_chat(renderer, messages[:index], tools, chat_template_kwargs)
+        prefix_text = _try_render_prefix(renderer, messages[:index], tools, chat_template_kwargs)
+        if prefix_text is None:
+            continue
         prefix_ids, _ = _tokenize_text(text_tokenizer, prefix_text)
         supervise_current_message = isinstance(message, dict) and message.get("role") == "assistant"
         labels = _update_labels_with_diff(current_ids, labels, prefix_ids, supervise_current_message)
