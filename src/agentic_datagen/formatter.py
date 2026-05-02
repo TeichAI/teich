@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from difflib import SequenceMatcher
+import json
 import re
 from typing import Any
 
@@ -46,6 +47,25 @@ def _render_chat(
     render_kwargs: dict[str, Any] = {
         "tokenize": False,
         "add_generation_prompt": False,
+        **chat_template_kwargs,
+    }
+    if tools:
+        render_kwargs["tools"] = tools
+    rendered = renderer.apply_chat_template(messages, **render_kwargs)
+    if not isinstance(rendered, str):
+        raise TypeError("tokenizer.apply_chat_template(..., tokenize=False) must return a string")
+    return rendered
+
+
+def _render_chat_with_generation_prompt(
+    renderer: Any,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    chat_template_kwargs: dict[str, Any],
+) -> str:
+    render_kwargs: dict[str, Any] = {
+        "tokenize": False,
+        "add_generation_prompt": True,
         **chat_template_kwargs,
     }
     if tools:
@@ -406,7 +426,95 @@ def _merge_spans(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
     return merged_spans
 
 
-def _expand_span_to_assistant_block(text: str, start: int, end: int) -> tuple[int, int] | None:
+def _assistant_prompt_probe_contexts(messages: list[dict[str, Any]]) -> tuple[str, ...]:
+    contexts: list[str] = []
+    for index, message in enumerate(messages):
+        if not _is_assistant_message(message) or index == 0:
+            continue
+        previous_role = messages[index - 1].get("role") if isinstance(messages[index - 1], dict) else None
+        if previous_role == "tool" and "after_tool" not in contexts:
+            contexts.append("after_tool")
+        elif previous_role == "user" and "after_user" not in contexts:
+            contexts.append("after_user")
+    if not contexts and any(_is_assistant_message(message) for message in messages):
+        contexts.append("after_user")
+    return tuple(contexts)
+
+
+def _build_assistant_prompt_probe_messages(context: str) -> list[dict[str, Any]]:
+    if context == "after_tool":
+        return [
+            {"role": "user", "content": "__AGD_USER__"},
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "__AGD_REASON__",
+                "tool_calls": [
+                    {
+                        "id": "agd_call_1",
+                        "type": "function",
+                        "function": {"name": "agd_tool", "arguments": {"command": "__AGD_COMMAND__"}},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "agd_call_1",
+                "name": "agd_tool",
+                "content": "__AGD_TOOL_RESPONSE__",
+            },
+        ]
+    return [{"role": "user", "content": "__AGD_USER__"}]
+
+
+def _serialize_tools_for_cache(tools: list[dict[str, Any]]) -> str:
+    try:
+        return json.dumps(tools, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    except TypeError:
+        return repr(tools)
+
+
+def _infer_assistant_prompt_prefixes(
+    renderer: Any,
+    tools: list[dict[str, Any]],
+    chat_template_kwargs: dict[str, Any],
+    probe_contexts: tuple[str, ...],
+) -> tuple[str, ...]:
+    prefixes: set[str] = set()
+    for context in probe_contexts:
+        probe_messages = _build_assistant_prompt_probe_messages(context)
+        try:
+            base_render = _render_chat(renderer, probe_messages, tools, chat_template_kwargs)
+            prompt_render = _render_chat_with_generation_prompt(renderer, probe_messages, tools, chat_template_kwargs)
+        except Exception:
+            continue
+        if not prompt_render.startswith(base_render):
+            continue
+        prompt_prefix = prompt_render[len(base_render) :]
+        if prompt_prefix:
+            prefixes.add(prompt_prefix)
+    return tuple(sorted(prefixes, key=len, reverse=True))
+
+
+def _resolve_assistant_prompt_prefixes(
+    renderer: Any,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    chat_template_kwargs: dict[str, Any],
+    cache: dict[str, tuple[str, ...]],
+) -> tuple[str, ...]:
+    probe_contexts = _assistant_prompt_probe_contexts(messages)
+    if not probe_contexts:
+        return ()
+    cache_key = f"{_serialize_tools_for_cache(tools)}::{','.join(probe_contexts)}"
+    prefixes = cache.get(cache_key)
+    if prefixes is None:
+        prefixes = _infer_assistant_prompt_prefixes(renderer, tools, chat_template_kwargs, probe_contexts)
+        cache[cache_key] = prefixes
+    return prefixes
+
+
+def _assistant_block_bounds(text: str, start: int, end: int) -> tuple[int, int] | None:
     assistant_start_tokens = (
         "<|im_start|>assistant\n",
         "<|assistant|>\n",
@@ -437,14 +545,27 @@ def _expand_span_to_assistant_block(text: str, start: int, end: int) -> tuple[in
     return block_start, block_end
 
 
-def _expand_supervised_spans(text: str, supervised_spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
+def _expand_supervised_spans(
+    text: str,
+    supervised_spans: list[tuple[int, int]],
+    assistant_prompt_prefixes: tuple[str, ...],
+) -> list[tuple[int, int]]:
     expanded_spans: list[tuple[int, int]] = []
     for start, end in supervised_spans:
-        expanded_span = _expand_span_to_assistant_block(text, start, end)
-        if expanded_span is None:
+        assistant_block = _assistant_block_bounds(text, start, end)
+        if assistant_block is None:
             expanded_spans.append((start, end))
-        else:
-            expanded_spans.append(expanded_span)
+            continue
+        block_start, block_end = assistant_block
+        if not assistant_prompt_prefixes:
+            expanded_spans.append((block_start, block_end))
+            continue
+        block_text = text[block_start:block_end]
+        matched_prefix = next((prefix for prefix in assistant_prompt_prefixes if block_text.startswith(prefix)), None)
+        if matched_prefix is None:
+            expanded_spans.append((start, end))
+            continue
+        expanded_spans.append((block_start + len(matched_prefix), block_end))
     return _merge_spans(expanded_spans)
 
 
@@ -476,17 +597,25 @@ def _offset_mask_row(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]],
     chat_template_kwargs: dict[str, Any],
+    assistant_prompt_prefix_cache: dict[str, tuple[str, ...]],
     max_length: int | None,
 ) -> tuple[dict[str, Any], dict[str, Any]] | None:
     if not _supports_offsets(text_tokenizer):
         return None
+    assistant_prompt_prefixes = _resolve_assistant_prompt_prefixes(
+        renderer,
+        messages,
+        tools,
+        chat_template_kwargs,
+        assistant_prompt_prefix_cache,
+    )
     marked_messages, markers = _mark_supervised_messages(messages)
     marked_text = _render_chat(renderer, marked_messages, tools, chat_template_kwargs)
     stripped = _strip_markers_and_collect_spans(marked_text, markers)
     if stripped is None:
         return None
     formatted_text, supervised_spans = stripped
-    supervised_spans = _expand_supervised_spans(formatted_text, supervised_spans)
+    supervised_spans = _expand_supervised_spans(formatted_text, supervised_spans, assistant_prompt_prefixes)
     encoded = _tokenize_text_with_offsets(text_tokenizer, formatted_text)
     if encoded is None:
         return None
@@ -521,6 +650,7 @@ def _mask_row(
     messages_column: str,
     tools_column: str,
     chat_template_kwargs: dict[str, Any],
+    assistant_prompt_prefix_cache: dict[str, tuple[str, ...]],
     max_length: int | None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     messages = row.get(messages_column)
@@ -534,7 +664,15 @@ def _mask_row(
     if fast_path is not None:
         return fast_path
 
-    offset_path = _offset_mask_row(renderer, text_tokenizer, messages, tools, chat_template_kwargs, max_length)
+    offset_path = _offset_mask_row(
+        renderer,
+        text_tokenizer,
+        messages,
+        tools,
+        chat_template_kwargs,
+        assistant_prompt_prefix_cache,
+        max_length,
+    )
     if offset_path is not None:
         return offset_path
 
@@ -621,6 +759,7 @@ def format_and_mask(
     template_kwargs = _validate_chat_template_kwargs(chat_template_kwargs)
     text_tokenizer = _resolve_text_tokenizer(tokenizer)
     renderer = _resolve_chat_template_renderer(tokenizer, text_tokenizer)
+    assistant_prompt_prefix_cache: dict[str, tuple[str, ...]] = {}
 
     def _map_row(row: dict[str, Any]) -> dict[str, Any]:
         masked_row, _ = _mask_row(
@@ -630,6 +769,7 @@ def format_and_mask(
             messages_column,
             tools_column,
             template_kwargs,
+            assistant_prompt_prefix_cache,
             max_length,
         )
         return masked_row

@@ -89,6 +89,64 @@ class OffsetCountingTokenizer(CountingTokenizer):
         return output
 
 
+class QwenLikeOffsetTokenizer(OffsetCountingTokenizer):
+    def apply_chat_template(
+        self,
+        messages,
+        *,
+        tokenize=False,
+        add_generation_prompt=False,
+        tools=None,
+        enable_thinking=True,
+        **kwargs,
+    ):
+        self.render_count += 1
+        if kwargs:
+            raise AssertionError(f"Unexpected chat template kwargs: {kwargs}")
+        parts: list[str] = []
+        if tools:
+            tool_names = ",".join(tool["function"]["name"] for tool in tools)
+            parts.append(f"<|im_start|>system\n<tools>{tool_names}</tools><|im_end|>\n")
+        for message in messages:
+            role = message["role"]
+            if role == "user":
+                parts.append(f"<|im_start|>user\n{message.get('content', '')}<|im_end|>\n")
+                continue
+            if role == "assistant":
+                reasoning = message.get("reasoning_content") or ""
+                content = str(message.get("content") or "")
+                segment = "<|im_start|>assistant\n"
+                if enable_thinking:
+                    segment += f"<think>\n{reasoning}\n</think>\n\n"
+                segment += content
+                for tool_call in message.get("tool_calls") or []:
+                    function = tool_call["function"]
+                    segment += "<tool_call>\n"
+                    segment += f"<function={function['name']}>\n"
+                    for argument_name, argument_value in function.get("arguments", {}).items():
+                        segment += f"<parameter={argument_name}>\n{argument_value}\n</parameter>\n"
+                    segment += "</function>\n</tool_call>"
+                segment += "<|im_end|>\n"
+                parts.append(segment)
+                continue
+            if role == "tool":
+                parts.append(
+                    "<|im_start|>user\n<tool_response>\n"
+                    f"{message.get('content', '')}\n"
+                    "</tool_response><|im_end|>\n"
+                )
+                continue
+            raise AssertionError(f"Unexpected role: {role}")
+        if add_generation_prompt:
+            parts.append("<|im_start|>assistant\n")
+            if enable_thinking:
+                parts.append("<think>\n")
+        rendered = "".join(parts)
+        if tokenize:
+            return self(rendered)
+        return rendered
+
+
 class FakeProcessor:
     def __init__(self):
         self.tokenizer = FakeTokenizer()
@@ -476,13 +534,61 @@ def test_format_and_mask_uses_single_render_offset_mask_path_when_offsets_are_av
 
     row = training_data[0]
     supervised_text = tokenizer.decode([token for token in row["labels"] if token != -100])
-    assert supervised_text == "<assistant><think>inspect repo</think><tool_call>bash</tool_call></assistant><assistant>done</assistant>"
+    assert supervised_text == "<think>inspect repo</think><tool_call>bash</tool_call></assistant>done</assistant>"
     assert "<tool_call>" in supervised_text
     assert "</think>" in supervised_text
+    assert "<assistant>" not in supervised_text
     masked_text = tokenizer.decode(
         [token_id for token_id, label in zip(row["input_ids"], row["labels"]) if label == -100]
     )
     assert "<system>system rules</system>" in masked_text
     assert "<user>first request</user>" in masked_text
     assert "<tool>file_a.py</tool>" in masked_text
-    assert tokenizer.render_count == 1
+    assert tokenizer.render_count == 5
+
+
+def test_format_and_mask_masks_qwen_generation_prompt_prefix_but_supervises_generated_wrappers():
+    tokenizer = QwenLikeOffsetTokenizer()
+    dataset = Dataset.from_list(
+        [
+            {
+                "messages": [
+                    {"role": "user", "content": "first request"},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "reasoning_content": "inspect repo",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {"name": "bash", "arguments": {"command": "ls"}},
+                            }
+                        ],
+                    },
+                ],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "bash",
+                            "parameters": {"type": "object", "properties": {"command": {"type": "string"}}},
+                        },
+                    }
+                ],
+            }
+        ]
+    )
+
+    training_data = format_and_mask(dataset, tokenizer, chat_template_kwargs={"enable_thinking": True})
+
+    row = training_data[0]
+    supervised_text = tokenizer.decode([token for token in row["labels"] if token != -100])
+    assert supervised_text.startswith("inspect repo\n</think>\n\n<tool_call>\n<function=bash>")
+    assert "<|im_start|>assistant\n<think>\n" not in supervised_text
+    masked_text = tokenizer.decode(
+        [token_id for token_id, label in zip(row["input_ids"], row["labels"]) if label == -100]
+    )
+    assert "<|im_start|>assistant\n<think>\n" in masked_text
+    assert "first request" in masked_text
+    assert tokenizer.render_count == 3
