@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datasets import Dataset
 
-from agentic_datagen import format_and_mask
+from teich import format_and_mask
 
 
 class FakeTokenizer:

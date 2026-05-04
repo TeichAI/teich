@@ -9,8 +9,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agentic_datagen.config import APIConfig, Config, MCPConfig, ModelConfig, PromptInput
-from agentic_datagen.runner import CodexRunner, PiRunner
+from teich.config import APIConfig, Config, MCPConfig, ModelConfig, PromptInput
+from teich.runner import CodexRunner, PiRunner
 
 
 def test_codex_runner_init():
@@ -20,7 +20,7 @@ def test_codex_runner_init():
     with patch.object(CodexRunner, '_ensure_image') as mock_ensure:
         runner = CodexRunner(config)
         mock_ensure.assert_called_once()
-        assert runner.image_name == "agentic-datagen-runtime:v3"
+        assert runner.image_name == "teich-runtime:v3"
         assert runner.config == config
 
 
@@ -33,7 +33,7 @@ def test_runtime_image_rebuilds_when_dockerfile_is_newer(tmp_path: Path):
     with patch.object(CodexRunner, "_runtime_dockerfile_path", return_value=dockerfile), \
          patch.object(CodexRunner, "_image_created_at", return_value=newer_time - timedelta(minutes=5)), \
          patch.object(CodexRunner, "_build_image") as mock_build, \
-         patch("agentic_datagen.runner.subprocess.run") as mock_run:
+         patch("teich.runner.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(stdout="existing-image\n")
         CodexRunner(Config())
 
@@ -686,11 +686,11 @@ def test_pi_runner_builds_command_and_project_settings(tmp_path: Path):
 
     runner._write_pi_agent_settings(tmp_path)
     settings = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
-    extension_source = (tmp_path / "extensions" / "agentic_datagen_system_prompt.ts").read_text(encoding="utf-8")
+    extension_source = (tmp_path / "extensions" / "teich_system_prompt.ts").read_text(encoding="utf-8")
     models = json.loads((tmp_path / "models.json").read_text(encoding="utf-8"))
 
     assert settings == {
-        "defaultProvider": "agentic-datagen-anthropic",
+        "defaultProvider": "teich-anthropic",
         "defaultModel": "claude-sonnet-4-20250514",
         "defaultThinkingLevel": "high",
     }
@@ -698,7 +698,7 @@ def test_pi_runner_builds_command_and_project_settings(tmp_path: Path):
     assert 'ctx.getSystemPrompt()' in extension_source
     assert models == {
         "providers": {
-            "agentic-datagen-anthropic": {
+            "teich-anthropic": {
                 "baseUrl": "https://proxy.example.com/v1",
                 "api": "openai-responses",
                 "authHeader": True,
@@ -737,7 +737,7 @@ def test_pi_runner_builds_command_and_project_settings(tmp_path: Path):
             f"{tmp_path / 'sessions'}:/home/codex/pi-sessions",
             "-w",
             "/workspace",
-            "agentic-datagen-runtime:v3",
+            "teich-runtime:v3",
             "npx",
             "-y",
             "@mariozechner/pi-coding-agent",
@@ -746,7 +746,7 @@ def test_pi_runner_builds_command_and_project_settings(tmp_path: Path):
             "--session-dir",
             "/home/codex/pi-sessions",
             "--provider",
-            "agentic-datagen-anthropic",
+            "teich-anthropic",
             "--model",
             "claude-sonnet-4-20250514",
             "--thinking",
@@ -764,7 +764,7 @@ def test_pi_runner_init_uses_shared_runtime_image():
         runner = PiRunner(Config(agent={"provider": "pi"}))
 
     mock_ensure.assert_called_once()
-    assert runner.image_name == "agentic-datagen-runtime:v3"
+    assert runner.image_name == "teich-runtime:v3"
 
 
 def test_pi_runner_uses_synthetic_provider_name_for_custom_base_url():
@@ -776,7 +776,7 @@ def test_pi_runner_uses_synthetic_provider_name_for_custom_base_url():
             )
         )
 
-    assert runner._pi_provider_name() == "agentic-datagen-openai"
+    assert runner._pi_provider_name() == "teich-openai"
 
 
 def test_pi_runner_keeps_builtin_openrouter_provider_name_for_custom_base_url():
@@ -973,7 +973,7 @@ def test_pi_runner_strips_provider_from_exported_trace(tmp_path: Path):
                 json.dumps(
                     {
                         "type": "model_change",
-                        "provider": "agentic-datagen-openrouter",
+                        "provider": "teich-openrouter",
                         "modelId": "deepseek/deepseek-v4-pro",
                     }
                 ),
@@ -982,7 +982,7 @@ def test_pi_runner_strips_provider_from_exported_trace(tmp_path: Path):
                         "type": "message",
                         "message": {
                             "role": "assistant",
-                            "provider": "agentic-datagen-openrouter",
+                            "provider": "teich-openrouter",
                             "model": "deepseek/deepseek-v4-pro",
                             "content": [{"type": "text", "text": "done"}],
                         },
@@ -1038,7 +1038,7 @@ def test_pi_runner_injects_captured_system_prompt_into_exported_trace(tmp_path: 
                         "id": "custom-1",
                         "parentId": None,
                         "timestamp": "2026-04-30T07:14:43.430Z",
-                        "customType": "agentic-datagen-system-prompt",
+                        "customType": "teich-system-prompt",
                         "data": {"systemPrompt": "You are Pi. Help with code."},
                     }
                 ),

@@ -7,8 +7,8 @@ import pytest
 from rich.console import Console
 from typer.testing import CliRunner
 
-from agentic_datagen.cli import BatchProgressReporter, app
-from agentic_datagen.runner import SessionProgressUpdate, TraceMetrics
+from teich.cli import BatchProgressReporter, app
+from teich.runner import SessionProgressUpdate, TraceMetrics
 
 runner = CliRunner()
 
@@ -74,7 +74,7 @@ output:
 openai_api_key: sk-test
 """)
 
-    with patch('agentic_datagen.cli.CodexRunner') as mock_runner:
+    with patch('teich.cli.CodexRunner') as mock_runner:
         mock_instance = MagicMock()
         mock_instance.run_all.return_value = [tmp_path / "output/session1.jsonl"]
         mock_runner.return_value = mock_instance

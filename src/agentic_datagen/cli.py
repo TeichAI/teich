@@ -1,4 +1,4 @@
-"""CLI for agentic-datagen v2."""
+"""CLI for teich."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from .trace_readme import write_traces_readme
 
 console = Console()
 app = typer.Typer(
-    name="agentic-datagen",
+    name="teich",
     help="Generate agent training data using Codex or Pi",
     no_args_is_help=True,
 )
@@ -44,7 +44,7 @@ def generate(
     ),
 ) -> None:
     """Generate training traces from prompts."""
-    console.print(Panel.fit("Agentic Datagen v2", style="bold blue"))
+    console.print(Panel.fit("Teich", style="bold blue"))
 
     if not config.exists():
         console.print(f"[red]Config file not found: {config}[/red]")
@@ -245,7 +245,7 @@ class BatchProgressReporter:
 def init(
     path: Path = typer.Argument(Path("."), help="Directory to initialize"),
 ) -> None:
-    """Initialize a new agentic-datagen project."""
+    """Initialize a new teich project."""
     console.print(Panel.fit("Initialize Project", style="bold blue"))
 
     path.mkdir(parents=True, exist_ok=True)
@@ -270,10 +270,10 @@ def init(
     console.print("\n[yellow]Next:[/yellow]")
     console.print("1. Set OPENAI_API_KEY in config.yaml or env")
     console.print("2. Add prompt rows to prompts.csv")
-    console.print("3. Run: [cyan]uvx agentic-datagen generate -c config.yaml[/cyan]")
+    console.print("3. Run: [cyan]uvx teich generate -c config.yaml[/cyan]")
 
 
-CONFIG_TEMPLATE = '''# Agentic Datagen v2 Configuration
+CONFIG_TEMPLATE = '''# Teich Configuration
 agent:
   provider: codex
 

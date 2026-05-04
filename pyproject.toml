@@ -1,7 +1,7 @@
 [project]
-name = "agentic-datagen"
-version = "2.0.0"
-description = "Generate agent training data using OpenAI Codex"
+name = "teich"
+version = "0.1.1a1"
+description = "Generate agent training data from Codex and Pi traces"
 readme = "README.md"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.10"
@@ -19,14 +19,15 @@ dependencies = [
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.4", "respx>=0.22"]
 
 [project.scripts]
-agentic-datagen = "agentic_datagen.cli:main"
+teich = "teich.cli:main"
+agentic-datagen = "teich.cli:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/agentic_datagen"]
+packages = ["src/agentic_datagen", "src/teich"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

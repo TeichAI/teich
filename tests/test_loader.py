@@ -5,7 +5,7 @@ from unittest.mock import patch
 import pytest
 from datasets import Dataset
 
-from agentic_datagen import load_traces
+from teich import load_traces
 
 
 def _write_codex_trace(trace_file: Path, prompt: str = "List files") -> None:
@@ -62,7 +62,7 @@ def test_load_traces_downloads_dataset_repo_and_converts_split(tmp_path: Path):
     split_dir.mkdir(parents=True)
     _write_codex_trace(split_dir / "remote-trace.jsonl", prompt="Inspect repo")
 
-    with patch("agentic_datagen.loader.snapshot_download", return_value=str(repo_dir)) as mock_download:
+    with patch("teich.loader.snapshot_download", return_value=str(repo_dir)) as mock_download:
         dataset = load_traces("armand0e/ag-datagen-v2-test", split="train", revision="main")
 
     mock_download.assert_called_once_with(

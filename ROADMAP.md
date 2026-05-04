@@ -1,9 +1,9 @@
-# Agentic Datagen v2 - Roadmap
+# Teich - Roadmap
 
 ## Current Status: Functional Experimental Baseline
 - Docker runtime with Codex, uv, npm
 - Configuration system with YAML models and MCP server definitions
-- `python -m agentic_datagen` and CLI init/generate commands
+- `python -m teich` and CLI init/generate commands
 - Raw session extraction from mounted `CODEX_HOME/sessions`
 - Auto-generated trace-folder README
 - Importable converter for raw Codex traces to training-style messages/tools
@@ -38,10 +38,10 @@
 ## Phase 2: Training Data Conversion
 
 ### 2.1 Converter Module
-Implemented `src/agentic_datagen/converter.py`:
+Implemented `src/teich/converter.py`:
 
 ```python
-from agentic_datagen import convert_traces_to_training_data, TrainingExample
+from teich import convert_traces_to_training_data, TrainingExample
 
 examples = convert_traces_to_training_data(
     traces_dir=Path("./output")
@@ -146,7 +146,7 @@ Since Codex CLI behavior varies by provider, keep exploring alternatives:
 1. **Validate live Codex execution with the installed CLI**:
    ```bash
    cd v2
-   python -m agentic_datagen generate -c test_run/config.yaml
+   python -m teich generate -c test_run/config.yaml
    ```
 
 2. **Verify trace files** are generated and match the example-style raw session format

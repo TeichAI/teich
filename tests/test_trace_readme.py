@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from agentic_datagen.trace_readme import build_traces_readme
+from teich.trace_readme import build_traces_readme
 
 
 def test_build_traces_readme_includes_model_and_tools_schema(tmp_path: Path):

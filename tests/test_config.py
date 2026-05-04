@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from agentic_datagen.config import Config, MCPConfig, ModelConfig
+from teich.config import Config, MCPConfig, ModelConfig
 
 
 def test_default_config():
@@ -24,10 +24,10 @@ def test_default_config():
 def test_config_from_yaml(tmp_path: Path, monkeypatch):
     """Test loading config from YAML."""
     # Clear env vars that would override YAML values
-    monkeypatch.delenv("AGENTIC_DATAGEN_MODEL", raising=False)
-    monkeypatch.delenv("AGENTIC_DATAGEN_BASE_URL", raising=False)
-    monkeypatch.delenv("AGENTIC_DATAGEN_API_KEY", raising=False)
-    monkeypatch.delenv("AGENTIC_DATAGEN_PROVIDER", raising=False)
+    monkeypatch.delenv("TEICH_MODEL", raising=False)
+    monkeypatch.delenv("TEICH_BASE_URL", raising=False)
+    monkeypatch.delenv("TEICH_API_KEY", raising=False)
+    monkeypatch.delenv("TEICH_PROVIDER", raising=False)
 
     config_file = tmp_path / "config.yaml"
     config_file.write_text("""

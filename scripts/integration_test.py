@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Manual integration test script for agentic-datagen.
+"""Manual integration test script for teich.
 
 Run this to verify everything works end-to-end:
     python scripts/integration_test.py
@@ -52,7 +52,7 @@ def build_docker_image():
         [
             "docker", "build",
             "-f", str(dockerfile),
-            "-t", "agentic-datagen-runtime:v3",
+            "-t", "teich-runtime:v3",
             str(dockerfile.parent),
         ],
         capture_output=True,
@@ -76,7 +76,7 @@ def test_codex_in_container():
         [
             "docker", "run", "--rm",
             "-e", f"OPENAI_API_KEY={os.getenv('OPENAI_API_KEY')}",
-            "agentic-datagen-runtime:v3",
+            "teich-runtime:v3",
             "codex", "--version",
         ],
         capture_output=True,
@@ -100,7 +100,7 @@ def test_python_in_container():
     result = subprocess.run(
         [
             "docker", "run", "--rm",
-            "agentic-datagen-runtime:v3",
+            "teich-runtime:v3",
             "bash", "-lc", "python --version && python3 --version",
         ],
         capture_output=True,
@@ -123,7 +123,7 @@ def test_init_command():
 
     with tempfile.TemporaryDirectory() as tmp:
         result = subprocess.run(
-            [sys.executable, "-m", "agentic_datagen.cli", "init", tmp],
+            [sys.executable, "-m", "teich.cli", "init", tmp],
             capture_output=True,
             text=True,
             cwd=Path(__file__).parent.parent,
@@ -180,7 +180,7 @@ timeout_seconds: 120
 
         result = subprocess.run(
             [
-                sys.executable, "-m", "agentic_datagen.cli",
+                sys.executable, "-m", "teich.cli",
                 "generate", "-c", str(config_file),
             ],
             capture_output=True,
@@ -228,7 +228,7 @@ timeout_seconds: 120
 def main():
     """Run all integration tests."""
     print("=" * 60)
-    print("Agentic Datagen v2 - Integration Test Suite")
+    print("Teich - Integration Test Suite")
     print("=" * 60)
 
     # Pre-flight checks

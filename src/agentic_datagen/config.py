@@ -1,4 +1,4 @@
-"""Configuration management for agentic-datagen v2."""
+"""Configuration management for teich."""
 
 from __future__ import annotations
 
@@ -12,6 +12,14 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 GITHUB_REPO_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+
+
+def _get_env_alias(*names: str) -> str | None:
+    for name in names:
+        value = os.getenv(name)
+        if value:
+            return value
+    return None
 
 
 class MCPConfig(BaseModel):
@@ -162,10 +170,10 @@ class Config(BaseModel):
         """Load config from YAML file.
 
         Environment variables override config file values (for testing):
-            AGENTIC_DATAGEN_MODEL - Override model ID
-            AGENTIC_DATAGEN_BASE_URL - Override API base URL
-            AGENTIC_DATAGEN_API_KEY - Override API key
-            AGENTIC_DATAGEN_PROVIDER - Override provider name
+            TEICH_MODEL - Override model ID
+            TEICH_BASE_URL - Override API base URL
+            TEICH_API_KEY - Override API key
+            TEICH_PROVIDER - Override provider name
         """
         with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
@@ -182,13 +190,13 @@ class Config(BaseModel):
                 data["prompts_file"] = (path.parent / prompts_file_path).resolve()
 
         # Apply environment variable overrides
-        if model_env := os.getenv("AGENTIC_DATAGEN_MODEL"):
+        if model_env := _get_env_alias("TEICH_MODEL", "AGENTIC_DATAGEN_MODEL"):
             data.setdefault("model", {})["model"] = model_env
-        if base_url_env := os.getenv("AGENTIC_DATAGEN_BASE_URL"):
+        if base_url_env := _get_env_alias("TEICH_BASE_URL", "AGENTIC_DATAGEN_BASE_URL"):
             data.setdefault("api", {})["base_url"] = base_url_env
-        if api_key_env := os.getenv("AGENTIC_DATAGEN_API_KEY"):
+        if api_key_env := _get_env_alias("TEICH_API_KEY", "AGENTIC_DATAGEN_API_KEY"):
             data.setdefault("api", {})["api_key"] = api_key_env
-        if provider_env := os.getenv("AGENTIC_DATAGEN_PROVIDER"):
+        if provider_env := _get_env_alias("TEICH_PROVIDER", "AGENTIC_DATAGEN_PROVIDER"):
             data.setdefault("api", {})["provider"] = provider_env
 
         return cls(**data)
@@ -273,9 +281,9 @@ def load_config(path: Path) -> Config:
     """Load configuration from YAML file.
 
     Environment variables (for testing):
-        AGENTIC_DATAGEN_MODEL - Override model ID
-        AGENTIC_DATAGEN_BASE_URL - Override API base URL
-        AGENTIC_DATAGEN_API_KEY - Override API key
-        AGENTIC_DATAGEN_PROVIDER - Override provider name
+        TEICH_MODEL - Override model ID
+        TEICH_BASE_URL - Override API base URL
+        TEICH_API_KEY - Override API key
+        TEICH_PROVIDER - Override provider name
     """
     return Config.from_yaml(path)

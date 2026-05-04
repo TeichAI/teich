@@ -1,4 +1,4 @@
-"""Integration tests for agentic-datagen.
+"""Integration tests for teich.
 
 These tests require:
 - Docker running
@@ -14,8 +14,8 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from agentic_datagen.config import Config, APIConfig, ModelConfig
-from agentic_datagen.runner import CodexRunner
+from teich.config import Config, APIConfig, ModelConfig
+from teich.runner import CodexRunner
 
 
 # Skip integration tests if Docker is not available
@@ -71,7 +71,7 @@ class TestDockerImage:
             [
                 "docker", "build",
                 "-f", str(dockerfile),
-                "-t", "test-agentic-datagen:latest",
+                "-t", "test-teich:latest",
                 str(dockerfile.parent),
             ],
             capture_output=True,
@@ -88,7 +88,7 @@ class TestRunnerIntegration:
     @requires_docker
     def test_runner_creates_output_dir(self, tmp_path):
         """Test runner creates output directory."""
-        from agentic_datagen.config import OutputConfig
+        from teich.config import OutputConfig
 
         config = Config(
             model=ModelConfig(model="codex-mini-latest", approval_mode="none"),
@@ -146,10 +146,10 @@ class TestConfigIntegration:
     def test_config_yaml_roundtrip(self, tmp_path, monkeypatch):
         """Test config can be saved and loaded."""
         # Clear env vars that would override YAML values
-        monkeypatch.delenv("AGENTIC_DATAGEN_MODEL", raising=False)
-        monkeypatch.delenv("AGENTIC_DATAGEN_BASE_URL", raising=False)
-        monkeypatch.delenv("AGENTIC_DATAGEN_API_KEY", raising=False)
-        monkeypatch.delenv("AGENTIC_DATAGEN_PROVIDER", raising=False)
+        monkeypatch.delenv("TEICH_MODEL", raising=False)
+        monkeypatch.delenv("TEICH_BASE_URL", raising=False)
+        monkeypatch.delenv("TEICH_API_KEY", raising=False)
+        monkeypatch.delenv("TEICH_PROVIDER", raising=False)
 
         config_file = tmp_path / "config.yaml"
 

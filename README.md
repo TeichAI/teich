@@ -1,4 +1,4 @@
-# Agentic Datagen v2
+# Teich
 
 `v2/` is the experimental trace-first package for collecting raw agent sessions and converting them into training-ready data.
 
@@ -15,11 +15,11 @@
 
 ```bash
 # Initialize a project
-uvx agentic-datagen init my-project
+uvx teich init my-project
 cd my-project
 
 # Run with the configured agent provider and model settings
-uvx agentic-datagen generate -c config.yaml
+uvx teich generate -c config.yaml
 ```
 
 ## Local OSS providers
@@ -27,11 +27,11 @@ uvx agentic-datagen generate -c config.yaml
 If you want Codex to talk to a local provider like LM Studio or Ollama, set the provider in config or env:
 
 ```powershell
-$env:AGENTIC_DATAGEN_PROVIDER='LMstudio'
-$env:AGENTIC_DATAGEN_MODEL='gemma-4'
-$env:AGENTIC_DATAGEN_API_KEY='llm'
-$env:AGENTIC_DATAGEN_BASE_URL='http://localhost:1234/v1'
-python -m agentic_datagen generate -c test_run/config.yaml
+$env:TEICH_PROVIDER='LMstudio'
+$env:TEICH_MODEL='gemma-4'
+$env:TEICH_API_KEY='llm'
+$env:TEICH_BASE_URL='http://localhost:1234/v1'
+python -m teich generate -c test_run/config.yaml
 ```
 
 `v2` maps `LMstudio` and `ollama` onto Codex's native `--oss --local-provider ...` flow.
@@ -62,7 +62,7 @@ Legacy `model.approval_mode` is still accepted and normalized internally.
 
 ```python
 from pathlib import Path
-from agentic_datagen import convert_traces_to_training_data
+from teich import convert_traces_to_training_data
 
 examples = convert_traces_to_training_data(Path("./output"))
 ```
@@ -98,7 +98,7 @@ pytest tests/test_config.py tests/test_cli.py tests/test_runner.py -q
 v2/
 ├── docker/
 │   └── codex-runtime.Dockerfile
-├── src/agentic_datagen/
+├── src/teich/
 │   ├── __init__.py
 │   ├── __main__.py
 │   ├── cli.py

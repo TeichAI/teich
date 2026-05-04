@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from agentic_datagen.converter import convert_trace_to_training_example
+from teich.converter import convert_trace_to_training_example
 
 
 def test_convert_pi_trace_ignores_malformed_tool_calls(tmp_path: Path):

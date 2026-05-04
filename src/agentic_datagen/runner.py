@@ -22,14 +22,14 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from .config import Config, PromptInput
 
-RUNTIME_IMAGE_NAME = "agentic-datagen-runtime:v3"
+RUNTIME_IMAGE_NAME = "teich-runtime:v3"
 RUNTIME_DOCKERFILE_NAME = "codex-runtime.Dockerfile"
 CODEX_HOME_IN_CONTAINER = "/home/codex/.codex"
 PI_AGENT_DIR_IN_CONTAINER = "/home/codex/.pi/agent"
 PI_SESSIONS_DIR_IN_CONTAINER = "/home/codex/pi-sessions"
 WORKSPACE_IN_CONTAINER = "/workspace"
 LOCAL_PROVIDER_PROXY_SCRIPT_NAME = "local_provider_proxy.js"
-PI_SYSTEM_PROMPT_CUSTOM_TYPE = "agentic-datagen-system-prompt"
+PI_SYSTEM_PROMPT_CUSTOM_TYPE = "teich-system-prompt"
 PI_EMPTY_TOOL_NOT_FOUND_TEXT = "Tool  not found"
 
 LOCAL_PROVIDER_PROXY_SCRIPT = """
@@ -37,8 +37,8 @@ const http = require('node:http');
 const https = require('node:https');
 const { Readable } = require('node:stream');
 
-const target = new URL(process.env.AGENTIC_DATAGEN_LOCAL_PROVIDER_TARGET);
-const listenPort = Number(process.env.AGENTIC_DATAGEN_LOCAL_PROVIDER_PORT || '1234');
+const target = new URL(process.env.TEICH_LOCAL_PROVIDER_TARGET);
+const listenPort = Number(process.env.TEICH_LOCAL_PROVIDER_PORT || '1234');
 
 async function readRequestBody(req) {
   const chunks = [];
@@ -943,9 +943,9 @@ class CodexRunner(DockerRuntimeRunner):
             cmd.extend(
                 [
                     "-e",
-                    f"AGENTIC_DATAGEN_LOCAL_PROVIDER_TARGET={proxy_target}",
+                    f"TEICH_LOCAL_PROVIDER_TARGET={proxy_target}",
                     "-e",
-                    f"AGENTIC_DATAGEN_LOCAL_PROVIDER_PORT={self._local_provider_default_port(provider_name)}",
+                    f"TEICH_LOCAL_PROVIDER_PORT={self._local_provider_default_port(provider_name)}",
                 ]
             )
         if api_key:
@@ -1129,7 +1129,7 @@ class PiRunner(DockerRuntimeRunner):
         if self._pi_uses_builtin_provider_override():
             return provider
         if self.config.get_base_url():
-            return f"agentic-datagen-{provider}"
+            return f"teich-{provider}"
         return provider
 
     @staticmethod
@@ -1220,7 +1220,7 @@ class PiRunner(DockerRuntimeRunner):
     def _write_pi_extension(agent_dir: Path) -> None:
         extensions_dir = agent_dir / "extensions"
         extensions_dir.mkdir(parents=True, exist_ok=True)
-        extension_file = extensions_dir / "agentic_datagen_system_prompt.ts"
+        extension_file = extensions_dir / "teich_system_prompt.ts"
         extension_file.write_text(PI_SYSTEM_PROMPT_EXTENSION + "\n", encoding="utf-8")
 
     def _write_pi_project_settings(self, workspace: Path) -> None:
