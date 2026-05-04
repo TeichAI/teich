@@ -8,7 +8,6 @@ These tests require:
 import json
 import os
 import subprocess
-import tempfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -202,8 +201,6 @@ class TestEndToEnd:
 
     def test_full_generation_workflow(self, tmp_path):
         """Test complete workflow: init -> generate -> verify output."""
-        import shutil
-
         # Setup
         project_dir = tmp_path / "test-project"
         project_dir.mkdir()

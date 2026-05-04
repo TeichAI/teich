@@ -1,11 +1,10 @@
 """Tests for config module."""
 
-import tempfile
 from pathlib import Path
 
 import pytest
 
-from teich.config import Config, MCPConfig, ModelConfig
+from teich.config import Config, MCPConfig
 
 
 def test_default_config():

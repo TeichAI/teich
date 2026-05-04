@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-import csv
 import os
 from pathlib import Path
 import re
 
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+from .utils.prompts import load_prompt_rows
 
 
 GITHUB_REPO_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -225,54 +226,18 @@ class Config(BaseModel):
         """Get structured prompt inputs from config and prompts_file."""
         prompt_inputs = [PromptInput(prompt=prompt) for prompt in self.prompts]
         if self.prompts_file:
-            prompt_inputs.extend(self._load_prompt_inputs_from_file(self.prompts_file))
+            prompt_inputs.extend(
+                PromptInput(
+                    image=row.get("image"),
+                    github_repo=row.get("github_repo"),
+                    prompt=row.get("prompt") or "",
+                )
+                for row in load_prompt_rows(self.prompts_file)
+            )
         for prompt_input in prompt_inputs:
             if prompt_input.image is not None:
                 raise ValueError(
                     "Prompt image inputs are not supported yet. Leave the image column blank or set it to None."
-                )
-        return prompt_inputs
-
-    @staticmethod
-    def _load_prompt_inputs_from_file(path: Path) -> list[PromptInput]:
-        if path.suffix.lower() == ".csv":
-            return Config._load_prompt_inputs_from_csv(path)
-        return Config._load_prompt_inputs_from_text(path)
-
-    @staticmethod
-    def _load_prompt_inputs_from_text(path: Path) -> list[PromptInput]:
-        with path.open("r", encoding="utf-8") as handle:
-            return [
-                PromptInput(prompt=line.strip())
-                for line in handle
-                if line.strip() and not line.startswith("#")
-            ]
-
-    @staticmethod
-    def _load_prompt_inputs_from_csv(path: Path) -> list[PromptInput]:
-        with path.open("r", encoding="utf-8", newline="") as handle:
-            reader = csv.DictReader(handle)
-            fieldnames = [name.strip().lower() for name in reader.fieldnames or [] if isinstance(name, str)]
-            if "prompt" not in fieldnames:
-                raise ValueError("Prompt CSV must include a 'prompt' column")
-            prompt_inputs: list[PromptInput] = []
-            for row in reader:
-                normalized_row = {
-                    key.strip().lower(): value
-                    for key, value in row.items()
-                    if isinstance(key, str)
-                }
-                if not any(
-                    isinstance(value, str) and value.strip()
-                    for value in normalized_row.values()
-                ):
-                    continue
-                prompt_inputs.append(
-                    PromptInput(
-                        image=normalized_row.get("image"),
-                        github_repo=normalized_row.get("github_repo"),
-                        prompt=normalized_row.get("prompt") or "",
-                    )
                 )
         return prompt_inputs
 

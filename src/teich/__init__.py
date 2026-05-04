@@ -1,29 +1,11 @@
-from __future__ import annotations
+"""Teich - generate training data from Codex and Pi traces."""
 
-import sys
-from importlib import import_module
+from .config import Config, load_config
+from .converter import TrainingExample, convert_trace_to_training_example, convert_traces_to_training_data
+from .formatter import format_and_mask
+from .loader import load_traces
 
-from agentic_datagen import (
-    Config,
-    TrainingExample,
-    __version__,
-    convert_trace_to_training_example,
-    convert_traces_to_training_data,
-    format_and_mask,
-    load_config,
-    load_traces,
-)
-
-for _module_name in (
-    "cli",
-    "config",
-    "converter",
-    "formatter",
-    "loader",
-    "runner",
-    "trace_readme",
-):
-    sys.modules[f"{__name__}.{_module_name}"] = import_module(f"agentic_datagen.{_module_name}")
+__version__ = "0.1.1a3"
 
 __all__ = [
     "Config",

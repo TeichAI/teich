@@ -6,7 +6,6 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 import json
-import os
 import re
 import shlex
 import shutil

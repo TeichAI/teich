@@ -5,6 +5,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .utils.schema import infer_tool_parameters_schema
+from .utils.trace import (
+    first_text_block,
+    has_message,
+    is_tool_not_found_result,
+    parse_function_arguments,
+    parse_tool_descriptions,
+    pi_reasoning_text,
+    reasoning_summary,
+)
+
 
 @dataclass(slots=True)
 class TrainingExample:
@@ -21,245 +32,6 @@ class TrainingExample:
             "tools": self.tools,
             "metadata": self.metadata,
         }
-
-
-def _first_text_block(content_blocks: Any) -> str:
-    if isinstance(content_blocks, str):
-        return content_blocks.strip()
-    if not isinstance(content_blocks, list):
-        return ""
-    parts: list[str] = []
-    for block in content_blocks:
-        if not isinstance(block, dict):
-            continue
-        block_type = block.get("type")
-        if block_type in {"input_text", "output_text", "text"}:
-            text = block.get("text")
-            if isinstance(text, str) and text:
-                parts.append(text)
-    return "\n".join(parts).strip()
-
-
-def _has_same_system_message(messages: list[dict[str, Any]], content: str) -> bool:
-    return any(
-        message.get("role") == "system" and message.get("content") == content
-        for message in messages
-    )
-
-
-def _pi_reasoning_content(content_blocks: Any) -> str | None:
-    if not isinstance(content_blocks, list):
-        return None
-    parts: list[str] = []
-    for block in content_blocks:
-        if not isinstance(block, dict):
-            continue
-        if block.get("type") != "thinking":
-            continue
-        thinking = block.get("thinking")
-        if isinstance(thinking, str) and thinking.strip():
-            parts.append(thinking.strip())
-    result = "\n\n".join(parts).strip()
-    return result or None
-
-
-def _tool_result_content_text(payload: dict[str, Any]) -> str:
-    return _first_text_block(payload.get("content"))
-
-
-def _is_tool_not_found_result(tool_name: str | None, payload: dict[str, Any]) -> bool:
-    content = _tool_result_content_text(payload).strip()
-    if tool_name:
-        return content == f"Tool {tool_name} not found"
-    return content == "Tool  not found"
-
-
-def _reasoning_summary(payload: dict[str, Any]) -> str | None:
-    summary = payload.get("summary")
-    parts: list[str] = []
-    if isinstance(summary, list):
-        for item in summary:
-            if not isinstance(item, dict):
-                continue
-            text = item.get("text")
-            if isinstance(text, str) and text.strip():
-                parts.append(text.strip())
-    result = "\n\n".join(parts).strip()
-    if result:
-        return result
-
-    content = payload.get("content")
-    if not isinstance(content, list):
-        return None
-    for item in content:
-        if not isinstance(item, dict):
-            continue
-        if item.get("type") != "reasoning_text":
-            continue
-        text = item.get("text")
-        if isinstance(text, str) and text.strip():
-            parts.append(text.strip())
-    result = "\n\n".join(parts).strip()
-    return result or None
-
-
-def _normalize_json_like_value(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {key: _normalize_json_like_value(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_normalize_json_like_value(item) for item in value]
-    if not isinstance(value, str):
-        return value
-    stripped = value.strip()
-    if not stripped or stripped[0] not in "[{":
-        return value
-    try:
-        parsed = json.loads(stripped)
-    except json.JSONDecodeError:
-        return value
-    return _normalize_json_like_value(parsed)
-
-
-def _parse_function_arguments(arguments: Any) -> Any:
-    if not isinstance(arguments, str):
-        return _normalize_json_like_value(arguments) if arguments is not None else {}
-    stripped = arguments.strip()
-    if not stripped:
-        return {}
-    try:
-        return _normalize_json_like_value(json.loads(stripped))
-    except json.JSONDecodeError:
-        return arguments
-
-
-def _schema_identity(schema: dict[str, Any]) -> str:
-    return json.dumps(schema, sort_keys=True, ensure_ascii=False)
-
-
-def _infer_schema_from_value(value: Any) -> dict[str, Any]:
-    if value is None:
-        return {"type": "null"}
-    if isinstance(value, bool):
-        return {"type": "boolean"}
-    if isinstance(value, int):
-        return {"type": "integer"}
-    if isinstance(value, float):
-        return {"type": "number"}
-    if isinstance(value, str):
-        return {"type": "string"}
-    if isinstance(value, list):
-        item_schemas = [_infer_schema_from_value(item) for item in value]
-        schema: dict[str, Any] = {"type": "array"}
-        if item_schemas:
-            schema["items"] = _merge_schemas(item_schemas)
-        return schema
-    if isinstance(value, dict):
-        return _infer_tool_parameters_schema([value])
-    return {}
-
-
-def _merge_object_schemas(schemas: list[dict[str, Any]]) -> dict[str, Any]:
-    properties_by_name: dict[str, list[dict[str, Any]]] = {}
-    required_sets: list[set[str]] = []
-    additional_properties = False
-    for schema in schemas:
-        properties = schema.get("properties")
-        if isinstance(properties, dict):
-            for name, value in properties.items():
-                if isinstance(value, dict):
-                    properties_by_name.setdefault(name, []).append(value)
-        required = schema.get("required")
-        if isinstance(required, list):
-            required_sets.append({item for item in required if isinstance(item, str)})
-        else:
-            required_sets.append(set())
-        if schema.get("additionalProperties", True) is not False:
-            additional_properties = True
-    merged: dict[str, Any] = {
-        "type": "object",
-        "properties": {
-            name: _merge_schemas(property_schemas)
-            for name, property_schemas in sorted(properties_by_name.items())
-        },
-        "additionalProperties": additional_properties,
-    }
-    if required_sets:
-        required = sorted(set.intersection(*required_sets))
-        if required:
-            merged["required"] = required
-    return merged
-
-
-def _merge_schemas(schemas: list[dict[str, Any]]) -> dict[str, Any]:
-    unique: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for schema in schemas:
-        if not schema:
-            continue
-        identity = _schema_identity(schema)
-        if identity in seen:
-            continue
-        seen.add(identity)
-        unique.append(schema)
-    if not unique:
-        return {}
-    if len(unique) == 1:
-        return unique[0]
-    schema_types = {schema.get("type") for schema in unique if isinstance(schema.get("type"), str)}
-    if schema_types == {"object"}:
-        return _merge_object_schemas(unique)
-    if schema_types == {"array"}:
-        item_schemas = [schema.get("items") for schema in unique if isinstance(schema.get("items"), dict)]
-        merged: dict[str, Any] = {"type": "array"}
-        if item_schemas:
-            merged["items"] = _merge_schemas(item_schemas)
-        return merged
-    return {"anyOf": unique}
-
-
-def _infer_tool_parameters_schema(argument_samples: list[Any]) -> dict[str, Any]:
-    dict_samples = [sample for sample in argument_samples if isinstance(sample, dict)]
-    if not dict_samples:
-        return {"type": "object", "properties": {}, "additionalProperties": True}
-    properties: dict[str, dict[str, Any]] = {}
-    all_keys = sorted({key for sample in dict_samples for key in sample})
-    for key in all_keys:
-        observed = [_infer_schema_from_value(sample[key]) for sample in dict_samples if key in sample]
-        properties[key] = _merge_schemas(observed)
-    required = sorted(set.intersection(*(set(sample.keys()) for sample in dict_samples))) if dict_samples else []
-    schema: dict[str, Any] = {
-        "type": "object",
-        "properties": properties,
-        "additionalProperties": True,
-    }
-    if required:
-        schema["required"] = required
-    return schema
-
-
-def _parse_tool_descriptions_from_text(text: str) -> dict[str, str]:
-    descriptions: dict[str, str] = {}
-    in_section = False
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not in_section:
-            if line == "Available tools:":
-                in_section = True
-            continue
-        if not line:
-            if descriptions:
-                break
-            continue
-        if not line.startswith("- "):
-            if descriptions:
-                break
-            continue
-        name, separator, description = line[2:].partition(":")
-        tool_name = name.strip()
-        tool_description = description.strip()
-        if separator and tool_name and tool_description:
-            descriptions[tool_name] = tool_description
-    return descriptions
 
 
 def _normalize_role(role: str) -> str:
@@ -334,9 +106,9 @@ def _convert_codex_trace_to_training_example(
             base_instructions = payload.get("base_instructions")
             if isinstance(base_instructions, dict):
                 text = base_instructions.get("text")
-                if isinstance(text, str) and text.strip() and not _has_same_system_message(messages, text):
+                if isinstance(text, str) and text.strip() and not has_message(messages, role="system", content=text):
                     messages.append({"role": "system", "content": text})
-                    tool_descriptions.update(_parse_tool_descriptions_from_text(text))
+                    tool_descriptions.update(parse_tool_descriptions(text))
             continue
         if event_type == "turn_context" and isinstance(payload, dict):
             turn_contexts.append(payload)
@@ -346,7 +118,7 @@ def _convert_codex_trace_to_training_example(
 
         payload_type = payload.get("type")
         if payload_type == "reasoning":
-            pending_reasoning = _reasoning_summary(payload)
+            pending_reasoning = reasoning_summary(payload)
             continue
 
         if payload_type == "message":
@@ -354,7 +126,7 @@ def _convert_codex_trace_to_training_example(
             if not isinstance(role, str):
                 continue
             normalized_role = _normalize_role(role)
-            content = _first_text_block(payload.get("content"))
+            content = first_text_block(payload.get("content"))
             if normalized_role == "user" and content and not prompt:
                 prompt = content
             message: dict[str, Any] = {
@@ -374,7 +146,7 @@ def _convert_codex_trace_to_training_example(
                 continue
             tool_names.add(name)
             tool_call_names[call_id] = name
-            arguments = _parse_function_arguments(payload.get("arguments"))
+            arguments = parse_function_arguments(payload.get("arguments"))
             tool_argument_samples.setdefault(name, []).append(arguments)
             tool_call = {
                 "id": call_id,
@@ -428,7 +200,7 @@ def _convert_codex_trace_to_training_example(
         if name in tool_descriptions and "description" not in schema:
             schema["description"] = tool_descriptions[name]
         if "parameters" not in schema:
-            schema["parameters"] = _infer_tool_parameters_schema(tool_argument_samples.get(name, []))
+            schema["parameters"] = infer_tool_parameters_schema(tool_argument_samples.get(name, []))
         tools.append(_build_tool_entry(name, schema))
     if not prompt:
         prompt = next(
@@ -483,7 +255,7 @@ def _convert_pi_trace_to_training_example(
         if not isinstance(tool_call_id, str) or not tool_call_id:
             continue
         tool_name = payload.get("toolName") if isinstance(payload.get("toolName"), str) else None
-        if _is_tool_not_found_result(tool_name, payload):
+        if is_tool_not_found_result(tool_name, payload):
             invalid_tool_call_ids.add(tool_call_id)
 
     for event in events:
@@ -527,7 +299,7 @@ def _convert_pi_trace_to_training_example(
                 "role": "tool",
                 "tool_call_id": tool_call_id,
                 "name": tool_name or "unknown_tool",
-                "content": _first_text_block(payload.get("content")),
+                "content": first_text_block(payload.get("content")),
             }
             if payload.get("isError") is True:
                 tool_message["is_error"] = True
@@ -536,10 +308,10 @@ def _convert_pi_trace_to_training_example(
 
         normalized_role = _normalize_role(role)
         content_blocks = payload.get("content")
-        content = _first_text_block(content_blocks)
+        content = first_text_block(content_blocks)
 
         if role == "developer" and content:
-            tool_descriptions.update(_parse_tool_descriptions_from_text(content))
+            tool_descriptions.update(parse_tool_descriptions(content))
 
         if normalized_role == "user":
             if content and not prompt:
@@ -552,7 +324,7 @@ def _convert_pi_trace_to_training_example(
             "content": content,
         }
         if normalized_role == "assistant":
-            reasoning_content = _pi_reasoning_content(content_blocks)
+            reasoning_content = pi_reasoning_text(content_blocks)
             if reasoning_content:
                 message["reasoning_content"] = reasoning_content
             tool_calls: list[dict[str, Any]] = []
@@ -569,7 +341,7 @@ def _convert_pi_trace_to_training_example(
                     if not tool_call_id or not tool_name or tool_call_id in invalid_tool_call_ids:
                         continue
                     tool_names.add(tool_name)
-                    arguments = _parse_function_arguments(block.get("arguments"))
+                    arguments = parse_function_arguments(block.get("arguments"))
                     tool_argument_samples.setdefault(tool_name, []).append(arguments)
                     tool_calls.append(
                         {
@@ -594,7 +366,7 @@ def _convert_pi_trace_to_training_example(
             name,
             {
                 **({"description": tool_descriptions[name]} if name in tool_descriptions else {}),
-                "parameters": _infer_tool_parameters_schema(tool_argument_samples.get(name, [])),
+                "parameters": infer_tool_parameters_schema(tool_argument_samples.get(name, [])),
             },
         )
         for name in sorted(tool_names)

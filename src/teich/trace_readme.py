@@ -5,54 +5,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .converter import convert_trace_to_training_example
-
-
-def _merge_tool_parameters(schemas: list[dict[str, Any]]) -> dict[str, Any]:
-    object_schemas = [schema for schema in schemas if isinstance(schema, dict) and schema]
-    if not object_schemas:
-        return {"type": "object", "properties": {}, "additionalProperties": True}
-    if len(object_schemas) == 1:
-        return object_schemas[0]
-    properties: dict[str, list[dict[str, Any]]] = {}
-    required_sets: list[set[str]] = []
-    additional_properties = False
-    for schema in object_schemas:
-        schema_properties = schema.get("properties")
-        if isinstance(schema_properties, dict):
-            for key, value in schema_properties.items():
-                if isinstance(value, dict):
-                    properties.setdefault(key, []).append(value)
-        required = schema.get("required")
-        if isinstance(required, list):
-            required_sets.append({item for item in required if isinstance(item, str)})
-        else:
-            required_sets.append(set())
-        if schema.get("additionalProperties", True) is not False:
-            additional_properties = True
-    merged_properties: dict[str, dict[str, Any]] = {}
-    for key, values in sorted(properties.items()):
-        unique_values: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for value in values:
-            identity = json.dumps(value, sort_keys=True, ensure_ascii=False)
-            if identity in seen:
-                continue
-            seen.add(identity)
-            unique_values.append(value)
-        if len(unique_values) == 1:
-            merged_properties[key] = unique_values[0]
-        else:
-            merged_properties[key] = {"anyOf": unique_values}
-    merged: dict[str, Any] = {
-        "type": "object",
-        "properties": merged_properties,
-        "additionalProperties": additional_properties,
-    }
-    if required_sets:
-        required = sorted(set.intersection(*required_sets))
-        if required:
-            merged["required"] = required
-    return merged
+from .utils.schema import merge_schemas
 
 
 def _dataset_tools(trace_files: Iterable[Path]) -> list[dict[str, Any]]:
@@ -83,7 +36,7 @@ def _dataset_tools(trace_files: Iterable[Path]) -> list[dict[str, Any]]:
                 existing_schema = merged_function.get("parameters")
                 schema_list = [existing_schema] if isinstance(existing_schema, dict) else []
                 schema_list.append(schema)
-                merged_function["parameters"] = _merge_tool_parameters(schema_list)
+                merged_function["parameters"] = merge_schemas(schema_list)
     return [merged_by_name[name] for name in sorted(merged_by_name)]
 
 
