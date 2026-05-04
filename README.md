@@ -1,44 +1,90 @@
 # Teich
 
-`v2/` is the experimental trace-first package for collecting raw agent sessions and converting them into training-ready data.
+Turn coding agent sessions into training data.
 
-## What it does today
+**Generate** → **Convert** → **Train**
 
-- Runs Codex and Pi in a shared Docker runtime with `uv`, `npm`, `@openai/codex`, and `@mariozechner/pi-coding-agent`
-- Configures Codex through a mounted `CODEX_HOME/config.toml`
-- Configures Pi through an isolated mounted `~/.pi/agent/settings.json`
-- Exports raw session traces from mounted Codex and Pi session directories
-- Writes a trace-folder `README.md` for upload
-- Exposes Python conversion helpers for training data preparation
+Run Codex or Pi, capture raw traces, and convert them into structured training examples for fine-tuning.
 
-## Usage
+## ⚡ Quick Start
 
 ```bash
-# Initialize a project
-uvx teich init my-project
+pip install teich
+```
+
+```bash
+teich init my-project && cd my-project
+teich generate -c config.yaml
+```
+
+## ⭐ What Teich Does
+
+- **Trace-first data collection**: Run real coding agents, keep the raw session traces
+- **Multi-agent support**: Works with Codex and Pi
+- **Structured output**: Converts traces into chat messages with tool calls, reasoning, and tool results
+- **SFT-ready formatting**: Applies chat templates and creates assistant masks for supervised fine-tuning
+- **Hugging Face integration**: Load traces from local folders or dataset repos like `badlogicgames/pi-mono`
+
+## 📥 Install
+
+```bash
+pip install teich
+```
+
+Requirements for trace generation:
+- Docker
+- OpenAI API key (or local OpenAI-compatible endpoint)
+
+The Python utilities work without Docker if you already have traces.
+
+## 🚀 Usage
+
+### Generate traces from prompts
+
+```bash
+# Initialize project
+teich init my-project
 cd my-project
 
-# Run with the configured agent provider and model settings
-uvx teich generate -c config.yaml
+# Add prompts to prompts.csv, then:
+export OPENAI_API_KEY=sk-...
+teich generate -c config.yaml
 ```
 
-## Local OSS providers
+Outputs: raw traces in `output/`, sandboxes in `sandbox/`, and a `README.md`.
 
-If you want Codex to talk to a local provider like LM Studio or Ollama, set the provider in config or env:
+### Convert traces to training data
 
-```powershell
-$env:TEICH_PROVIDER='LMstudio'
-$env:TEICH_MODEL='gemma-4'
-$env:TEICH_API_KEY='llm'
-$env:TEICH_BASE_URL='http://localhost:1234/v1'
-python -m teich generate -c test_run/config.yaml
+```python
+from teich import convert_traces_to_training_data
+from pathlib import Path
+
+examples = convert_traces_to_training_data(Path("./output"))
+print(examples[0]["messages"])
 ```
 
-`v2` maps `LMstudio` and `ollama` onto Codex's native `--oss --local-provider ...` flow.
+### Load and format for training
 
-## Configuration model
+```python
+from teich import load_traces, format_and_mask
 
-Important fields in `config.yaml`:
+# Load from local folder or HF dataset
+dataset = load_traces("badlogicgames/pi-mono", split="train")
+
+# Apply chat template and create masks
+training_data = format_and_mask(
+    dataset,
+    tokenizer,
+    chat_template_kwargs={"enable_thinking": True}
+)
+
+# Preview a formatted example
+print(training_data.preview())
+```
+
+## 📋 Configuration
+
+`config.yaml`:
 
 ```yaml
 agent:
@@ -48,65 +94,76 @@ model:
   model: codex-mini-latest
   approval_policy: never
   sandbox: danger-full-access
-  reasoning_effort: null
 
-api:
-  provider: openai
-  base_url: null
-  api_key: null
+prompts_file: prompts.csv
+
+output:
+  traces_dir: ./output
+  sandbox_dir: ./sandbox
 ```
 
-Legacy `model.approval_mode` is still accepted and normalized internally.
+### Local providers (LM Studio, Ollama)
 
-## Python conversion API
+```bash
+export TEICH_PROVIDER=LMstudio
+export TEICH_MODEL=gemma-4
+export TEICH_BASE_URL=http://localhost:1234/v1
+export TEICH_API_KEY=llm
+
+teich generate -c config.yaml
+```
+
+## 🏗️ Data Structure
+
+Training examples include:
+
+- `prompt`: initial task description
+- `messages`: chat history (system, user, assistant, tool)
+- `tools`: tool schemas used in the session
+- `metadata`: session info, model, timestamps
+
+Assistant messages capture:
+- `content`: text response
+- `reasoning_content`: chain-of-thought traces
+- `tool_calls`: function calls with arguments
+
+## 🔧 Python API
 
 ```python
-from pathlib import Path
-from teich import convert_traces_to_training_data
-
-examples = convert_traces_to_training_data(Path("./output"))
+from teich import (
+    load_traces,           # Load from folder or HF dataset
+    format_and_mask,        # Apply chat template + assistant masks
+    convert_traces_to_training_data,  # Convert raw traces to examples
+    Config,                 # Load config.yaml
+    TrainingExample         # Typed training example
+)
 ```
 
-The converter currently maps example-style raw traces into message/tool records with:
+## 📦 Trace-First Workflow
 
-- system/developer instructions
-- user messages
-- assistant messages
-- `reasoning_content`
-- tool calls
-- tool results
+Unlike synthetic datasets, Teich preserves the **raw agent session** as the source of truth:
 
-## Development
+1. **Collect**: Run agents on real tasks → raw `.jsonl` traces
+2. **Inspect/Share**: Traces are human-readable and uploadable
+3. **Convert**: Transform to structured examples when ready
+4. **Format**: Apply model-specific chat templates for training
+
+This means you can:
+- Re-convert with different logic later
+- Share raw traces before releasing training data
+- Train on the same sessions with different model templates
+
+## 🛠️ Development
 
 ```bash
 uv pip install -e ".[dev]"
-pytest tests/test_config.py tests/test_cli.py tests/test_runner.py -q
+pytest tests/test_formatter.py tests/test_loader.py -q
 ```
 
-## Architecture
+## 📌 Status
 
-- **Shared Docker runtime**: container image includes Node.js, `uv`, `uvx`, `@openai/codex`, and `@mariozechner/pi-coding-agent`
-- **Isolated Pi config**: Pi runs with a mounted per-run `~/.pi/agent` directory inside the container
-- **Codex config**: generated `config.toml` under a mounted `CODEX_HOME`
-- **Session export**: raw JSONL sessions are copied from mounted Codex or Pi session storage into the user output directory
-- **Upload-first output**: traces are preserved in raw form before later conversion
-- **Provider-aware boundary**: `agent.provider` selects either the Codex or Pi raw-trace path
+Teich is **alpha**. The core workflow is stable and usable. APIs may evolve as more agent types and training workflows are added.
 
-## Project Structure
+## 📄 License
 
-```text
-v2/
-├── docker/
-│   └── codex-runtime.Dockerfile
-├── src/teich/
-│   ├── __init__.py
-│   ├── __main__.py
-│   ├── cli.py
-│   ├── config.py
-│   ├── converter.py
-│   ├── runner.py
-│   └── trace_readme.py
-└── tests/
-    ├── test_cli.py
-    ├── test_config.py
-    └── test_runner.py
+Apache-2.0
