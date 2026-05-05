@@ -80,7 +80,6 @@ output:
 
   # Used in the generated trace README.
   pretty_name: "My Agent Traces"
-  readme_file_name: README.md
 
 # Optional direct upload to a Hugging Face dataset repo.
 # Tags are auto-generated from the provider and model.

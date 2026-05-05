@@ -93,7 +93,6 @@ class OutputConfig(BaseModel):
     traces_dir: Path = Field(default=Path("./output"))
     sandbox_dir: Path = Field(default=Path("./sandbox"))
     pretty_name: str = "Agentic Training Traces"
-    readme_file_name: str = "README.md"
 
 
 class PublishConfig(BaseModel):

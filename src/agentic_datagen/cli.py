@@ -119,7 +119,6 @@ def generate(
             pretty_name=cfg.output.pretty_name,
             tags=dataset_tags,
             model_id=cfg.model.model,
-            readme_file_name=cfg.output.readme_file_name,
         )
         totals = reporter.snapshot_totals()
 
@@ -387,7 +386,6 @@ output:
 
   # Used in the generated trace README.
   pretty_name: "My Agent Traces"
-  readme_file_name: README.md
 
 # Optional direct upload to a Hugging Face dataset repo.
 # Tags are auto-generated from the provider and model.

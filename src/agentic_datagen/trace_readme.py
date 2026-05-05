@@ -284,13 +284,12 @@ def write_traces_readme(
     pretty_name: str,
     tags: list[str],
     model_id: str | None = None,
-    readme_file_name: str = "README.md",
 ) -> Path:
     trace_files = sorted(
         path for path in traces_dir.glob("*.jsonl") if path.is_file()
     )
     dataset_tools = _dataset_tools(trace_files)
-    readme_path = traces_dir / readme_file_name
+    readme_path = traces_dir / "README.md"
     readme_path.write_text(
         build_traces_readme(
             pretty_name=pretty_name,
