@@ -317,11 +317,11 @@ agent:
   # codex = Codex CLI in Docker
   # pi = Pi coding agent in Docker
   # chat = direct text-only dataset generation via an OpenAI-compatible API
-  provider: codex
+  provider: pi
 
 model:
   # Model id passed to the selected agent/provider.
-  model: codex-mini-latest
+  model: deepseek/deepseek-v4-flash
 
   # Codex approval behavior. Common values: never, on-request.
   approval_policy: never
@@ -332,7 +332,7 @@ model:
   # Optional reasoning / thinking level.
   # - Codex: forwarded as model_reasoning_effort
   # - Pi: normalized to low / medium / high when supported
-  reasoning_effort: null
+  reasoning_effort: medium
 
   # Optional Pi-specific provider overrides.
   # Teich already defaults maxTokens to 131072 even if this block is omitted.
@@ -350,16 +350,16 @@ model:
 # - OpenRouter: provider=openrouter, base_url=https://openrouter.ai/api/v1
 # - Local OpenAI-compatible server: provider=openai, base_url=http://localhost:1234/v1
 #
-# Prefer putting secrets in env vars instead of committing them here:
+# You can also put secrets in env vars instead of committing them here:
 #   TEICH_API_KEY=...
 #   TEICH_BASE_URL=...
 #   TEICH_PROVIDER=...
 #   TEICH_MODEL=...
-# api:
-#   provider: openai
-#   base_url: null
-#   api_key: null
-#   wire_api: responses
+api:
+  provider: openrouter
+  base_url: https://openrouter.ai/api/v1
+  api_key: null
+  wire_api: responses
 
 # Optional MCP servers exposed inside the agent runtime.
 # mcp_servers:

@@ -33,7 +33,9 @@ def test_build_traces_readme_includes_model_and_references_tools(tmp_path: Path)
     assert "## Conversion" in readme
     assert "load_traces" in readme
     assert "format_and_mask" in readme
-    assert "convert_traces_to_training_data" in readme
+    assert "tokenizer.apply_chat_template" in readme
+    assert "tools=example.get('tools') or []" in readme
+    assert "convert_traces_to_training_data" not in readme
 
 
 def test_write_traces_readme_creates_tools_json(tmp_path: Path):

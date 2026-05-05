@@ -18,13 +18,16 @@ pip install teich
 teich init my-project && cd my-project
 teich generate -c config.yaml
 ```
+
 Or use [astral-uv](https://docs.astral.sh/uv/getting-started/installation/)
+
 ```bash
 uvx teich init my-project && cd my-project
 uvx teich generate -c config.yaml
 ```
 
 > Be sure to edit your config.yaml and prompts.csv file as needed
+
 ## ⭐ What Teich Does
 
 - **Trace-first data collection**: Run real coding agents and keep the raw session traces when you want full fidelity
@@ -103,6 +106,24 @@ training_data = format_and_mask(
 print(training_data.preview())
 ```
 
+### Manual tokenizer flow with `load_traces`
+
+```python
+from teich import load_traces
+
+dataset = load_traces("./output")
+example = dataset[0]
+
+rendered = tokenizer.apply_chat_template(
+    example["messages"],
+    tools=example.get("tools") or [],
+    tokenize=False,
+    add_generation_prompt=False,
+    enable_thinking=True,
+)
+tokenized = tokenizer(rendered, truncation=True, max_length=32768)
+```
+
 ## 📋 Configuration
 
 `config.yaml`:
@@ -173,11 +194,10 @@ Assistant messages capture:
 
 ```python
 from teich import (
-    load_traces,           # Load from folder or HF dataset
-    format_and_mask,        # Apply chat template + assistant masks
-    convert_traces_to_training_data,  # Convert raw traces to examples
-    Config,                 # Load config.yaml
-    TrainingExample         # Typed training example
+    load_traces,     # Load from folder, file, or HF dataset
+    format_and_mask, # Apply chat template + assistant masks
+    Config,          # Load config.yaml
+    TrainingExample  # Typed training example
 )
 ```
 

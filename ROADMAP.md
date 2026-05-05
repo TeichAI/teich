@@ -41,10 +41,16 @@
 Implemented `src/teich/converter.py`:
 
 ```python
-from teich import convert_traces_to_training_data, TrainingExample
+from teich import load_traces
 
-examples = convert_traces_to_training_data(
-    traces_dir=Path("./output")
+dataset = load_traces("./output")
+example = dataset[0]
+
+rendered = tokenizer.apply_chat_template(
+    example["messages"],
+    tools=example.get("tools") or [],
+    tokenize=False,
+    add_generation_prompt=False,
 )
 ```
 

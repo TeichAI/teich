@@ -30,7 +30,10 @@ model = FastLanguageModel.get_peft_model(
 
 
 from teich import format_and_mask, load_traces
-datasets = [load_traces("armand0e/ag-datagen-v2-test", split = "train")]
+datasets = [
+    load_traces("armand0e/ag-datagen-v2-test", split = "train"),
+    load_traces("./output"),
+]
 #dataset = dataset.filter(lambda row: isinstance(row["messages"], list) and len(row["messages"]) > 0)
 
 
