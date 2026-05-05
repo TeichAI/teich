@@ -4,7 +4,9 @@ Turn coding agent sessions into training data.
 
 **Generate** → **Convert** → **Train**
 
-Run Codex or Pi to capture raw traces, or use `chat` mode to generate text-only training rows directly.
+Run `codex` or `pi` to capture raw traces, or use `chat` mode to generate text-only training rows directly.
+
+Easily format, filter, combine and mask any supported dataset(s)
 
 ## ⚡ Quick Start
 
