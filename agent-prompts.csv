@@ -1,8 +1,12 @@
 image,github_repo,prompt
 None,pydantic/pydantic,"Work in the existing repository. Inspect the codebase before editing.
+
 A model_validator with mode='after' on a Pydantic BaseModel is being called again on an already-validated instance when that instance is passed as a field value to another model. The config option revalidate_instances='never' does not prevent this.
+
 Reproduce the issue: create a model with an after-validator that increments a counter, instantiate it, then pass that same instance into a composing model. The validator fires twice.
+
 Find where in the validation/construction path the already-validated instance is being re-validated. Implement a fix that respects the existing instance without re-running validators when revalidate_instances is set to 'never'. Add a test covering this exact composition pattern.
+
 Do not change unrelated validation behavior. Keep backward compatibility."
 None,litestar-org/litestar,"Work in the existing repository. Inspect the codebase before editing.
 
@@ -31,7 +35,7 @@ The generated SQL shows the Option columns listed in the INSERT part but missing
 Investigate how diesel derives the column list for the UPDATE portion of upsert statements in the PostgreSQL backend. The Option fields should be included so that explicitly setting them to None actually updates the row. Add a test with a table containing an Option<String> column, perform an upsert that sets it to None, and verify the database reflects the change."
 None,diesel-rs/diesel,"Work in the existing repository. Inspect the codebase before editing.
 
-The diesel CLI's print-schema feature with allow_tables_to_appear_in_same_query_config = ""fk_related_tables"" produces incorrect output when a table has two foreign keys referencing the same parent table. The generated diesel::allow_tables_to_appear_in_same_query! macro is missing the child table, and diesel::joinable! is also missing for one of the FK relations.
+The diesel CLI's print-schema feature with allow_tables_to_appear_in_same_query_config = "fk_related_tables" produces incorrect output when a table has two foreign keys referencing the same parent table. The generated diesel::allow_tables_to_appear_in_same_query! macro is missing the child table, and diesel::joinable! is also missing for one of the FK relations.
 
 A test case already exists at diesel_cli/tests/print_schema/print_schema_fk_related_tables/postgres/ - the snapshot shows comments and posts tables where comments has two FKs to users (author_id, moderator_id). The expected output should include comments in allow_tables_to_appear_in_same_query! and generate joinable! for both FK relations.
 
@@ -57,3 +61,482 @@ When a Bubble Tea TUI application exits - whether normally via tea.Quit or due t
 The ideal fix: capture the current window title before the TUI starts, then restore it during shutdown/cleanup. If capturing isn't possible, at minimum clear the title to an empty string on exit, which most terminal emulators interpret as a reset to default.
 
 Implement title save/restore in the tea.Program shutdown path. Handle both normal exit and panic recovery scenarios. Test on at least two terminal emulators (e.g. Windows Terminal and iTerm2/Alacritty) to verify the title is restored after the program exits."
+None,None,"Hey, I'm a mechanic and we keep losing tools. Can you build a tool-loan tracker so we can record which tech has which specialty wrench?"
+None,None,I'm organizing a local charity run and I need a registration tool. We need to collect shirt sizes and emergency contact info for about 500 runners.
+None,None,I'm a chemical engineer and I'm tired of manual calculations. Can you build a reaction-yield tool that accounts for 5 different limiting reagents?
+None,None,Can you build a bridge-load simulator for my civil engineering class? I need it to handle at least 3 different types of vehicles.
+None,None,"I run a small coffee roasting business and I want to track my roast profiles. Can you make a tool where I log time, temperature, and when the first crack happened?"
+None,None,"Hey, can you make a water-use logger for our community garden? I want to see how much we're using per plot."
+None,None,I'm starting a community tool library and I need a checkout system. We need to track who has which drill or ladder and when it's due back.
+None,None,"I'm a construction manager and I need a digital daily log. Can you make something to capture weather, which subs were on site, and what we finished today?"
+None,None,I need to find out if anyone is using my photos without permission. Can you build a monitor that searches a local archive for duplicate images or text strings?
+None,None,"Hey, I'm a copywriter and I want to test my headlines. Can you build a tool that checks for 'power words' and emotional triggers in my text?"
+None,None,I'm a costume designer and I need a character-plot tool. I want to be able to tag every outfit by the scene and the condition it should be in.
+None,None,I run a craft brewery and I want a way for my staff to rate new batches before we release them. Can you build a simple batch-rating tool?
+None,None,"Hey, I'm brewing beer and sometimes I run out of a specific hop. Can you make a substitution tool that suggests alternatives based on the flavor profile?"
+None,None,I need to track my kegs. Can you build a return tracker for my wholesale accounts so I know where all my empty kegs are?
+None,None,I'm trying to get out of debt and I need a payoff planner. Can you show me the difference between using the 'Snowball' vs the 'Avalanche' method?
+None,None,"Can you build a simple CLI to manage my cron jobs? I want to be able to list, add, and remove tasks easily."
+None,None,"I'm a woodworker and I do a lot of custom furniture. Can you make a quote generator that handles different wood species like Oak, Walnut, and Pine?"
+None,None,I need to sanitize some data. Can you build a tool that replaces PII like names and emails in a database dump with randomized 'faker' data?
+None,None,I'm a data engineer and I need a simple ETL pipeline. Can you help me rename fields and convert formats between two different CSV files?
+None,None,I'm a database admin and I want to check for index fragmentation. Can you build a detector for my SQLite tables?
+None,None,I'm a retail planner and I need to forecast demand for next month. Can you use a small Random Forest model on our past 12 months of sales data?
+None,None,"Hey, I work at a dental office and we need to log our instrument sterilization. Can you track the 'Autoclave' cycles and the results for us?"
+None,None,I'm a dental hygienist and I need a daily appointment log. Can you include a column to track the X-Ray status for every patient?
+None,None,We need better quality control in our dental clinic. Can you build a log to track batch numbers and cycle times for all our equipment?
+None,None,I want a fun way to teach kids about dental health. Can you build a tool that shows simple brushing and flossing animations based on a path?
+None,None,I'm a digital nomad and I need to track my expenses. Can you make a tool that accounts for co-working fees and the cost of local SIM cards?
+None,None,I'm an attorney handling a lot of discovery files. Can you build an organizer that renames thousands of files with a standardized 'Bates Stamping' prefix?
+None,None,"Hey, can you build a diversity and inclusion reporter for our HR department? We want to visualize our company demographics from anonymized survey data."
+None,None,I manage a warehouse and I need a dock appointment scheduler. Can you make sure it prevents more than 2 trucks from arriving at the same time?
+None,None,"I'm a dog walker and I want to share better updates with the owners. Can you build a route logger that records start/end time, distance, and bathroom stops?"
+None,None,Can you build an employee engagement tracker? I want to log how often we're having one-on-one meetings and what the action items are.
+None,None,I'm an HR manager and I need to generate offer letters. Can you make a tool that uses a template and plugs in the candidate's name and salary?
+None,None,"Hey, I run a yoga studio and I want to reward people for referrals. Can you write a script that gives a free class for every two successful referrals?"
+None,None,I'm a ceramic artist and I need to scale my glaze recipes. Can you build a tool that converts my chemical weights from 100g up to 5kg?
+None,None,Can you build a placement test grader for my language school? I want it to assign students to levels 1 through 5 based on their scores.
+None,None,I'm a personal trainer and I need to help my clients with their nutrition. Can you write a script to calculate macronutrient splits based on their goals?
+None,None,I'm a life coach and I want to see how my clients are doing. Can you build a stress level questionnaire that gives a score based on 20 questions?
+None,None,"Hey, I run a small farm and I need to track our egg production. Can you make a log for the daily counts from our four different coops?"
+None,None,I'm a freelance writer and I want to know if I'm actually making money. Can you build a tool to calculate my effective hourly rate for each project?
+None,None,Can you make a tool for my bakery to calculate how much fondant I need for different sized cake tiers?
+None,None,I'm trying to organize our community garden better. Can you build a map that shows which zones get the most sun so we can suggest what to plant there?
+None,None,"Hey, I need a quarterly tax calculator for my small business. It needs to account for the estimated payments I've already made this year."
+None,None,"I'm a game developer and I need a random loot generator. Can you make it use rarity tiers like common, rare, and legendary?"
+None,None,"I run a small press and I need to track our print jobs. Can you log the paper type, ink color, and if the order needs folding?"
+None,None,Can you build a phoneme tracker for my speech pathology clinic? I want to see how my students are progressing over their sessions.
+None,None,"I'm a pet groomer and I want a better booking system. Can you help me track the breed, weight, and temperament of my recurring clients?"
+None,None,"Hey, I install solar panels and I need to check for shadows. Can you build a tool that calculates how much shade affects energy generation on a specific roof?"
+None,None,I'm a data analyst and I need to find outliers in our data. Can you write a script that uses the Z-Score method on a CSV file?
+None,None,I run a small hotel and I'm trying to plan ahead. Can you build an occupancy forecaster using last year's data to predict our peak weekends?
+None,None,I'm tutoring language students and I need flashcards. Can you make a generator that outputs a CSV file I can import into Anki?
+None,None,Can you build a net worth dashboard for me? I'm a freelancer and I want to see how it changes over a 12-month period in React.
+None,None,"Hey, I'm a game designer and I need a tool to generate procedural map layouts in JSON format."
+None,None,I run a small printing press and my queue is a mess. Can you build a tool to prioritize jobs by due date and what paper we have in stock?
+None,None,Can you make a stuttering frequency tracker for my speech therapy sessions? I want to log progress in different social environments.
+None,None,I'm a car detailer and I want to show off my work. Can you build a photo manager that renames my files by the vehicle's license plate?
+None,None,"Hey, can you write a script for my food truck? I need to track our daily sales by item and where we were parked."
+None,None,I run a boutique apparel shop and I'm having trouble with inventory. Can you build a manager that tracks sales vs returns so I can see what's not selling?
+None,None,Can you make an appointment tool for my barber shop? I need it to handle both walk-ins and booked sessions without overlapping.
+None,None,I'm an accountant and I need an invoice parser. Can you extract the total amount due and the payment terms from these files?
+None,None,"Hey, I'm a potter and I need to track my kiln results. Can you build a log that records the clay type, glaze, and the final result?"
+None,None,I'm a vendor at several farmers markets and I want to see my best times. Can you create a sales dashboard for me?
+None,None,Can you build a quiz builder for my classroom? I want it to be able to generate multiple versions of the same test to prevent cheating.
+None,None,I'm a language tutor and I want to help my students with their vocab. Can you track which words they need to review based on what they miss?
+None,None,I'm a university lecturer and I need to flag students who are starting to skip class. Can you write a script to detect declining attendance?
+None,None,"Hey, I'm a medical student and I need an anatomy study tool. Can you link specific terms to diagrams from a list of URLs?"
+None,None,Can you build a grade curve tool for my class? I want to see the 'before' and 'after' distribution of our scores to see if a curve is fair.
+None,None,I'm a debate coach and I need a timer. Can you make one that sounds a bell when there are only 30 seconds left?
+None,None,"Hey, I'm a librarian and I need to handle hold requests. Can you make a tool that notifies students automatically when their book is ready?"
+None,None,I'm organizing a science fair and I need a scoring aggregator. Can you rank the top 3 projects across 5 different categories?
+None,None,I'm a primary school teacher and I need to organize my lesson plans. Can you help me map my activities to the state standards?
+None,None,"Hey, I'm a music teacher and I want a practice log for my students. Can they give their daily sessions a star rating?"
+None,None,Can you write a script for a marketing analyst to calculate customer lifetime value from our sales data?
+None,None,I'm a real estate researcher and I need a price estimator. Can we guess property values based on the bedroom count and lot size?
+None,None,"Hey, can you build a sentiment analysis tool for my social media job? I want to know if the comments on our posts are happy or unsatisfied."
+None,None,I'm an HR assistant and I need to screen resumes. Can you flag the required certifications in these PDF files?
+None,None,Can you write a spam filter for me? I need to identify suspicious URLs in our email directory.
+None,None,"Hey, I'm an investor and I want a stock price trend indicator. Can you calculate RSI and MACD for me locally?"
+None,None,I run a retail store and I need a demand forecaster. Can you suggest reorder points for our best-selling items?
+None,None,Can you build a team ranking system for my sports analysis job? I want it to be based on our win/loss ratios.
+None,None,"Hey, I'm a news editor and I need a classifier. Can you label our articles as 'breaking' or 'feature' based on the keywords?"
+None,None,I'm a credit officer and I need a loan default risk score. Can we use employment status and savings as the main factors?
+None,None,Can you build an inventory tool for my photography business? I need to track all my camera gear and lenses in one place.
+None,None,"Hey, I'm a remote worker and I need a task timer. Can you track my deep work hours vs my meeting time?"
+None,None,I'm a wedding planner and I need to track deposits. Can you build a tool for venue deadlines and payment status?
+None,None,Can you make a show notes generator for my podcast? I want to include timestamps and links to our guest's social media.
+None,None,"Hey, I'm a nutritionist and I need a meal planner. Can you make sure it respects my clients' allergy filters?"
+None,None,Can you build an energy monitor for my home? I want to see how my usage compares to the neighborhood averages using this mock data.
+None,None,I'm a travel agent and I need a commission tracker. Can you track what I'm earning from each airline?
+None,None,"Hey, I'm a pet groomer and I want to log my appointments. Can you track how long the bath and haircut took for each breed?"
+None,None,Can you build a personal portfolio site for me? I'm a developer and I want to generate a list of my projects from a folder.
+None,None,I'm a board game designer and I need a companion tool. Can we track victory points and how many turns are left in the game?
+None,None,"Hey, I'm a legal assistant and I need to track our filing fees for each case. Can you build a simple tool for that?"
+None,None,I'm a paralegal and I need to organize our cases. Can you help me tag all our witness contact info so it's easy to find?
+None,None,"Hey, I'm a realtor and I need an open house log. I want to be able to identify which visitors are 'hot prospects'."
+None,None,Can you build a daily log for my construction site? I need to track how much fuel our heavy equipment is using.
+None,None,I'm a tailor and I have 20 pairs of pants to fix. Can you write a script to calculate the inseam adjustments for me?
+None,None,"Hey, I'm a vet and I need a vaccine log. Can you track when our patients are due for their rabies or distemper shots?"
+None,None,Can you make a daily plan for my fitness coaching? I want to track my clients' steps and how much water they're drinking.
+None,None,I run a non-profit and I need a donation log. Can you help me categorize 'in-kind' gifts vs cash donations?
+None,None,"Hey, I'm a real estate agent and I want to calculate cap rates for some investment properties I'm looking at."
+None,None,I'm a farmer and I need a planting log. Can you track which seed varieties we sowed and on what date?
+None,None,"Hey, I'm a life coach and I want a habit tracker for my clients. Can we award digital badges for 7-day streaks?"
+None,None,Can you build an inventory tool for my jewelry business? I need to track all my gemstones and where they are.
+None,None,I'm a librarian and I need to track book damage. Can you build a tool for me to log the repair status of each book?
+None,None,"Hey, I'm a personal chef and I need a shopping list tool. Can you group my items by store aisle so I'm faster?"
+None,None,Can you build a manager for my home staging business? I need to track when our furniture rentals are about to expire.
+None,None,I'm in a band and I need to manage our gigs. Can you help us track the setlist order for our next show?
+None,None,"Hey, I'm a genealogist and I'm tracking census records. Can you help me organize them by year?"
+None,None,I run a small hotel and I need to track our rooms. Can you log which guests used the minibar?
+None,None,Can you make a fermentation log for my brewery? I want to track the alcohol percentage progress every 12 hours.
+None,None,"Hey, I'm a personal stylist and I want to log my clients' color palettes and sizing so I don't forget."
+None,None,I'm a data entry clerk and I need to find missing zip codes in a huge CSV. Can you write a script for that?
+None,None,Can you build a sample tool for my music production? I want to tag my clips as 'vocal' or 'instrumental'.
+None,None,"Hey, I'm a landscaper and I need to calculate sod. How many rolls do I need for this specific lawn?"
+None,None,I'm a dental hygienist and I need to track our cleaning appointments. Can you build a tool for that?
+None,None,Can you write a tool for my research job? I need to find all the broken links in a 100-page document.
+None,None,"Hey, I'm a personal trainer and I want a body weight log. Can we track my clients' goals and progress?"
+None,None,I run a small theater and I need to track ticket sales. Can we see how many people used a discount code for the matinee?
+None,None,Can you build an invoice tool for my translation business? I need to handle both urgent and standard rates.
+None,None,"Hey, I'm a park ranger and I need to log trail maintenance. What parts of the trail need the most work?"
+None,None,Can you build a loyalty program for my coffee shop? I want to track points per dollar spent.
+None,None,I'm a small business owner and I need an asset log. Can you track all our software license keys and when they expire?
+None,None,"Hey, I'm a yoga instructor and I need a pose library. Can you tag the poses by anatomy focus like 'hips' or 'shoulders'?"
+None,None,Can you write a tool for my history project? I want to generate a timeline chart from this CSV data.
+None,None,I run a boutique winery and I need a log for our wine club. Can we track how often people get shipments?
+None,None,"Hey, I'm in a community garden and I want to track our compost. Can we log who contributed what and when it was turned?"
+None,None,Can you build a tax tool for my freelance business? I need to estimate my quarterly payments.
+None,None,I'm a game developer and I need random NPC names. Can you write a generator for me with different origins?
+None,None,"Hey, I run a printing press and I need to track our print errors. Can you build a log for that?"
+None,None,I'm a speech pathologist and I need to track fluency progress for my therapy sessions.
+None,None,"Hey, I'm a security auditor and I need to scan a directory. Can you find all the files that are 'world-writable'?"
+None,None,Can you build a tool for my network admin job? I need to find inactive IP addresses in our subnet.
+None,None,I'm a cloud engineer and I need a cost estimator. What's the difference between reserved and on-demand instances?
+None,None,"Hey, I'm a database admin and I need to check for index fragmentation in my SQLite tables."
+None,None,Can you write a script for my DevOps job? I want to automate our Docker image tagging based on git hashes.
+None,None,I'm a site reliability engineer and I need to calculate our availability SLI from this log.
+None,None,"Hey, I'm a security researcher and I need to extract public keys from a folder of PEM files."
+None,None,Can you build a wordlist generator for my penetration testing? I need common industry terms included.
+None,None,I'm a digital forensics investigator and I need to see the search history from this browser database.
+None,None,"Hey, I'm a blockchain developer and I need a gas-fee estimator for these 10 common operations."
+None,None,Can you build a test-case aggregator for my QA job? I want to find duplicate tests using fuzzy matching.
+None,None,I'm a release manager and I need a changelog generator. Can you pull from these feature and bugfix text files?
+None,None,"Hey, I'm a performance engineer and I need to find the slowest 5% of requests in this web log."
+None,None,Can you build a resistor-value tool for my hardware engineering project? What's the best combination for my target?
+None,None,I'm a robotics engineer and I need a coordinate-transform tool. Can you handle a 2-joint arm in 2D?
+None,None,"Hey, I'm a civil engineer and I need a bridge-load simulator. Can you handle 3 different vehicle types?"
+None,None,Can you build a tool for my aerospace engineering job? I need the thrust-to-weight ratio for a 5-seater plane.
+None,None,I'm a biomedical engineer and I need to calibrate this ECG sensor. Can you write a tool for that?
+None,None,"Hey, I'm an electrical engineer and I need a power-factor corrector tool for our industrial loads."
+None,None,Can you build a reaction-yield tool for my chemical engineering job? I need it to handle 5 different reagents.
+None,None,I'm a materials scientist and I need to convert stress/strain data into a JSON for plotting.
+None,None,"Hey, I'm a nuclear engineer and I need a decay calculator for these 5 isotopes over 100 years."
+None,None,Can you build a soil-bearing capacity tool for my geotechnical engineering job based on SPT N-values?
+None,None,I'm an acoustic engineer and I need a sound-absorption tool for these 10 different wall materials.
+None,None,"Hey, I'm an optical engineer and I need to calculate the focal length for a multi-lens system."
+None,None,Can you build a pump-jack efficiency tool for my petroleum engineering job?
+None,None,I'm a systems engineer and I need a reliability tool. Can you compare parallel vs series components?
+None,None,"Hey, I'm a UX designer and I want to analyze our click-paths. What's the longest journey to checkout?"
+None,None,Can you write a script for a product manager to calculate feature priority using a RICE score?
+None,None,I'm a data scientist and I need a feature-importance tool for a simple decision tree.
+None,None,"Hey, I'm an ML engineer and I need a data-split tool. Can you make sure we have class balance in the test set?"
+None,None,Can you build an ETL pipeline for my data engineering job? I need to rename fields and convert formats between CSVs.
+None,None,I'm an AI safety researcher and I need to flag harmful keywords in these model outputs.
+None,None,"Hey, I'm a quant researcher and I need a volatility tool. Can you calculate the standard deviation of our daily returns?"
+None,None,Can you build a p-value tool for my biostatistics job? I need a simple t-test on these 30 samples.
+None,None,I'm an economist and I need an inflation-adjustment tool using our local CPI table.
+None,None,"Hey, I'm a sociologist and I need to count demographic mentions in these interview transcripts."
+None,None,Can you build a seat-assignment tool for my political science project using the D'Hondt method?
+None,None,I'm a psychologist and I need a survey tool that calculates a Big Five personality score.
+None,None,"Hey, I'm a meteorologist and I need a dew-point tool for these 20 weather station inputs."
+None,None,Can you build a tide-height tool for my oceanography job? I need it based on these 3 harmonic constants.
+None,None,I'm a volcanologist and I need a tremor-frequency tool. Can you identify pre-eruptive patterns in this data?
+None,None,"Hey, I'm a paleontologist and I need a bone-dimension tool. Can you estimate the body mass for this dinosaur?"
+None,None,Can you build a genetics researcher tool? I need to find SNPs in these two DNA strings.
+None,None,I'm a linguist and I need to count syllables per sentence for a readability score.
+None,None,"Hey, I'm a classicist and I need a Greek-to-Latin transliteration tool for these 50 names."
+None,None,Can you build an art conservator tool? I need to calculate the lux hours for this exhibit to prevent light damage.
+None,None,I'm a musicologist and I need a rhythm tool. Can you find syncopation patterns in this MIDI-like JSON?
+None,None,"Hey, I'm a sports scientist and I need to calculate training impulse from heart rate data."
+None,None,Can you build a supply chain tool for me? I need to identify which of our vendors are single points of failure.
+None,None,I'm a compliance officer and I need to scan for sanctioned countries in this shipping manifest.
+None,None,"Hey, I'm an internal auditor and I need to find gaps in our check numbers for these 1000 payments."
+None,None,Can you write a script for a fraud analyst to flag rapid-fire transactions from the same IP?
+None,None,I'm a PR officer and I need to count brand impressions across these 20 media clips.
+None,None,"Hey, I'm a content marketer and I need an SEO tool. Can you suggest keywords based on this 500-word text?"
+None,None,Can you build a headline tool for a copywriter? I want to test for power words and emotional triggers.
+None,None,I'm a video editor and I need a music cue list. Can you generate start and end timecodes for me?
+None,None,"Hey, I'm a podcast producer and I need a tool for chapter marks based on silence detection."
+None,None,Can you build an illustrator tool? I need to know the maximum print size for a given DPI.
+None,None,I'm a game tester and I need to log frame rate drops. Can you correlate them with enemy counts?
+None,None,"Hey, I'm a technical writer and I need to find all the undefined acronyms in this 50-page manual."
+None,None,Can you build a tool for a customer success manager? I want to identify at-risk clients based on their login frequency.
+None,None,I'm an operations manager and I need to calculate cycle time for these 10 steps.
+None,None,"Hey, I'm a logistics coordinator and I need a dimensional weight calculator for air freight."
+None,None,Can you build a tool for a real estate appraiser to calculate depreciation using the age-life method?
+None,None,I'm an urban planner and I need to see the green space percentage for this city block.
+None,None,"Hey, I'm a landscape architect and I need to suggest native plants for this zip code."
+None,None,Can you build a surveyor tool? I need to calculate the closure error for this 5-point traverse.
+None,None,I'm a construction estimator and I need to know how many board feet of lumber we need for a 100-foot fence.
+None,None,"Hey, I'm a safety officer and I need to track near-miss reports. Can you identify the hot zones on our site map?"
+None,None,Can you build an HR tool for me? I need to calculate our employee net promoter score.
+None,None,I'm a recruiter and I need to know our source effectiveness for these 5 job boards.
+None,None,"Hey, I'm a training manager and I need to track when our 50 employees' certifications expire."
+None,None,Can you build a tool for a benefits administrator? I want to compare our company contributions across 3 health plans.
+None,None,I'm a payroll specialist and I need to calculate overtime using a weighted average for different pay rates.
+None,None,"Hey, I'm a small business owner and I need to find our break-even point in units sold."
+None,None,Can you write a script for a freelancer to generate a late payment notice from a template?
+None,None,I'm an accountant and I need to calculate straight-line depreciation for these 10 assets.
+None,None,"Hey, I'm a tax preparer and I need to calculate self-employment tax for a solo practitioner."
+None,None,Can you build a property manager tool? I need the pro-rated rent for someone moving in on the 12th.
+None,None,I'm a librarian and I need to track reading challenge progress for our 100 students.
+None,None,"Hey, I'm a teacher and I need a tool to generate random seating charts with must-separate rules."
+None,None,Can you build a coach tool? I want to track personal best times for my 10 swimmers this season.
+None,None,I'm a personal trainer and I need to calculate basal metabolic rate using these 3 methods.
+None,None,"Hey, I'm a chef and I need to scale my master recipe for 5, 25, and 100 people."
+None,None,Can you build a tool for a bartender to calculate the pour cost for 10 custom cocktails?
+None,None,I'm a florist and I need to calculate our flower markup and labor fees for a bouquet.
+None,None,"Hey, I'm a baker and I need baker's percentages for my 5 sourdough recipes."
+None,None,Can you build a jeweler tool? I need to find the gold content value for scrap of different karats.
+None,None,I'm a tailor and I need to calculate ease and seam allowance for a custom pattern.
+None,None,"Hey, I'm a potter and I need to calculate the shrinkage rate for these different clay bodies."
+None,None,Can you build a tool for my woodworking job? I want to know the wood movement based on humidity changes.
+None,None,I'm a graphic designer and I need to batch-export social media sizes from a master JSON.
+None,None,"Hey, I'm a photographer and I need a depth of field calculator for these apertures."
+None,None,Can you build a musician tool? I want to see my royalties per stream across 5 different platforms.
+None,None,I'm a writer and I want to track my daily word count goals and my streaks.
+None,None,"Hey, I'm a game developer and I want to generate procedural NPC quests from these templates."
+None,None,Can you build an app developer tool? I need to calculate app store fees and my net profit.
+None,None,I'm a web developer and I need to check for broken links on this 10-page local site map.
+None,None,"Hey, can you build a tool for a museum curator? I need to log accession numbers and storage locations for 100 new artifacts."
+None,None,Can you write a script for a public notary? I need to track my commission expiry and bond renewal dates.
+None,None,I'm a court reporter and I need a dictionary tool to manage my custom steno theory shortcuts.
+None,None,"Hey, I'm a patent agent and I need to track maintenance fee deadlines for our 50 patents."
+None,None,Can you build a tool for a home stager? I want to assign furniture items to specific floor plans.
+None,None,I'm an art appraiser and I need to calculate auction estimates based on recent sales.
+None,None,"Hey, I'm a wine importer and I need a logistics tool to track our customs clearance status."
+None,None,Can you build a case log for a private investigator? I want to timestamp my surveillance notes and photo paths.
+None,None,"I'm a bail bondsman and I need a collateral tracker for titles, jewelry, and cash deposits."
+None,None,"Hey, can you write a script for a process server to generate affidavits of service from a template?"
+None,None,Can you build a tool for a land use consultant? I need the floor area ratio for this city lot.
+None,None,I'm a title searcher and I need a deed tracker. Can you identify if any conveyance dates are out of order?
+None,None,"Hey, I'm a safety consultant and I need an audit tool. Can you score a job site based on these 20 OSHA points?"
+None,None,Can you build a tool for a waste management analyst? I need to calculate diversion rates for our 5 facilities.
+None,None,I'm a sustainability manager and I need to track our scope 1 and scope 2 emissions every month.
+None,None,"Hey, I'm a LEED project coordinator and I want to track our credit points for green building certs."
+None,None,Can you build a lead generator for my solar sales job? I want to estimate the payback period based on utility rates.
+None,None,I'm an HVAC contractor and I need to calculate a Manual J heat load for a 2000 sq ft house.
+None,None,"Hey, I'm a pool service tech and I need to calculate the Langelier Saturation Index for water balance."
+None,None,Can you build a tool for a pest control manager? I want to track bait station activity across a commercial complex.
+None,None,I'm a locksmith and I need a master-key system generator for a 10-room office.
+None,None,"Hey, I'm a glass blower and I need to track my annealing cooling schedules for different glass thicknesses."
+None,None,Can you build a jeweler tool? I need to calculate metal displacement when I'm casting custom rings.
+None,None,I'm a ceramicist and I need a material calculator for mixing 5-gallon batches of custom glazes.
+None,None,"Hey, I'm a luthier and I need a fret-spacing tool based on scale length and the number of frets."
+None,None,Can you write a script for a screen printer? I need to calculate ink coverage and cost per 100 shirts.
+None,None,"I'm a wood-turner and I need a project log. Can we record species, moisture, and the finish used?"
+None,None,"Hey, I'm a blacksmith and I need a material tracker for my steel and propane stock."
+None,None,Can you build a pattern-scaler for my leatherworking? I need to adjust dimensions for stitch allowances.
+None,None,I'm an upholsterer and I need a fabric estimator for a Chesterfield sofa vs a wingback.
+None,None,"Hey, I'm a tailor and I need a client measurement log for bespoke suits. Can we include shoulder slope?"
+None,None,Can you build a dressmaker tool? I need the circle skirt radius based on waist and fullness.
+None,None,I'm a costume designer and I need a character-plot tool. Can we tag outfits by scene and condition?
+None,None,"Hey, can you write a script for a shoemaker? I want to translate last measurements to standard shoe sizes."
+None,None,"Can you build a hat-size converter for my milliner job? I need it between inches, centimeters, and US/UK sizes."
+None,None,I'm a watchmaker and I need a timing log. Can we record the daily rate and positional error?
+None,None,"Hey, I'm a gunsmith and I need a bore-sighting tool. Can you calculate MOA adjustments at 100 yards?"
+None,None,Can you build a tool for an art restorer? I want to log the conservation steps I take on antique paintings.
+None,None,I'm a bookbinder and I need a signature-imposition tool for an 8-page or 16-page quarto.
+None,None,"Hey, I'm a calligrapher and I need a pen-angle guide. Can you visualize nib width ratios for Foundational script?"
+None,None,Can you build a character-set checklist for my type designer job? I need it for a basic Latin or Pro font.
+None,None,I'm a video game voice actor and I need to organize my take numbers and character tags.
+None,None,"Hey, I'm a music composer and I need a tool to calculate tempo changes for a film cue."
+None,None,Can you build a foley log for my sound designer job? I want to link audio paths to action tags like 'footsteps'.
+None,None,I'm a foley artist and I need a material list for my prop sounds like 'leather creak'.
+None,None,"Hey, I'm a lighting designer and I need to calculate DMX channel assignments for 50 fixtures."
+None,None,Can you build a stage manager tool? I want to track the running time for each act of our play.
+None,None,I'm a production assistant and I need to generate call sheets for a 5-day film shoot.
+None,None,"Hey, I'm a location scout and I need a photo log. Can we tag power availability and ambient noise levels?"
+None,None,Can you write a final Python script for a grip? I need to calculate the counterweight for a 10-foot camera crane.
+None,None,"Hey, I'm trying to build a landing page for my new SaaS. Can you set up a hero section with Next.js and Tailwind that has a nice 'join waitlist' button?"
+None,None,I'm working on a subscription app and I need to integrate Stripe. Can you write a basic server-side handler in Node.js to create a checkout session?
+None,None,Can you help me with my Next.js project? I need a way to protect my '/dashboard' route so only logged-in users can see it using middleware.
+None,None,I'm building a simple blog with Vite and React. Can you make a component that fetches posts from a JSON file and displays them in a clean grid?
+None,None,"Hey, I need a pricing table for my app. Can you make it responsive with Tailwind? I need three tiers: Free, Pro, and Enterprise."
+None,None,I'm using Supabase for my backend and I need a script to handle user sign-ups. Can you write the client-side logic in TypeScript?
+None,None,Can you build a 'Dark Mode' toggle for my Next.js site? I want it to persist in local storage so it remembers the user's choice.
+None,None,I'm building a documentation site and I need a searchable sidebar. Can you write a simple React component for that?
+None,None,"Hey, can you help me with a Flask app? I need a route that accepts a file upload and saves it to a specific directory."
+None,None,I'm trying to optimize my site's SEO. Can you generate a dynamic sitemap.xml for my Next.js app?
+None,None,Can you build a contact form for my startup's website? I want it to validate the email address and show a success message after submitting.
+None,None,I'm working on a SaaS and I need a dashboard sidebar that collapses on mobile. Can you write the Tailwind classes for that?
+None,None,"Hey, I need to fetch some data from an external API in my React app. Can you write a custom hook that handles loading and error states?"
+None,None,I'm building a real-time chat feature. Can you set up a basic WebSocket server in Node.js for me?
+None,None,Can you help me with my Django project? I need to create a custom user model that uses email instead of a username for login.
+None,None,I'm using Tailwind and I want to create a 'Glassmorphism' effect for my login card. Can you give me the CSS classes for that?
+None,None,"Hey, can you build a countdown timer for my product launch page? I want it to show days, hours, minutes, and seconds."
+None,None,I'm working on a multi-tenant app. Can you write a script to handle subdomains and route them to different account data?
+None,None,Can you help me set up a CI/CD pipeline for my GitHub repo? I just need a simple action that runs my tests on every push.
+None,None,I'm building a portfolio and I want to use Framer Motion for some entrance animations. Can you show me how to animate my project cards?
+None,None,"Hey, I need a database schema for a simple task management app. Can you give me the SQL to create users, projects, and tasks?"
+None,None,I'm working on a Next.js app and my images are loading slowly. Can you help me set up the 'next/image' component to optimize them?
+None,None,Can you build a simple 'forgot password' flow? I need the backend logic to generate a secure token and send an email (mocked).
+None,None,I'm building a marketplace and I need a search bar with auto-suggestions. Can you write the frontend logic in React?
+None,None,"Hey, can you help me with a Ruby on Rails app? I need to set up an association where a 'User' has many 'Orders'."
+None,None,I'm trying to add a 'copy to clipboard' button for my referral codes. Can you write the JavaScript for that?
+None,None,Can you build a newsletter sign-up popup that only shows after the user has been on the site for 30 seconds?
+None,None,I'm working on a SaaS and I need a way to track user events like 'button clicks'. Can you write a simple analytics wrapper?
+None,None,"Hey, I need a footer for my website. Can you make it with Tailwind and include sections for 'Company', 'Product', and 'Social'?"
+None,None,I'm building a tool for developers. Can you write a script that generates a random API key for new users?
+None,None,Can you help me with a Laravel project? I need to set up a middleware that checks if a user is an administrator.
+None,None,I'm trying to implement 'infinite scroll' for my product list. Can you write the logic for that in React?
+None,None,"Hey, I need to parse a large CSV file in my Node.js app and insert the data into a database. Can you show me how to do that efficiently?"
+None,None,I'm building a dashboard and I need a line chart to show our monthly revenue. Can you use Chart.js for that?
+None,None,Can you help me set up a Dockerfile for my Go application? I want it to be a multi-stage build to keep the image size small.
+None,None,I'm working on a SaaS and I need a way to invite team members. Can you write the backend logic to generate an invite link?
+None,None,"Hey, I need a 'sticky' header that changes background color when the user scrolls down. Can you write the JavaScript and CSS?"
+None,None,I'm building a simple CRM and I need a way to filter leads by their status. Can you write the frontend logic in TypeScript?
+None,None,Can you help me with a Spring Boot app? I need to create a REST endpoint that returns a list of products in JSON format.
+None,None,I'm trying to add a 'Share to Twitter' button to my blog posts. Can you give me the URL format and the icon code?
+None,None,"Hey, I need a way to handle multi-language support in my Next.js app. Can you show me how to use 'next-intl'?"
+None,None,I'm building a SaaS and I need a 'User Profile' page where they can update their avatar. Can you write the frontend and backend logic?
+None,None,Can you help me set up a Redis cache for my Python app? I want to store the results of some slow database queries.
+None,None,I'm working on a project with Vite and I need to proxy my API requests to a local server. Can you show me the config?
+None,None,"Hey, I need a 'Load More' button for my blog. Can you write the logic to fetch the next page of results?"
+None,None,I'm building a tool that generates PDFs. Can you show me how to use 'puppeteer' in Node.js to turn an HTML page into a PDF?
+None,None,Can you help me with a Go project? I need to implement a basic rate limiter for my API.
+None,None,I'm trying to add a 'Feedback' widget to my site that slides in from the bottom right. Can you write the CSS and JS?
+None,None,"Hey, I need to encrypt some sensitive data before saving it to my database. Can you show me how to use AES-256 in Node.js?"
+None,None,I'm building a SaaS and I need a way to manage user permissions. Can you write a simple 'can_view' function that checks their role?
+None,None,Can you help me set up a 'Stripe Customer Portal' so my users can manage their own subscriptions?
+None,None,I'm working on a Next.js app and I need to add some custom fonts. Can you show me how to use 'next/font'?
+None,None,"Hey, I need a 'Breadcrumbs' component for my site. Can you make it responsive and accessible?"
+None,None,I'm building a real-time dashboard and I need to update some stats every 10 seconds. Can you write the 'useEffect' hook for that?
+None,None,Can you help me with a Rust project? I need to read a configuration file in YAML format.
+None,None,I'm trying to add a 'Typewriter' effect to my hero text. Can you write the CSS animation for that?
+None,None,"Hey, I need a way to handle '404' errors in my Next.js app with a custom design. Can you show me where to put the file?"
+None,None,I'm building a SaaS and I need a 'Terms of Service' generator based on a simple template. Can you write the script for that?
+None,None,Can you help me set up a 'PostgreSQL' database in a Docker Compose file along with my web app?
+None,None,I'm working on a project with Tailwind and I need a 'Mega Menu' that shows up on hover. Can you write the classes?
+None,None,"Hey, I need to validate a credit card number using the Luhn algorithm. Can you write the JavaScript function for that?"
+None,None,I'm building a tool that scrapes data from a website. Can you show me how to use 'Cheerio' in Node.js?
+None,None,Can you help me with a Django project? I need to set up 'Django Rest Framework' for my models.
+None,None,I'm trying to add a 'Drag and Drop' file uploader to my site. Can you write the logic using the HTML5 API?
+None,None,"Hey, I need a 'Skeleton Loader' for my data-heavy cards. Can you make it with Tailwind?"
+None,None,I'm building a SaaS and I need a way to track my 'MRR' (Monthly Recurring Revenue). Can you write a script to calculate it from a list of subscriptions?
+None,None,Can you help me set up a 'Cypress' test for my login page?
+None,None,I'm working on a Next.js app and I need to use 'Server Actions'. Can you show me how to submit a form without a separate API route?
+None,None,"Hey, I need a 'Rating' component (stars) for my product reviews. Can you make it interactive with React?"
+None,None,I'm building a simple CLI tool in Node.js and I need to parse command-line arguments. Can you show me how to use 'commander'?
+None,None,Can you help me with a Java project? I need to sort a list of objects by a specific property.
+None,None,I'm trying to add a 'Scroll to Top' button that only appears after the user has scrolled down 500px.
+None,None,"Hey, I need a 'Modal' component for my React app. Can you make it accessible and handle closing when the 'Esc' key is pressed?"
+None,None,I'm building a SaaS and I need a 'Team Dashboard' where owners can see their members' activity.
+None,None,Can you help me set up 'Sentry' for error tracking in my JavaScript app?
+None,None,I'm working on a project with Tailwind and I need a 'Gradient Text' effect. Can you give me the utility classes?
+None,None,"Hey, I need to format some dates into 'time ago' strings (e.g., '2 hours ago'). Can you write the function?"
+None,None,I'm building a tool that generates social media images. Can you show me how to use 'canvas' in Node.js?
+None,None,Can you help me with a C# project? I need to connect to a SQL Server database and run a simple query.
+None,None,I'm trying to add a 'Progress Bar' at the top of my blog posts that shows how much the user has read.
+None,None,"Hey, I need a 'Tabs' component for my dashboard. Can you make it accessible and keyboard-navigable?"
+None,None,I'm building a SaaS and I need a 'Referral Program' tracker. Can you write the logic to link a new user to their referrer?
+None,None,Can you help me set up 'Prettier' and 'ESLint' for my TypeScript project?
+None,None,I'm working on a Next.js app and I need to fetch data on the server. Can you show me how to use 'fetch' in a Server Component?
+None,None,"Hey, I need a 'Tooltip' component that shows up on hover. Can you make it with pure CSS?"
+None,None,I'm building a tool that manages project tasks. Can you write a script to move a task from 'To Do' to 'Done'?
+None,None,Can you help me with a Go project? I need to handle JSON requests and responses in my web server.
+None,None,I'm trying to add a 'Copy to Clipboard' button for my code snippets. Can you show me how to use the 'navigator.clipboard' API?
+None,None,"Hey, I need a 'Pagination' component for my search results. Can you write the logic for the 'Previous' and 'Next' buttons?"
+None,None,I'm building a SaaS and I need a 'Billing' page where users can see their invoice history.
+None,None,Can you help me set up 'GitHub Actions' to deploy my site to Vercel?
+None,None,I'm working on a project with Tailwind and I need a 'Responsive Table' that scrolls horizontally on small screens.
+None,None,"Hey, I need a way to handle 'loading' states globally in my React app. Can you show me how to use a context provider?"
+None,None,I'm building a tool that compresses images. Can you show me how to use 'sharp' in Node.js?
+None,None,Can you help me with a Python project? I need to create a virtual environment and install some dependencies.
+None,None,I'm trying to add a 'Live Search' filter to my list of users. Can you write the frontend logic?
+None,None,"Hey, I need a 'Dropdown' menu that closes when the user clicks outside of it. Can you write the React hook for that?"
+None,None,I'm building a SaaS and I need a 'Welcome Email' template. Can you write the HTML and inline CSS?
+None,None,Can you help me set up 'Tailwind CSS' in a new Vite project?
+None,None,I'm working on a Next.js app and I need to handle form validation. Can you show me how to use 'react-hook-form'?
+None,None,I'm thinking about building a small distributed cache in Go. Can you help me sketch out the basic node structure and a simple consistent hashing function to get started?
+None,None,I need a fast way to parse logs. Can we write a Rust program that reads from stdin and prints out lines containing 'ERROR' in red?
+None,None,I'm starting a new Java project and I want to use Gradle. Can you set up a basic build.gradle file and a 'Hello World' main class for me?
+None,None,I want to experiment with a custom memory allocator in C. Can you write a basic 'malloc' and 'free' implementation that uses a fixed-size buffer?
+None,None,I'm planning to build a high-performance web server. Can you show me how to set up an epoll-based event loop in C++?
+None,None,I need to automate my project's builds. Can you write a Makefile that compiles all .c files in the current directory into an executable called 'app'?
+None,None,I'm building a CLI tool in Python to manage my TODOs. Can you write a script that stores them in a local SQLite database?
+None,None,I want to try out the new Swift macros. Can you show me how to create a simple macro that generates a 'description' property for a struct?
+None,None,I'm starting a SaaS and I need a robust API. Can you scaffold a basic Go Gin server with a middleware for logging request times?
+None,None,I need a script to monitor my server's health. Can you write a Python script that checks disk usage and sends a warning if it's over 90%?
+None,None,I'm interested in how containers work. Can you write a simple C program that uses 'clone' and 'unshare' to start a process in a new namespace?
+None,None,I want to build a simple key-value store with an HTTP interface. Can you use Rust and the Axum framework to set that up?
+None,None,I'm planning to write a ray tracer in C++. Can you help me set up a basic 'vec3' class with common math operations like dot and cross products?
+None,None,I need to process a bunch of JSON files. Can you write a Go script that reads all .json files in a folder and prints the value of a specific key?
+None,None,I'm starting a new project with C# and I want to use a CLI. Can you write a basic 'Program.cs' that uses an argument parser to handle 'start' and 'stop' commands?
+None,None,I want to build a simple load balancer. Can you write a Python script that uses 'sockets' to forward incoming traffic to a list of backend servers?
+None,None,I'm learning about operating systems. Can you help me write a very basic 'bootloader' in x86 assembly that just prints 'Hello' to the screen?
+None,None,I need a way to track my crypto portfolio. Can you write a Python script that fetches prices from a public API and prints my total balance?
+None,None,I'm building a tool to visualize network traffic. Can you show me how to capture packets using 'libpcap' in C?
+None,None,I want to create a simple neural network from scratch. Can you write a Python script that implements a single neuron with a sigmoid activation function?
+None,None,I need to generate some mock data for my database. Can you write a Go script that creates a CSV file with 1000 rows of random names and emails?
+None,None,I'm planning to build a terminal-based text editor. Can you show me how to switch the terminal to 'raw mode' using C and termios?
+None,None,I want to try out some systems programming in Zig. Can you write a simple 'hello world' that also prints the current OS and architecture?
+None,None,I need a tool to sync files between two directories. Can you write a Python script that uses 'os.walk' to find and copy missing files?
+None,None,I'm interested in cryptography. Can you help me implement a basic RSA encryption and decryption routine in Python?
+None,None,I want to build a simple game engine. Can you show me how to create a window using 'SDL2' in C++?
+None,None,I need to parse some binary files with a specific header. Can you write a Rust script that uses the 'nom' crate to define a simple parser?
+None,None,I'm starting a new microservice in Java. Can you set up a basic 'Spring Boot' project structure with a single REST controller?
+None,None,"I want to build a simple shell. Can you write a C program that reads a line of input, forks a new process, and executes the command?"
+None,None,I need a way to manage my environment variables. Can you write a Python script that reads a '.env' file and prints them out as a JSON object?
+None,None,I'm planning to build a small database. Can you help me implement a basic B-tree in Go?
+None,None,I want to create a custom dynamic library. Can you show me how to write a simple C file and compile it into a .so or .dll?
+None,None,I need to benchmark some code. Can you write a Python script that uses 'timeit' to compare the performance of two different sorting algorithms?
+None,None,I'm building a tool to analyze my git history. Can you write a Go script that uses 'os/exec' to run 'git log' and count the number of commits per author?
+None,None,I want to try out some functional programming in Haskell. Can you write a simple function that calculates the nth Fibonacci number?
+None,None,I need a way to compress some text data. Can you help me implement a basic Huffman coding algorithm in Python?
+None,None,I'm planning to build a simple blockchain. Can you write a Rust script that defines a 'Block' struct and a function to calculate its SHA-256 hash?
+None,None,I want to create a custom language. Can you show me how to write a basic lexer in C++ that recognizes numbers and operators?
+None,None,I need to automate my deployments using SSH. Can you write a Python script that uses 'paramiko' to run a command on a remote server?
+None,None,I'm interested in game development. Can you help me write a simple 'A*' pathfinding algorithm in C#?
+None,None,I want to build a simple FTP client. Can you show me how to connect to a server and list files using 'sockets' in Python?
+None,None,I need to parse some XML data. Can you write a Go script that uses the 'encoding/xml' package to unmarshal a simple XML string into a struct?
+None,None,I'm starting a new project with Rust and I want to use a database. Can you help me set up a basic 'SQLx' configuration with SQLite?
+None,None,I want to create a simple chat application. Can you write a Python script that uses 'threading' to handle multiple client connections on a server?
+None,None,"I need to generate a UUID. Can you show me how to do that in several different languages like Python, Go, and Java?"
+None,None,I'm planning to build a simple virtual machine. Can you help me define a small instruction set and write an emulator loop in C?
+None,None,I want to try out some web assembly. Can you show me how to compile a simple C++ function into a .wasm file?
+None,None,I need a way to track system resources. Can you write a Go script that uses the 'gopsutil' library to print CPU and memory usage?
+None,None,I'm interested in compilers. Can you help me write a basic recursive descent parser for simple arithmetic expressions in Python?
+None,None,I want to build a simple DNS resolver. Can you show me how to construct and send a DNS query packet using Python and 'sockets'?
+None,None,I need a way to manage my secrets. Can you write a script in Go that uses AES-GCM to encrypt a string with a password?
+None,None,I'm starting a new project with C++ and I want to use 'vcpkg'. Can you show me how to create a simple 'vcpkg.json' file and a CMakeLists.txt that uses it?
+None,None,I want to build a simple image processing tool. Can you write a Python script that uses 'PIL' to resize an image and convert it to grayscale?
+None,None,I need a way to handle signals. Can you write a C program that catches 'SIGINT' and prints a message instead of exiting?
+None,None,I'm planning to build a small web framework. Can you help me write a basic 'Router' class in Python that maps URLs to functions?
+None,None,I want to try out some concurrent programming in Elixir. Can you write a simple 'Hello World' using processes and message passing?
+None,None,I need to parse a config file in TOML format. Can you write a Rust script that uses 'toml' and 'serde' to read a file into a struct?
+None,None,I'm interested in networking. Can you help me write a simple 'ping' implementation in C using raw sockets?
+None,None,I want to build a simple task runner. Can you write a Go script that reads a 'tasks.json' file and executes the commands in parallel?
+None,None,"I need a way to generate a random password. Can you write a Python script that creates a secure 16-character password with letters, numbers, and symbols?"
+None,None,I'm planning to build a simple Lisp interpreter. Can you help me write the basic 'eval' function in Python?
+None,None,I want to try out some low-level programming on an Arduino. Can you write a simple 'Blink' sketch in C++?
+None,None,I need to parse some Markdown files. Can you write a Go script that uses a library to convert a Markdown string into HTML?
+None,None,"I'm interested in physics simulations. Can you help me write a simple 'particle' class in C++ with position, velocity, and an 'update' method?"
+None,None,I want to build a simple weather app. Can you write a Python script that fetches the current temperature for a given city from an API?
+None,None,I need a way to track my expenses. Can you write a simple Java program that saves transactions to a text file?
+None,None,I'm planning to build a small search engine. Can you help me implement a basic 'TF-IDF' calculation in Python?
+None,None,I want to try out some system administration. Can you write a bash script that rotates some log files and keeps only the last 5?
+None,None,I need to parse some Protobuf messages. Can you show me how to define a simple .proto file and generate the Go code?
+None,None,I'm interested in distributed systems. Can you help me implement a simple 'Raft' leader election state machine in Python?
+None,None,I want to build a simple music player. Can you show me how to play a .wav file using 'miniaudio' in C?
+None,None,I need a way to generate a QR code. Can you write a Python script that uses a library to create a QR code for a given URL?
+None,None,I'm planning to build a simple data visualizer. Can you show me how to create a basic scatter plot using 'matplotlib' in Python?
+None,None,I want to try out some socket programming in Ruby. Can you write a simple TCP server and client that exchange messages?
+None,None,I need to parse some YAML data. Can you write a Go script that uses the 'gopkg.in/yaml.v3' package to read a file?
+None,None,I'm interested in kernel programming. Can you show me how to write a simple 'Hello World' kernel module for Linux in C?
+None,None,I want to build a simple file explorer. Can you write a Python script that uses 'curses' to display a list of files in a directory?
+None,None,I need a way to calculate the SHA-256 hash of a file. Can you show me how to do that in Go?
+None,None,I'm planning to build a simple chat bot. Can you write a Python script that uses 'regex' to match certain patterns in a message and respond accordingly?
+None,None,I want to try out some parallel programming with OpenMP. Can you write a simple C++ program that calculates a sum in parallel?
+None,None,I need to parse some CSS files. Can you write a Rust script that uses a library to extract all the selectors from a CSS string?
+None,None,I'm interested in computer vision. Can you help me write a simple 'face detection' script using 'OpenCV' and Python?
+None,None,I want to build a simple password manager. Can you write a Go script that stores encrypted passwords in a local file?
+None,None,I need a way to generate a random color. Can you write a Python script that returns a random hex color code?
+None,None,I'm planning to build a simple web crawler. Can you help me write a Python script that follows all links on a given page?
+None,None,I want to try out some graphics programming with OpenGL. Can you show me how to draw a simple triangle in C++?
+None,None,I need to parse some BibTeX files. Can you write a Python script that uses a library to extract the titles and authors?
+None,None,I'm interested in robotics. Can you help me write a simple 'PID controller' in C++?
+None,None,I want to build a simple unit testing framework. Can you show me how to write a basic 'assert' macro in C?
+None,None,"I need a way to generate a random number within a range. Can you show me how to do that in Rust, Swift, and Go?"
+None,None,I'm planning to build a simple markdown-to-pdf converter. Can you help me write a Python script that uses 'pandoc'?
+None,None,I want to try out some database programming with PostgreSQL. Can you write a simple C program that connects and executes a 'SELECT' query?
+None,None,I need to parse some HTML files. Can you write a Go script that uses the 'golang.org/x/net/html' package to extract all the links?
+None,None,I'm interested in audio processing. Can you help me write a simple 'sine wave generator' in Python and save it as a .wav file?
+None,None,I want to build a simple command-line calculator. Can you write a C# program that evaluates basic expressions like '10 + 5'?
+None,None,I need a way to generate a random date. Can you write a Python script that returns a random date within the last year?
+None,None,I'm planning to build a simple static site generator. Can you help me write a Go script that converts a directory of Markdown files into HTML?
+None,None,I want to try out some network programming with UDP. Can you write a simple UDP server and client in Python?
+None,None,I need to parse some JSON data from a URL. Can you show me how to do that in Java using 'HttpURLConnection'?
+None,None,I'm interested in machine learning. Can you help me write a simple 'linear regression' script in Python using 'numpy'?
