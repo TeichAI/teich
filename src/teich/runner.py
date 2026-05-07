@@ -1402,12 +1402,162 @@ class ChatRunner(DockerRuntimeRunner):
         destination.write_text(json.dumps(training_row, ensure_ascii=False) + "\n", encoding="utf-8")
         return destination
 
+    def _metrics_from_training_row(self, training_row: dict[str, Any]) -> TraceMetrics:
+        metrics = TraceMetrics()
+        provider = training_row.get("provider")
+        if isinstance(provider, str) and provider.strip():
+            metrics.provider = provider.strip()
+        model = training_row.get("model")
+        if isinstance(model, str) and model.strip():
+            metrics.model = model.strip()
+        usage = training_row.get("usage")
+        if isinstance(usage, dict):
+            metrics.add_structured_usage(usage)
+        metrics.finalize()
+        return metrics
+
+    def _run_chat_prompt_task(
+        self,
+        prompt_id: str,
+        prompt_index: int,
+        total_prompts: int,
+        prompt_input: PromptInput,
+        destination: Path,
+        progress_callback: SessionProgressCallback | None,
+    ) -> tuple[int, dict[str, Any]]:
+        session_id = str(uuid.uuid4())
+        started_at = datetime.now(timezone.utc)
+        prompt_preview = self._prompt_preview(prompt_input.prompt)
+        if progress_callback:
+            progress_callback(
+                SessionProgressUpdate(
+                    prompt_id=prompt_id,
+                    prompt_index=prompt_index,
+                    total_prompts=total_prompts,
+                    prompt=prompt_input.prompt,
+                    prompt_preview=prompt_preview,
+                    status="running",
+                    session_id=session_id,
+                    started_at=started_at,
+                )
+            )
+        try:
+            if self.config.mcp_servers:
+                raise RuntimeError("Chat runner does not support mcp_servers.")
+            if prompt_input.github_repo:
+                raise RuntimeError("Chat runner does not support github_repo prompt inputs.")
+            training_row = self._request_chat_completion(prompt_input.prompt)
+            if progress_callback:
+                progress_callback(
+                    SessionProgressUpdate(
+                        prompt_id=prompt_id,
+                        prompt_index=prompt_index,
+                        total_prompts=total_prompts,
+                        prompt=prompt_input.prompt,
+                        prompt_preview=prompt_preview,
+                        status="completed",
+                        session_id=session_id,
+                        started_at=started_at,
+                        finished_at=datetime.now(timezone.utc),
+                        trace_path=destination,
+                        metrics=self._metrics_from_training_row(training_row),
+                    )
+                )
+            return prompt_index, training_row
+        except Exception as exc:
+            if progress_callback:
+                progress_callback(
+                    SessionProgressUpdate(
+                        prompt_id=prompt_id,
+                        prompt_index=prompt_index,
+                        total_prompts=total_prompts,
+                        prompt=prompt_input.prompt,
+                        prompt_preview=prompt_preview,
+                        status="failed",
+                        session_id=session_id,
+                        started_at=started_at,
+                        finished_at=datetime.now(timezone.utc),
+                        error=str(exc),
+                    )
+                )
+            raise
+
     def run_all(
         self,
         max_concurrency: int = 1,
         progress_callback: SessionProgressCallback | None = None,
     ) -> list[Path]:
-        return super().run_all(max_concurrency=max_concurrency, progress_callback=progress_callback)
+        prompt_inputs = self.config.get_prompt_inputs()
+        if not prompt_inputs:
+            raise ValueError("No prompts configured")
+
+        destination = self._resolve_output_path("chat.jsonl")
+        total_prompts = len(prompt_inputs)
+        worker_count = max(1, min(max_concurrency, total_prompts))
+        for prompt_index, prompt_input in enumerate(prompt_inputs, start=1):
+            if progress_callback:
+                progress_callback(
+                    SessionProgressUpdate(
+                        prompt_id=f"prompt-{prompt_index}",
+                        prompt_index=prompt_index,
+                        total_prompts=total_prompts,
+                        prompt=prompt_input.prompt,
+                        prompt_preview=self._prompt_preview(prompt_input.prompt),
+                        status="queued",
+                    )
+                )
+
+        rows_by_index: dict[int, dict[str, Any]] = {}
+        errors: list[Exception] = []
+        if worker_count == 1:
+            for prompt_index, prompt_input in enumerate(prompt_inputs, start=1):
+                try:
+                    row_index, training_row = self._run_chat_prompt_task(
+                        f"prompt-{prompt_index}",
+                        prompt_index,
+                        total_prompts,
+                        prompt_input,
+                        destination,
+                        progress_callback,
+                    )
+                    rows_by_index[row_index] = training_row
+                except Exception as exc:
+                    errors.append(exc)
+            if errors:
+                raise errors[0]
+        else:
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                futures = {
+                    executor.submit(
+                        self._run_chat_prompt_task,
+                        f"prompt-{prompt_index}",
+                        prompt_index,
+                        total_prompts,
+                        prompt_input,
+                        destination,
+                        progress_callback,
+                    ): prompt_index
+                    for prompt_index, prompt_input in enumerate(prompt_inputs, start=1)
+                }
+                for future in as_completed(futures):
+                    try:
+                        row_index, training_row = future.result()
+                        rows_by_index[row_index] = training_row
+                    except Exception as exc:
+                        errors.append(exc)
+
+            if errors:
+                raise errors[0]
+
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(
+            "".join(
+                json.dumps(rows_by_index[index], ensure_ascii=False) + "\n"
+                for index in range(1, total_prompts + 1)
+            ),
+            encoding="utf-8",
+        )
+        return [destination]
 
 
 class PiRunner(DockerRuntimeRunner):

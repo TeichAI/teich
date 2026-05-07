@@ -845,6 +845,46 @@ def test_chat_runner_writes_structured_dataset_row_from_responses_api(tmp_path: 
     assert request.full_url == "https://api.openai.com/v1/responses"
 
 
+def test_chat_runner_run_all_writes_one_dataset_file_with_all_rows(tmp_path: Path):
+    config = Config(
+        agent={"provider": "chat"},
+        model=ModelConfig(model="gpt-4.1-mini"),
+        api=APIConfig(provider="openai", api_key="sk-test", wire_api="responses"),
+        prompts=["Hello", "Who are you?"],
+        output={"traces_dir": tmp_path / "output"},
+    )
+    runner = ChatRunner(config)
+    updates = []
+
+    def fake_completion(prompt: str) -> dict[str, object]:
+        return {
+            "messages": [
+                {"role": "system", "content": "You are a helpful assistant", "thinking": None},
+                {"role": "user", "content": prompt, "thinking": None},
+                {"role": "assistant", "content": f"Response to {prompt}", "thinking": None},
+            ],
+            "system": "You are a helpful assistant",
+            "prompt": prompt,
+            "thinking": None,
+            "response": f"Response to {prompt}",
+            "model": "gpt-4.1-mini",
+            "provider": "openai",
+            "usage": {"input": 1, "output": 2, "reasoning": 0, "totalTokens": 3},
+            "metadata": {"trace_type": "chat", "model_provider": "openai", "model": "gpt-4.1-mini"},
+        }
+
+    with patch.object(runner, "_request_chat_completion", side_effect=fake_completion):
+        results = runner.run_all(max_concurrency=2, progress_callback=updates.append)
+
+    assert results == [tmp_path / "output" / "chat.jsonl"]
+    assert sorted(path.name for path in (tmp_path / "output").glob("*.jsonl")) == ["chat.jsonl"]
+    rows = [json.loads(line) for line in results[0].read_text(encoding="utf-8").splitlines()]
+    assert [row["prompt"] for row in rows] == ["Hello", "Who are you?"]
+    assert [update.status for update in updates].count("queued") == 2
+    assert [update.status for update in updates].count("completed") == 2
+    assert all(update.trace_path == results[0] for update in updates if update.status == "completed")
+
+
 def test_pi_runner_init_uses_shared_runtime_image():
     with patch.object(PiRunner, '_ensure_image') as mock_ensure:
         runner = PiRunner(Config(agent={"provider": "pi"}))

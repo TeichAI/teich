@@ -492,6 +492,7 @@ def _mask_with_path(
                 True,
                 effective_max_length,
                 True,
+                False,
             ),
         ),
     ]
@@ -512,6 +513,7 @@ def _mask_with_path(
             True,
             effective_max_length,
             True,
+            False,
         ),
     )
 

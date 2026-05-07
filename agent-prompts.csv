@@ -1,4 +1,5 @@
 image,github_repo,prompt
+
 None,None,"Hey, I need a quick backup verifier script. It should check if our daily DB dump file exists and alert us if the file size has changed by more than 10% compared to yesterday. I want to make sure the backups aren't suddenly empty or huge."
 None,None,"Can you help me with a collateral tracker for my bail bonds business? I need to log titles, jewelry, and cash deposits against different case numbers."
 None,None,I'm a baker and I'm tired of doing math in my head. Can you build a tool that calculates baker's percentages for my sourdough recipes? I usually have about 5 different ones I work with.

@@ -315,6 +315,30 @@ class NonPrefixStableTokenizer(FakeTokenizer):
         return rendered
 
 
+class MarkerSensitiveOffsetTokenizer(OffsetCountingTokenizer):
+    def apply_chat_template(
+        self,
+        messages,
+        *,
+        tokenize=False,
+        add_generation_prompt=False,
+        tools=None,
+        **kwargs,
+    ):
+        rendered = super().apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=add_generation_prompt,
+            tools=tools,
+            **kwargs,
+        )
+        if "\ue000AGD" in rendered:
+            rendered += "<marker-side-effect>"
+        if tokenize:
+            return self(rendered)
+        return rendered
+
+
 def test_format_and_mask_supervises_only_assistant_turns_across_multi_turn_conversation():
     tokenizer = FakeTokenizer()
     dataset = Dataset.from_list(
@@ -754,7 +778,7 @@ def test_format_and_mask_uses_single_render_offset_mask_path_when_offsets_are_av
     assert "<system>system rules</system>" in masked_text
     assert "<user>first request</user>" in masked_text
     assert "<tool>file_a.py</tool>" in masked_text
-    assert tokenizer.render_count == 5
+    assert tokenizer.render_count == 6
 
 
 def test_format_and_mask_masks_qwen_generation_prompt_prefix_but_supervises_generated_wrappers():
@@ -801,7 +825,7 @@ def test_format_and_mask_masks_qwen_generation_prompt_prefix_but_supervises_gene
     )
     assert "<|im_start|>assistant\n<think>\n" in masked_text
     assert "first request" in masked_text
-    assert tokenizer.render_count == 3
+    assert tokenizer.render_count == 4
 
 
 def test_format_and_mask_uses_gemma_structured_mask_path():
@@ -1101,3 +1125,21 @@ def test_format_and_mask_raises_when_all_rows_have_empty_message_lists():
 
     with pytest.raises(ValueError, match="no non-empty conversations"):
         format_and_mask(dataset, tokenizer)
+
+
+def test_format_and_mask_strict_rejects_marker_render_mismatch():
+    tokenizer = MarkerSensitiveOffsetTokenizer()
+    dataset = Dataset.from_list(
+        [
+            {
+                "messages": [
+                    {"role": "user", "content": "hello"},
+                    {"role": "assistant", "content": "world", "reasoning_content": "think"},
+                ],
+                "tools": [],
+            }
+        ]
+    )
+
+    with pytest.raises(ValueError, match="Marker-injected chat template output"):
+        format_and_mask(dataset, tokenizer, strict=True)

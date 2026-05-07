@@ -745,6 +745,7 @@ def _offset_mask_row(
     train_on_reasoning: bool,
     max_length: int | None,
     include_debug_columns: bool,
+    strict: bool,
 ) -> dict[str, Any] | None:
     if not _supports_offsets(text_tokenizer):
         return None
@@ -755,12 +756,19 @@ def _offset_mask_row(
         chat_template_kwargs,
         assistant_prompt_prefix_cache,
     )
+    original_text = _render_chat(renderer, messages, tools, chat_template_kwargs)
     marked_messages, markers = _mark_supervised_messages(messages, train_on_reasoning=train_on_reasoning)
     marked_text = _render_chat(renderer, marked_messages, tools, chat_template_kwargs)
     stripped = _strip_markers_and_collect_spans(marked_text, markers)
     if stripped is None:
+        if strict:
+            raise ValueError("Unable to collect supervised spans from marker-injected chat template output.")
         return None
     formatted_text, supervised_spans = stripped
+    if formatted_text != original_text:
+        if strict:
+            raise ValueError("Marker-injected chat template output does not match the original rendered chat after marker removal.")
+        return None
     supervised_spans = _expand_supervised_spans(
         formatted_text,
         supervised_spans,
@@ -804,6 +812,7 @@ def _mask_row(
     train_on_reasoning: bool,
     max_length: int | None,
     include_debug_columns: bool,
+    strict: bool,
 ) -> dict[str, Any]:
     messages = row.get(messages_column)
     if not isinstance(messages, list):
@@ -848,6 +857,7 @@ def _mask_row(
         train_on_reasoning,
         max_length,
         include_debug_columns,
+        strict,
     )
     if offset_path is not None:
         return offset_path
@@ -953,6 +963,7 @@ def format_and_mask(
     max_length: int | None = None,
     include_debug_columns: bool = False,
     drop_oversized_examples: bool = True,
+    strict: bool = False,
 ) -> Dataset:
     if isinstance(dataset, Sequence) and not isinstance(dataset, Dataset):
         datasets = list(dataset)
@@ -975,6 +986,7 @@ def format_and_mask(
                         max_length=max_length,
                         include_debug_columns=include_debug_columns,
                         drop_oversized_examples=drop_oversized_examples,
+                        strict=strict,
                     )
                 )
             training_data = concatenate_datasets(formatted_datasets)
@@ -1038,6 +1050,7 @@ def format_and_mask(
                 train_on_reasoning,
                 None if drop_oversized_examples else effective_max_length,
                 include_debug_columns,
+                strict,
             )
 
             if drop_oversized_examples and effective_max_length is not None:
