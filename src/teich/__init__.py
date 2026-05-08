@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-__version__ = "0.1.1a25"
+__version__ = "0.1.1a26"
 
 from .audit import SFTAuditReport, audit_sft_dataset, audit_sft_trainer_batch
 from .collator import TeichDataCollator
