@@ -5,7 +5,7 @@ from unsloth import FastLanguageModel
 import torch
 from trl import SFTConfig, SFTTrainer
 
-from teich import prepare_sft_dataset
+from teich import mask_data, prepare_data
 
 
 MAX_SEQ_LEN = 32768
@@ -37,7 +37,7 @@ model = FastLanguageModel.get_peft_model(
     loftq_config=None,
 )
 
-prepared = prepare_sft_dataset(
+train_dataset = prepare_data(
     "TeichAI/lordx64-claude-opus-4.7-max-cleaned",
     tokenizer,
     split="train",
@@ -45,18 +45,20 @@ prepared = prepare_sft_dataset(
     chat_template_kwargs=CHAT_TEMPLATE_KWARGS,
     train_on_reasoning=TRAIN_ON_REASONING,
     max_length=MAX_SEQ_LEN,
+    drop_oversized_examples=True,
     strict=True,
 )
-print(prepared.preview())
 
 trainer = SFTTrainer(
     model=model,
     tokenizer=tokenizer,
-    train_dataset=prepared.dataset,
+    train_dataset=train_dataset,
     eval_dataset=None,
-    data_collator=prepared.collator,
     args=SFTConfig(
-        **prepared.sft_config_kwargs,
+        dataset_text_field="text",
+        dataset_num_proc=1,
+        max_length=MAX_SEQ_LEN,
+        packing=False,
         per_device_train_batch_size=1,
         gradient_accumulation_steps=4,
         warmup_steps=5,
@@ -72,6 +74,7 @@ trainer = SFTTrainer(
         report_to="none",
     ),
 )
+trainer = mask_data(trainer, tokenizer=tokenizer)
 
 gpu_stats = torch.cuda.get_device_properties(0)
 start_gpu_memory = round(torch.cuda.max_memory_reserved() / 1024 / 1024 / 1024, 3)

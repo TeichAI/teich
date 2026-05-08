@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
+
 from datasets import Dataset
 import pytest
 
-from teich import format_and_mask
+from teich import format_and_mask, mask_data, prepare_data
 
 
 class FakeTokenizer:
@@ -92,6 +95,17 @@ class OffsetCountingTokenizer(CountingTokenizer):
         if return_offsets_mapping:
             output["offset_mapping"] = [(index, index + 1) for index in range(len(text))]
         return output
+
+
+class TrainerStyleTokenizer(OffsetCountingTokenizer):
+    eos_token = ""
+    pad_token = "<pad>"
+    pad_token_id = 0
+
+    def convert_tokens_to_ids(self, token):
+        if token == self.pad_token:
+            return self.pad_token_id
+        return self._vocab.setdefault(token, len(self._vocab) + 1)
 
 
 class QwenLikeOffsetTokenizer(OffsetCountingTokenizer):
@@ -583,6 +597,239 @@ def test_format_and_mask_rejects_reserved_chat_template_kwargs():
         assert "reserved" in str(exc)
     else:
         raise AssertionError("Expected format_and_mask to reject reserved chat_template_kwargs")
+
+
+def test_prepare_data_renders_text_and_supervised_spans_for_trainer_flow():
+    tokenizer = TrainerStyleTokenizer()
+    dataset = Dataset.from_list(
+        [
+            {
+                "messages": [
+                    {"role": "user", "content": "hello"},
+                    {"role": "assistant", "content": "world", "reasoning_content": "think"},
+                ],
+                "tools": [],
+            }
+        ]
+    )
+
+    prepared = prepare_data(dataset, tokenizer, verbose=False)
+
+    assert prepared.column_names == ["text", "teich_supervised_spans"]
+    assert prepared[0]["text"] == "<user>hello</user><assistant><think>think</think>world</assistant>"
+    spans = prepared[0]["teich_supervised_spans"]
+    supervised_text = "".join(prepared[0]["text"][span["start"] : span["end"]] for span in spans)
+    assert supervised_text == "<think>think</think>world</assistant>"
+
+
+def test_prepare_data_filters_oversized_rows_without_returning_tokens():
+    tokenizer = TrainerStyleTokenizer()
+    dataset = Dataset.from_list(
+        [
+            {
+                "messages": [
+                    {"role": "user", "content": "short"},
+                    {"role": "assistant", "content": "ok"},
+                ],
+                "tools": [],
+            },
+            {
+                "messages": [
+                    {"role": "user", "content": "short"},
+                    {"role": "assistant", "content": "x" * 100},
+                ],
+                "tools": [],
+            },
+        ]
+    )
+
+    prepared = prepare_data(dataset, tokenizer, max_length=60, verbose=False)
+
+    assert prepared.num_rows == 1
+    assert prepared.column_names == ["text", "teich_supervised_spans"]
+    assert "input_ids" not in prepared.column_names
+    assert "attention_mask" not in prepared.column_names
+    assert "labels" not in prepared.column_names
+    assert "ok</assistant>" in prepared[0]["text"]
+
+
+def test_prepare_data_can_keep_oversized_rows_for_trainer_truncation():
+    tokenizer = TrainerStyleTokenizer()
+    dataset = Dataset.from_list(
+        [
+            {
+                "messages": [
+                    {"role": "user", "content": "short"},
+                    {"role": "assistant", "content": "x" * 100},
+                ],
+                "tools": [],
+            }
+        ]
+    )
+
+    prepared = prepare_data(
+        dataset,
+        tokenizer,
+        max_length=40,
+        drop_oversized_examples=False,
+        verbose=False,
+    )
+
+    assert prepared.num_rows == 1
+    assert prepared.column_names == ["text", "teich_supervised_spans"]
+
+
+def test_prepare_data_accepts_mixed_sources_and_concatenates_chat_and_tool_rows(tmp_path):
+    tokenizer = FakeTokenizer()
+    chat_file = tmp_path / "chat.jsonl"
+    chat_file.write_text(
+        json.dumps(
+            {
+                "messages": [
+                    {"role": "user", "content": "hello"},
+                    {"role": "assistant", "content": "world", "reasoning_content": "friendly"},
+                ],
+                "prompt": "hello",
+                "response": "world",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    tool_dataset = Dataset.from_list(
+        [
+            {
+                "messages": [
+                    {"role": "user", "content": "inspect"},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "reasoning_content": "check files",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {"name": "bash", "arguments": {"command": "ls"}},
+                            }
+                        ],
+                    },
+                ],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "bash",
+                            "parameters": {"type": "object", "properties": {"command": {"type": "string"}}},
+                        },
+                    }
+                ],
+            }
+        ]
+    )
+
+    prepared = prepare_data([chat_file, tool_dataset], tokenizer, split=None, verbose=False)
+
+    assert prepared.num_rows == 2
+    assert prepared.column_names == ["text", "teich_supervised_spans"]
+    texts = [prepared[index]["text"] for index in range(prepared.num_rows)]
+    assert any("<assistant><think>friendly</think>world</assistant>" in text for text in texts)
+    assert any("<tools>bash</tools>" in text and "<tool_call>bash</tool_call>" in text for text in texts)
+
+
+def test_mask_data_applies_teich_labels_after_trainer_tokenization():
+    tokenizer = TrainerStyleTokenizer()
+    dataset = Dataset.from_list(
+        [
+            {
+                "messages": [
+                    {"role": "system", "content": "system rules"},
+                    {"role": "user", "content": "first request"},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "reasoning_content": "inspect repo",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {"name": "bash", "arguments": {"command": "ls"}},
+                            }
+                        ],
+                    },
+                    {"role": "tool", "tool_call_id": "call_1", "name": "bash", "content": "file_a.py"},
+                    {"role": "assistant", "content": "done"},
+                ],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "bash",
+                            "parameters": {"type": "object", "properties": {"command": {"type": "string"}}},
+                        },
+                    }
+                ],
+            }
+        ]
+    )
+    prepared = prepare_data(dataset, tokenizer, verbose=False)
+    trainer_dataset = prepared.map(lambda row: {"input_ids": tokenizer(text=row["text"])["input_ids"]})
+    trainer = SimpleNamespace(
+        train_dataset=trainer_dataset,
+        eval_dataset=None,
+        processing_class=tokenizer,
+        args=SimpleNamespace(dataset_text_field="text", packing=False),
+    )
+
+    trainer = mask_data(trainer, audit=True)
+
+    row = trainer.train_dataset[0]
+    supervised_text = tokenizer.decode([token for token in row["labels"] if token != -100])
+    assert supervised_text == "<think>inspect repo</think><tool_call>bash</tool_call></assistant>done</assistant>"
+    masked_text = tokenizer.decode([token_id for token_id, label in zip(row["input_ids"], row["labels"]) if label == -100])
+    assert "<system>system rules</system>" in masked_text
+    assert "<user>first request</user>" in masked_text
+    assert "<tool>file_a.py</tool>" in masked_text
+
+
+def test_mask_data_can_fallback_when_trainer_drops_text_columns():
+    tokenizer = QwenLikeOffsetTokenizer()
+    rendered = (
+        "<|im_start|>user\nfirst request<|im_end|>\n"
+        "<|im_start|>assistant\n<think>\ninspect repo\n</think>\n\n"
+        "<tool_call>\n<function=bash>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call><|im_end|>\n"
+        "<|im_start|>user\n<tool_response>\nfile_a.py\n</tool_response><|im_end|>\n"
+        "<|im_start|>assistant\nfinal answer<|im_end|>\n"
+    )
+    trainer = SimpleNamespace(
+        train_dataset=Dataset.from_list([{"input_ids": tokenizer(text=rendered)["input_ids"]}]),
+        eval_dataset=None,
+        processing_class=tokenizer,
+        args=SimpleNamespace(dataset_text_field="text", packing=False),
+    )
+
+    trainer = mask_data(trainer, audit=True)
+
+    row = trainer.train_dataset[0]
+    supervised_text = tokenizer.decode([token for token in row["labels"] if token != -100])
+    assert "<think>\ninspect repo\n</think>" in supervised_text
+    assert "<tool_call>" in supervised_text
+    assert "final answer<|im_end|>" in supervised_text
+    masked_text = tokenizer.decode([token_id for token_id, label in zip(row["input_ids"], row["labels"]) if label == -100])
+    assert "<|im_start|>user\nfirst request" in masked_text
+    assert "<tool_response>" in masked_text
+
+
+def test_mask_data_rejects_packing_because_row_boundaries_are_required():
+    tokenizer = TrainerStyleTokenizer()
+    trainer = SimpleNamespace(
+        train_dataset=Dataset.from_list([]),
+        eval_dataset=None,
+        processing_class=tokenizer,
+        args=SimpleNamespace(dataset_text_field="text", packing=True),
+    )
+
+    with pytest.raises(ValueError, match="packed"):
+        mask_data(trainer, audit=False)
 
 
 def test_format_and_mask_supports_processor_objects_with_nested_text_tokenizer():

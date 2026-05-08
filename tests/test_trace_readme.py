@@ -31,15 +31,16 @@ def test_build_traces_readme_includes_model_and_references_tools(tmp_path: Path)
     assert "tools.json" in readme
     assert '"name": "bash"' not in readme
     assert "## Conversion" in readme
-    assert "prepare_sft_dataset" in readme
-    assert "prepared.collator" in readme
-    assert "prepared.sft_config_kwargs" in readme
+    assert "prepare_data" in readme
+    assert "mask_data" in readme
+    assert "dataset_text_field='text'" in readme
+    assert "packing=False" in readme
     assert "load_traces" in readme
     assert "format_and_mask" in readme
     assert "tokenizer.apply_chat_template" in readme
     assert "tools=example.get('tools') or []" in readme
     assert "dataset = load_traces('username/repo')" in readme
-    assert "prepared = prepare_sft_dataset(" in readme
+    assert "train_dataset = prepare_data(" in readme
     assert "convert_traces_to_training_data" not in readme
 
 
@@ -90,7 +91,8 @@ def test_write_traces_readme_for_structured_chat_dataset_skips_tools_json(tmp_pa
     assert "Rows: 1" in readme
     assert "JSONL files:" not in readme
     assert "dataset = load_traces('username/repo')" in readme
-    assert "prepared = prepare_sft_dataset(" in readme
+    assert "train_dataset = prepare_data(" in readme
+    assert "trainer = mask_data(trainer, tokenizer=tokenizer)" in readme
     assert "tools=example.get('tools') or []" not in readme
     assert "Chat-only datasets include `messages` plus convenience fields like `system`, `prompt`, `thinking`, and `response`." in readme
     assert "## Training-ready tools" not in readme

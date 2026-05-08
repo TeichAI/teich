@@ -9,7 +9,7 @@ from datasets import Dataset
 
 from .audit import SFTAuditReport, audit_sft_dataset, audit_sft_trainer_batch
 from .collator import TeichDataCollator
-from .formatter import format_and_mask, preview_sft_example
+from .formatter import format_and_mask, format_data, preview_sft_example
 from .loader import load_traces
 
 
@@ -27,7 +27,7 @@ class PreparedSFTDataset:
 
 
 def prepare_sft_dataset(
-    source_or_dataset: str | Path | Dataset | Sequence[Dataset],
+    source_or_dataset: str | Path | Dataset | Sequence[str | Path | Dataset],
     tokenizer: Any,
     *,
     split: str | None = "train",
@@ -95,8 +95,52 @@ def prepare_sft_dataset(
     )
 
 
+def prepare_data(
+    source_or_dataset: str | Path | Dataset | Sequence[str | Path | Dataset],
+    tokenizer: Any,
+    *,
+    split: str | None = "train",
+    revision: str | None = None,
+    token: str | None = None,
+    cache_dir: str | Path | None = None,
+    local_dir: str | Path | None = None,
+    max_examples: int | None = None,
+    messages_column: str = "messages",
+    tools_column: str = "tools",
+    text_column: str = "text",
+    chat_template_kwargs: dict[str, Any] | None = None,
+    train_on_reasoning: bool = True,
+    max_length: int | None = None,
+    drop_oversized_examples: bool = True,
+    strict: bool = True,
+    verbose: bool = True,
+) -> Dataset:
+    dataset = _resolve_source_dataset(
+        source_or_dataset,
+        split=split,
+        revision=revision,
+        token=token,
+        cache_dir=cache_dir,
+        local_dir=local_dir,
+        max_examples=max_examples,
+    )
+    return format_data(
+        dataset,
+        tokenizer,
+        messages_column=messages_column,
+        tools_column=tools_column,
+        text_column=text_column,
+        chat_template_kwargs=chat_template_kwargs,
+        train_on_reasoning=train_on_reasoning,
+        max_length=max_length,
+        drop_oversized_examples=drop_oversized_examples,
+        strict=strict,
+        verbose=verbose,
+    )
+
+
 def _resolve_source_dataset(
-    source_or_dataset: str | Path | Dataset | Sequence[Dataset],
+    source_or_dataset: str | Path | Dataset | Sequence[str | Path | Dataset],
     *,
     split: str | None,
     revision: str | None,
@@ -106,14 +150,63 @@ def _resolve_source_dataset(
     max_examples: int | None,
 ) -> Dataset | Sequence[Dataset]:
     if isinstance(source_or_dataset, Dataset):
-        return source_or_dataset
+        return _resolve_single_source_dataset(
+            source_or_dataset,
+            split=split,
+            revision=revision,
+            token=token,
+            cache_dir=cache_dir,
+            local_dir=local_dir,
+            max_examples=max_examples,
+        )
     if isinstance(source_or_dataset, Sequence) and not isinstance(source_or_dataset, (str, bytes, bytearray)):
-        datasets = list(source_or_dataset)
-        if not datasets:
+        sources = list(source_or_dataset)
+        if not sources:
             raise ValueError("At least one dataset must be provided.")
-        if not all(isinstance(dataset, Dataset) for dataset in datasets):
-            raise TypeError("A sequence source must contain only datasets.Dataset objects.")
-        return datasets
+        return [
+            _resolve_single_source_dataset(
+                source,
+                split=split,
+                revision=revision,
+                token=token,
+                cache_dir=cache_dir,
+                local_dir=local_dir,
+                max_examples=max_examples,
+            )
+            for source in sources
+        ]
+    return _resolve_single_source_dataset(
+        source_or_dataset,
+        split=split,
+        revision=revision,
+        token=token,
+        cache_dir=cache_dir,
+        local_dir=local_dir,
+        max_examples=max_examples,
+    )
+
+
+def _resolve_single_source_dataset(
+    source_or_dataset: str | Path | Dataset,
+    *,
+    split: str | None,
+    revision: str | None,
+    token: str | None,
+    cache_dir: str | Path | None,
+    local_dir: str | Path | None,
+    max_examples: int | None,
+) -> Dataset:
+    if isinstance(source_or_dataset, Dataset):
+        if max_examples is None:
+            return source_or_dataset
+        if max_examples < 0:
+            raise ValueError("max_examples must be non-negative.")
+        limit = min(max_examples, source_or_dataset.num_rows)
+        return source_or_dataset.shuffle(seed=3407).select(range(limit))
+    if not isinstance(source_or_dataset, (str, Path)):
+        raise TypeError(
+            "A sequence source must contain only dataset paths, Hugging Face dataset IDs, or datasets.Dataset objects."
+        )
     return load_traces(
         source_or_dataset,
         split=split,

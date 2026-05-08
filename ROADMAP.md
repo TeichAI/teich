@@ -56,24 +56,27 @@ Teich now has a usable trace-first generation and SFT preparation flow:
 Recommended path:
 
 ```python
-from teich import prepare_sft_dataset
+from teich import mask_data, prepare_data
 
-prepared = prepare_sft_dataset(
-    "username/repo",
+train_dataset = prepare_data(
+    ["username/chat-traces", "username/tool-traces"],
     tokenizer,
     max_length=32768,
+    drop_oversized_examples=True,
     chat_template_kwargs={"enable_thinking": True},
 )
 
 trainer = SFTTrainer(
     model=model,
-    train_dataset=prepared.dataset,
-    data_collator=prepared.collator,
+    train_dataset=train_dataset,
     args=SFTConfig(
-        **prepared.sft_config_kwargs,
+        dataset_text_field="text",
+        max_length=32768,
+        packing=False,
         output_dir="outputs",
     ),
 )
+trainer = mask_data(trainer, tokenizer=tokenizer)
 ```
 
 Advanced/manual path:

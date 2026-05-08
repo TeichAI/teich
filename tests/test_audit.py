@@ -170,7 +170,9 @@ def test_teich_example_has_single_safe_training_flow():
     assert "strict=True" in source
     assert 'optim="muon"' in source
     assert 'optim_target_modules="all-linear"' in source
-    assert "prepare_sft_dataset" in source
-    assert "data_collator=prepared.collator" in source
-    assert "**prepared.sft_config_kwargs" in source
+    assert "prepare_data" in source
+    assert "mask_data" in source
+    assert 'dataset_text_field="text"' in source
+    assert "data_collator=" not in source
+    assert "prepare_sft_dataset" not in source
     assert sum(isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "train" for node in ast.walk(tree)) == 1

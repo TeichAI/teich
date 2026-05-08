@@ -101,56 +101,57 @@ Each generated JSONL line will look like:
 ### Prepare for training
 
 ```python
-from teich import prepare_sft_dataset
+from teich import prepare_data
 
-prepared = prepare_sft_dataset(
-    "badlogicgames/pi-mono",
+train_dataset = prepare_data(
+    ["username/chat-traces", "username/tool-traces"],
     tokenizer,
     max_length=32768,
+    drop_oversized_examples=True,
     chat_template_kwargs={"enable_thinking": True},
 )
-
-training_data = prepared.dataset
-data_collator = prepared.collator
-print(prepared.preview())
 ```
 
-`prepare_sft_dataset` loads local folders, local files, or Hugging Face datasets; applies the tokenizer chat template; creates masked SFT labels; builds a Teich data collator; and runs dataset/collator audits by default.
+`prepare_data` loads local folders, local files, Hugging Face datasets, or a list mixing any of those with already-loaded `datasets.Dataset` objects; applies the tokenizer chat template; optionally tokenizes only to drop rows above `max_length`; and returns trainer-friendly `text` rows with Teich supervision metadata for multi-turn/tool-aware masking. Mixed chat-only and tool-call datasets are formatted separately before concatenation, so their schemas do not need to match beyond the normalized `messages`/`tools` fields.
 
 ### Train with TRL `SFTTrainer`
 
-Teich prepares pre-tokenized `input_ids` / `attention_mask` / `labels` rows and returns the collator/config knobs needed to keep those labels intact inside TRL:
+Let `SFTTrainer` tokenize the `text` field, then call `mask_data` to apply Teich's response-only labels to the trainer dataset:
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from trl import SFTConfig, SFTTrainer
-from teich import prepare_sft_dataset
+from teich import mask_data, prepare_data
 
 model_id = "Qwen/Qwen3-0.6B"
 tokenizer = AutoTokenizer.from_pretrained(model_id)
 model = AutoModelForCausalLM.from_pretrained(model_id)
 
-prepared = prepare_sft_dataset(
+train_dataset = prepare_data(
     "badlogicgames/pi-mono",
     tokenizer,
     max_length=32768,
+    drop_oversized_examples=True,
     chat_template_kwargs={"enable_thinking": True},
 )
 
 trainer = SFTTrainer(
     model=model,
-    train_dataset=prepared.dataset,
-    data_collator=prepared.collator,
+    train_dataset=train_dataset,
     args=SFTConfig(
-        **prepared.sft_config_kwargs,
+        dataset_text_field="text",
+        dataset_num_proc=1,
+        max_length=32768,
+        packing=False,
         output_dir="outputs",
         per_device_train_batch_size=1,
     ),
 )
+trainer = mask_data(trainer, tokenizer=tokenizer)
 trainer.train()
 ```
 
-`prepared.sft_config_kwargs` includes `dataset_kwargs={"skip_prepare_dataset": True}` so TRL does not re-template or overwrite Teich's labels.
+`mask_data` follows the same trainer-first shape as Unsloth's response-only helper, but uses Teich's span metadata so multi-turn tool calls and tool responses are masked correctly. Keep `packing=False` for this flow because packed datasets merge row boundaries before masking.
 
 ### Advanced load and format flow
 

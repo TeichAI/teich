@@ -19,6 +19,9 @@ _GEMMA_TOOL_RESPONSE_START = "<|tool_response>"
 _GEMMA_TOOL_RESPONSE_END = "<tool_response|>"
 _ASSISTANT_BLOCK_START_TOKENS = (
     "<|im_start|>assistant\n",
+    "<|start_header_id|>assistant<|end_header_id|>\n\n",
+    "<|start_header_id|>assistant<|end_header_id|>",
+    "<start_of_turn>model\n",
     "<|assistant|>\n",
     "<|assistant|>",
     "<assistant>",
@@ -26,9 +29,12 @@ _ASSISTANT_BLOCK_START_TOKENS = (
 )
 _ASSISTANT_BLOCK_END_TOKENS = (
     "<|im_end|>",
+    "<|eot_id|>",
+    "<end_of_turn>",
     "</assistant>",
     "</s>",
     "<|end_of_text|>",
+    "<turn|>",
 )
 _REASONING_BLOCK_PATTERNS = (
     re.compile(r"<think>\n.*?</think>\n\n?", re.DOTALL),
@@ -36,6 +42,7 @@ _REASONING_BLOCK_PATTERNS = (
     re.compile(r"<\|channel>thought\n.*?<channel\|>", re.DOTALL),
 )
 _FORMAT_AND_MASK_BATCH_SIZE = 8
+TEICH_SUPERVISED_SPANS_COLUMN = "teich_supervised_spans"
 
 
 def _resolve_chat_template_renderer(tokenizer: Any, text_tokenizer: Any) -> Any:
@@ -127,6 +134,42 @@ def _tokenize_text_with_offsets(text_tokenizer: Any, text: str) -> tuple[list[in
             return_offsets_mapping=True,
         )
     except (TypeError, ValueError, NotImplementedError):
+        return None
+    input_ids = encoded.get("input_ids")
+    offsets = encoded.get("offset_mapping")
+    if input_ids is None or offsets is None:
+        return None
+    attention_mask = encoded.get("attention_mask")
+    if input_ids and isinstance(input_ids[0], list):
+        input_ids = input_ids[0]
+    if attention_mask and isinstance(attention_mask[0], list):
+        attention_mask = attention_mask[0]
+    if offsets and isinstance(offsets[0], list):
+        offsets = offsets[0]
+    if attention_mask is None:
+        attention_mask = [1] * len(input_ids)
+    normalized_offsets = [tuple(offset) for offset in offsets]
+    return list(input_ids), list(attention_mask), normalized_offsets
+
+
+def _tokenize_trainer_text_with_offsets(
+    text_tokenizer: Any,
+    text: str,
+) -> tuple[list[int], list[int], list[tuple[int, int]]] | None:
+    call_variants = (
+        ((), {"text": text, "return_attention_mask": True, "return_offsets_mapping": True}),
+        ((text,), {"return_attention_mask": True, "return_offsets_mapping": True}),
+    )
+    encoded = None
+    for args, kwargs in call_variants:
+        try:
+            encoded = text_tokenizer(*args, **kwargs)
+            break
+        except TypeError:
+            continue
+        except (ValueError, NotImplementedError):
+            return None
+    if encoded is None:
         return None
     input_ids = encoded.get("input_ids")
     offsets = encoded.get("offset_mapping")
@@ -735,6 +778,59 @@ def _labels_from_offsets(
     return labels
 
 
+def _token_text_and_offsets(text_tokenizer: Any, input_ids: list[int]) -> tuple[str, list[tuple[int, int]]]:
+    parts: list[str] = []
+    offsets: list[tuple[int, int]] = []
+    cursor = 0
+    for token_id in input_ids:
+        token_text = _decode_token(text_tokenizer, token_id)
+        parts.append(token_text)
+        offsets.append((cursor, cursor + len(token_text)))
+        cursor += len(token_text)
+    return "".join(parts), offsets
+
+
+def _find_next_assistant_start(text: str, cursor: int) -> tuple[int, str] | None:
+    matches: list[tuple[int, str]] = []
+    for start_token in _ASSISTANT_BLOCK_START_TOKENS:
+        start = text.find(start_token, cursor)
+        if start >= 0:
+            matches.append((start, start_token))
+    if not matches:
+        return None
+    return min(matches, key=lambda item: (item[0], -len(item[1])))
+
+
+def _infer_supervised_spans_from_rendered_text(text: str, *, train_on_reasoning: bool) -> list[tuple[int, int]]:
+    supervised_spans = _gemma_like_supervised_spans(text)
+    if not supervised_spans:
+        cursor = 0
+        while True:
+            match = _find_next_assistant_start(text, cursor)
+            if match is None:
+                break
+            block_start, start_token = match
+            content_start = block_start + len(start_token)
+            end_candidates: list[tuple[int, str]] = []
+            for end_token in _ASSISTANT_BLOCK_END_TOKENS:
+                end_start = text.find(end_token, content_start)
+                if end_start >= 0:
+                    end_candidates.append((end_start, end_token))
+            if end_candidates:
+                end_start, end_token = min(end_candidates, key=lambda item: item[0])
+                block_end = end_start + len(end_token)
+            else:
+                next_match = _find_next_assistant_start(text, content_start)
+                block_end = next_match[0] if next_match is not None else len(text)
+            if content_start < block_end:
+                supervised_spans.append((content_start, block_end))
+            cursor = max(block_end, content_start + 1)
+    supervised_spans = _merge_spans(supervised_spans)
+    if not train_on_reasoning:
+        supervised_spans = _subtract_spans(supervised_spans, _reasoning_spans(text))
+    return supervised_spans
+
+
 def _offset_mask_row(
     renderer: Any,
     text_tokenizer: Any,
@@ -898,6 +994,263 @@ def _mask_row(
         row["text"] = formatted_text
         row["assistant_masks"] = assistant_masks
     return row
+
+
+def _supervised_text_and_spans(
+    renderer: Any,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    chat_template_kwargs: dict[str, Any],
+    assistant_prompt_prefix_cache: dict[str, tuple[str, ...]],
+    train_on_reasoning: bool,
+    strict: bool,
+) -> tuple[str, list[tuple[int, int]]]:
+    original_text = _render_chat(renderer, messages, tools, chat_template_kwargs)
+    marked_messages, markers = _mark_supervised_messages(messages, train_on_reasoning=train_on_reasoning)
+    marked_text = _render_chat(renderer, marked_messages, tools, chat_template_kwargs)
+    stripped = _strip_markers_and_collect_spans(marked_text, markers)
+    if stripped is None:
+        raise ValueError("Unable to collect supervised spans from marker-injected chat template output.")
+    formatted_text, supervised_spans = stripped
+    if formatted_text != original_text:
+        if strict:
+            raise ValueError("Marker-injected chat template output does not match the original rendered chat after marker removal.")
+        return original_text, []
+    assistant_prompt_prefixes = _resolve_assistant_prompt_prefixes(
+        renderer,
+        messages,
+        tools,
+        chat_template_kwargs,
+        assistant_prompt_prefix_cache,
+    )
+    supervised_spans = _expand_supervised_spans(
+        formatted_text,
+        supervised_spans,
+        assistant_prompt_prefixes,
+        train_on_reasoning,
+    )
+    if not train_on_reasoning:
+        supervised_spans = _subtract_spans(supervised_spans, _reasoning_spans(formatted_text))
+    return formatted_text, supervised_spans
+
+
+def _span_dicts(spans: list[tuple[int, int]]) -> list[dict[str, int]]:
+    return [{"start": start, "end": end} for start, end in spans if start < end]
+
+
+def _normalize_span_dicts(value: Any) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    for item in value or []:
+        if isinstance(item, dict):
+            start = item.get("start")
+            end = item.get("end")
+        else:
+            start, end = item
+        if isinstance(start, int) and isinstance(end, int) and start < end:
+            spans.append((start, end))
+    return _merge_spans(spans)
+
+
+def format_data(
+    dataset: Dataset | Sequence[Dataset],
+    tokenizer: Any,
+    *,
+    messages_column: str = "messages",
+    tools_column: str = "tools",
+    text_column: str = "text",
+    chat_template_kwargs: dict[str, Any] | None = None,
+    train_on_reasoning: bool = True,
+    max_length: int | None = None,
+    drop_oversized_examples: bool = True,
+    strict: bool = False,
+    verbose: bool = True,
+) -> Dataset:
+    if isinstance(dataset, Sequence) and not isinstance(dataset, Dataset):
+        datasets = list(dataset)
+        if not datasets:
+            raise ValueError("At least one dataset must be provided to prepare_data.")
+        if len(datasets) > 1:
+            formatted_datasets: list[Dataset] = []
+            for item in datasets:
+                if not isinstance(item, Dataset):
+                    raise TypeError("prepare_data expects a Dataset or a sequence of Dataset objects.")
+                formatted_datasets.append(
+                    format_data(
+                        item,
+                        tokenizer,
+                        messages_column=messages_column,
+                        tools_column=tools_column,
+                        text_column=text_column,
+                        chat_template_kwargs=chat_template_kwargs,
+                        train_on_reasoning=train_on_reasoning,
+                        max_length=max_length,
+                        drop_oversized_examples=drop_oversized_examples,
+                        strict=strict,
+                        verbose=verbose,
+                    )
+                )
+            return concatenate_datasets(formatted_datasets)
+        dataset = datasets[0]
+    if not isinstance(dataset, Dataset):
+        raise TypeError("prepare_data expects a Dataset or a sequence of Dataset objects.")
+
+    template_kwargs = _validate_chat_template_kwargs(chat_template_kwargs)
+    text_tokenizer = _resolve_text_tokenizer(tokenizer)
+    renderer = _resolve_chat_template_renderer(tokenizer, text_tokenizer)
+    assistant_prompt_prefix_cache: dict[str, tuple[str, ...]] = {}
+    effective_max_length = max_length if isinstance(max_length, int) and max_length > 0 else None
+    dropped_count = 0
+    dropped_oversized_count = 0
+
+    if messages_column not in dataset.column_names:
+        raise TypeError(f"Dataset is missing required '{messages_column}' column")
+
+    output_columns = [text_column, TEICH_SUPERVISED_SPANS_COLUMN]
+
+    def _empty_output_batch() -> dict[str, list[Any]]:
+        return {column_name: [] for column_name in output_columns}
+
+    def _map_batch(batch: dict[str, list[Any]]) -> dict[str, list[Any]]:
+        nonlocal dropped_count
+        nonlocal dropped_oversized_count
+        batch_size = len(batch[messages_column])
+        tools_batch = batch.get(tools_column)
+        if tools_batch is None:
+            tools_batch = [None] * batch_size
+        output_batch = _empty_output_batch()
+
+        for index in range(batch_size):
+            messages = batch[messages_column][index]
+            if not isinstance(messages, list):
+                raise TypeError(f"Row is missing a list-valued '{messages_column}' column")
+            if len(messages) == 0:
+                dropped_count += 1
+                continue
+            tools = tools_batch[index] or []
+            if not isinstance(tools, list):
+                raise TypeError(f"Row is missing a list-valued '{tools_column}' column")
+            text, supervised_spans = _supervised_text_and_spans(
+                renderer,
+                messages,
+                tools,
+                template_kwargs,
+                assistant_prompt_prefix_cache,
+                train_on_reasoning,
+                strict,
+            )
+            if not supervised_spans:
+                if strict:
+                    raise ValueError("No supervised assistant spans were found for a non-empty conversation.")
+                dropped_count += 1
+                continue
+            if drop_oversized_examples and effective_max_length is not None:
+                input_ids, _ = _tokenize_text(text_tokenizer, text)
+                if len(input_ids) > effective_max_length:
+                    dropped_oversized_count += 1
+                    continue
+            output_batch[text_column].append(text)
+            output_batch[TEICH_SUPERVISED_SPANS_COLUMN].append(_span_dicts(supervised_spans))
+        return output_batch
+
+    formatted_data = dataset.map(
+        _map_batch,
+        batched=True,
+        batch_size=_FORMAT_AND_MASK_BATCH_SIZE,
+        remove_columns=dataset.column_names,
+    )
+    if formatted_data.num_rows == 0 and drop_oversized_examples and effective_max_length is not None and dropped_oversized_count > 0:
+        raise ValueError(
+            f"Dataset contains no conversations that fit within context window of {effective_max_length} tokens."
+        )
+    if verbose and dropped_count:
+        Console().print(f"[yellow]Dropped {dropped_count} rows without trainable assistant spans.[/yellow]")
+    if verbose and dropped_oversized_count:
+        Console().print(f"[yellow]Dropped {dropped_oversized_count} rows above {effective_max_length} tokens.[/yellow]")
+    return formatted_data
+
+
+def _mask_tokenized_row(
+    row: dict[str, Any],
+    text_tokenizer: Any,
+    text_column: str,
+    train_on_reasoning: bool,
+) -> dict[str, Any]:
+    input_ids = _extract_token_sequence(row.get("input_ids"))
+    if input_ids is None:
+        raise TypeError("Trainer dataset row is missing tokenized 'input_ids'.")
+    text = row.get(text_column)
+    supervised_spans = _normalize_span_dicts(row.get(TEICH_SUPERVISED_SPANS_COLUMN))
+    if isinstance(text, str) and supervised_spans:
+        encoded = _tokenize_trainer_text_with_offsets(text_tokenizer, text)
+        if encoded is None:
+            raise ValueError("mask_data requires a tokenizer that can return offset mappings for text tokenization.")
+        full_input_ids, full_attention_mask, offsets = encoded
+        full_labels = _labels_from_offsets(full_input_ids, offsets, supervised_spans)
+        if input_ids == full_input_ids:
+            labels = full_labels
+            attention_mask = full_attention_mask
+        elif len(input_ids) <= len(full_input_ids) and input_ids == full_input_ids[: len(input_ids)]:
+            labels = full_labels[: len(input_ids)]
+            attention_mask = full_attention_mask[: len(input_ids)]
+        else:
+            raise ValueError("Trainer tokenized input_ids do not align with the original Teich-rendered text.")
+    else:
+        text, offsets = _token_text_and_offsets(text_tokenizer, input_ids)
+        supervised_spans = _infer_supervised_spans_from_rendered_text(text, train_on_reasoning=train_on_reasoning)
+        labels = _labels_from_offsets(input_ids, offsets, supervised_spans)
+        attention_mask = [1] * len(input_ids)
+    assistant_masks = [0 if label == -100 else 1 for label in labels]
+    if 1 not in assistant_masks:
+        raise ValueError("Teich masking produced a fully masked row after trainer tokenization/truncation.")
+    return {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "assistant_masks": assistant_masks,
+        "labels": labels,
+    }
+
+
+def mask_data(
+    trainer: Any,
+    *,
+    tokenizer: Any | None = None,
+    text_column: str | None = None,
+    train_on_reasoning: bool = True,
+    audit: bool = True,
+    audit_sample_size: int = 8,
+) -> Any:
+    from .audit import audit_sft_dataset
+
+    text_tokenizer = _resolve_text_tokenizer(tokenizer or getattr(trainer, "processing_class", None) or getattr(trainer, "tokenizer", None))
+    trainer_args = getattr(trainer, "args", None)
+    dataset_text_field = text_column or getattr(trainer_args, "dataset_text_field", "text")
+    if getattr(trainer_args, "packing", False):
+        raise ValueError("mask_data does not support packed SFTTrainer datasets because packing merges row boundaries.")
+
+    def _mask_dataset(dataset: Any, dataset_name: str) -> Any:
+        if dataset is None:
+            return None
+        if not isinstance(dataset, Dataset):
+            raise TypeError(f"trainer.{dataset_name} must be a datasets.Dataset instance.")
+        missing = {"input_ids"}.difference(dataset.column_names)
+        if missing:
+            raise ValueError(f"trainer.{dataset_name} is missing required columns for mask_data: {', '.join(sorted(missing))}")
+        masked_dataset = dataset.map(
+            lambda row: _mask_tokenized_row(row, text_tokenizer, dataset_text_field, train_on_reasoning),
+            desc=f"Applying Teich masks to {dataset_name}",
+        )
+        if audit:
+            report = audit_sft_dataset(masked_dataset, text_tokenizer, sample_size=audit_sample_size)
+            report.raise_for_errors()
+        return masked_dataset
+
+    trainer.train_dataset = _mask_dataset(getattr(trainer, "train_dataset", None), "train_dataset")
+    eval_dataset = getattr(trainer, "eval_dataset", None)
+    if isinstance(eval_dataset, dict):
+        trainer.eval_dataset = {name: _mask_dataset(dataset, f"eval_dataset[{name!r}]") for name, dataset in eval_dataset.items()}
+    elif eval_dataset is not None:
+        trainer.eval_dataset = _mask_dataset(eval_dataset, "eval_dataset")
+    return trainer
 
 
 def _is_prefix(prefix_ids: list[int], full_ids: list[int]) -> bool:
