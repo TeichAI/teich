@@ -39,6 +39,7 @@ PI_AGENT_DIR_IN_CONTAINER = "/home/codex/.pi/agent"
 PI_SESSIONS_DIR_IN_CONTAINER = "/home/codex/pi-sessions"
 WORKSPACE_IN_CONTAINER = "/workspace"
 HERMES_DEFAULT_TOOLSETS = "safe,terminal,file,skills,memory,session_search,delegation"
+TEXT_SUBPROCESS_KWARGS = {"text": True, "encoding": "utf-8", "errors": "replace"}
 LOCAL_PROVIDER_PROXY_SCRIPT_NAME = "local_provider_proxy.js"
 CLAUDE_OPENROUTER_PROXY_SCRIPT_NAME = "claude_openrouter_proxy.js"
 CLAUDE_OPENROUTER_PROXY_PORT = 17891
@@ -529,8 +530,8 @@ class DockerRuntimeRunner:
             result = subprocess.run(
                 ["docker", "image", "inspect", self.image_name, "--format", "{{.Created}}"],
                 capture_output=True,
-                text=True,
                 check=True,
+                **TEXT_SUBPROCESS_KWARGS,
             )
         except subprocess.CalledProcessError:
             return None
@@ -552,8 +553,8 @@ class DockerRuntimeRunner:
             result = subprocess.run(
                 ["docker", "images", "-q", self.image_name],
                 capture_output=True,
-                text=True,
                 check=True,
+                **TEXT_SUBPROCESS_KWARGS,
             )
             if not result.stdout.strip():
                 self._build_image()
@@ -616,8 +617,8 @@ class DockerRuntimeRunner:
         subprocess.run(
             ["docker", "rm", "-f", container_name],
             capture_output=True,
-            text=True,
             check=False,
+            **TEXT_SUBPROCESS_KWARGS,
         )
 
     def _terminate_process(self, process: subprocess.Popen[str], container_name: str | None) -> None:
@@ -641,7 +642,7 @@ class DockerRuntimeRunner:
     @staticmethod
     def _start_container(command: list[str]) -> None:
         try:
-            subprocess.run(command, capture_output=True, text=True, check=True)
+            subprocess.run(command, capture_output=True, check=True, **TEXT_SUBPROCESS_KWARGS)
         except FileNotFoundError as exc:
             if shutil.which(command[0]) is None:
                 raise RuntimeError(
@@ -676,8 +677,8 @@ class DockerRuntimeRunner:
             subprocess.run(
                 ["git", "clone", "--depth", "1", repo_url, str(destination)],
                 capture_output=True,
-                text=True,
                 check=True,
+                **TEXT_SUBPROCESS_KWARGS,
             )
         except subprocess.CalledProcessError as exc:
             stderr = exc.stderr if isinstance(exc.stderr, str) else (exc.stderr or "")
@@ -1143,7 +1144,7 @@ class DockerRuntimeRunner:
                     stdin=subprocess.PIPE if stdin_text is not None else None,
                     stdout=stdout_handle,
                     stderr=stderr_handle,
-                    text=True,
+                    **TEXT_SUBPROCESS_KWARGS,
                 )
             except FileNotFoundError as exc:
                 if shutil.which(command[0]) is None:
@@ -1783,7 +1784,7 @@ class ExternalCliRunner(DockerRuntimeRunner):
                 command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
+                **TEXT_SUBPROCESS_KWARGS,
             )
         except FileNotFoundError as exc:
             if shutil.which(command[0]) is None:

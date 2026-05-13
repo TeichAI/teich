@@ -299,6 +299,26 @@ def test_hermes_runner_uses_chat_query_and_prompt_file(tmp_path: Path):
     assert rows[-1]["content"] == "done"
 
 
+def test_external_runner_decodes_subprocess_output_as_utf8(tmp_path: Path):
+    config = Config(
+        agent={"provider": "hermes"},
+        output={"traces_dir": tmp_path / "output", "sandbox_dir": tmp_path / "sandbox"},
+    )
+    with patch.object(HermesRunner, "_ensure_image"):
+        runner = HermesRunner(config)
+
+    process = MagicMock()
+    process.communicate.return_value = ("ok", "")
+    process.returncode = 0
+    with patch("teich.runner.subprocess.Popen", return_value=process) as mock_popen:
+        stdout, stderr = runner._run_external_process(["docker", "run", "image"], None)
+
+    assert (stdout, stderr) == ("ok", "")
+    mock_popen.assert_called_once()
+    assert mock_popen.call_args.kwargs["encoding"] == "utf-8"
+    assert mock_popen.call_args.kwargs["errors"] == "replace"
+
+
 def test_hermes_runner_exports_delegated_sessions_as_separate_files(tmp_path: Path):
     config = Config(
         agent={"provider": "hermes"},
@@ -434,6 +454,8 @@ def test_run_process_removes_named_container_on_failure():
         ["docker", "rm", "-f", "teich-codex-test"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
 

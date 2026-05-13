@@ -194,6 +194,7 @@ def _snapshot_stdio_mcp_tools(mcp: MCPConfig) -> list[dict[str, Any]]:
         stderr=subprocess.PIPE,
         text=True,
         encoding="utf-8",
+        errors="replace",
     )
     try:
         _stdio_mcp_request(
