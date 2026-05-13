@@ -16,7 +16,9 @@ from rich.table import Table
 from .config import Config
 from .runner import (
     ChatRunner,
+    ClaudeCodeRunner,
     CodexRunner,
+    HermesRunner,
     PiRunner,
     SessionProgressUpdate,
     TraceMetrics,
@@ -30,7 +32,7 @@ from .tool_schema import snapshot_configured_tools
 console = Console()
 app = typer.Typer(
     name="teich",
-    help="Generate agent training data using Codex, Pi, or chat",
+    help="Generate agent training data using Codex, Pi, Claude Code, Hermes, or chat",
     no_args_is_help=True,
 )
 
@@ -211,11 +213,16 @@ def generate(
             runner = CodexRunner(cfg)
         elif agent_provider == "pi":
             runner = PiRunner(cfg)
+        elif agent_provider in {"claude", "claude-code", "claude_code"}:
+            runner = ClaudeCodeRunner(cfg)
+        elif agent_provider in {"hermes", "hermes-agent", "hermes_agent"}:
+            runner = HermesRunner(cfg)
         elif agent_provider == "chat":
             runner = ChatRunner(cfg)
         else:
             console.print(
-                f"[red]Unsupported agent provider: {agent_provider}. Supported providers: codex, pi, chat.[/red]"
+                "[red]Unsupported agent provider: "
+                f"{agent_provider}. Supported providers: codex, pi, claude-code, hermes, chat.[/red]"
             )
             raise typer.Exit(1)
 
@@ -425,7 +432,7 @@ def init(
 CONFIG_TEMPLATE = '''# Teich configuration
 #
 # Quick start:
-# 1. Choose agent.provider: codex, pi, or chat
+# 1. Choose agent.provider: codex, pi, claude-code, hermes, or chat
 # 2. Set model.model to the model you want to run
 # 3. Keep prompts in prompts.jsonl, or add inline prompts below
 # 4. Prefer TEICH_API_KEY / OPENROUTER_API_KEY / OPENAI_API_KEY in your environment for secrets
@@ -434,6 +441,8 @@ CONFIG_TEMPLATE = '''# Teich configuration
 agent:
   # codex = Codex CLI in Docker
   # pi = Pi coding agent in Docker
+  # claude-code = Claude Code CLI in Docker
+  # hermes = Hermes Agent CLI in Docker
   # chat = direct text-only dataset generation via an OpenAI-compatible API
   provider: pi
 
@@ -450,6 +459,7 @@ model:
   # Optional reasoning / thinking level.
   # - Codex: forwarded as model_reasoning_effort
   # - Pi: normalized to low / medium / high when supported
+  # - Claude Code / Hermes: model/provider specific
   reasoning_effort: medium
 
   # Optional Pi-specific provider overrides.

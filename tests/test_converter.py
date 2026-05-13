@@ -146,6 +146,188 @@ def test_convert_codex_trace_uses_tool_descriptions_from_base_instructions(tmp_p
     ]
 
 
+def test_convert_codex_trace_normalizes_custom_tool_calls(tmp_path: Path):
+    trace_file = tmp_path / "codex-custom-tool.jsonl"
+    events = [
+        {
+            "type": "session_meta",
+            "payload": {
+                "id": "codex-session-1",
+                "base_instructions": {"text": "You are a coding agent."},
+            },
+        },
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "Patch the app"}],
+            },
+        },
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call",
+                "status": "completed",
+                "name": "apply_patch",
+                "call_id": "call_patch",
+                "input": "*** Begin Patch\n*** Add File: app.py\n+print('hi')\n*** End Patch\n",
+            },
+        },
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call_output",
+                "call_id": "call_patch",
+                "output": json.dumps({"output": "Success. Updated the following files:\nA app.py\n", "metadata": {"exit_code": 0}}),
+            },
+        },
+    ]
+    trace_file.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
+
+    example = convert_trace_to_training_example(trace_file)
+
+    assert example.prompt == "Patch the app"
+    assert example.messages[-2]["tool_calls"] == [
+        {
+            "id": "call_patch",
+            "type": "function",
+            "function": {
+                "name": "apply_patch",
+                "arguments": {"patch": "*** Begin Patch\n*** Add File: app.py\n+print('hi')\n*** End Patch\n"},
+            },
+        }
+    ]
+    assert example.messages[-1] == {
+        "role": "tool",
+        "tool_call_id": "call_patch",
+        "name": "apply_patch",
+        "content": "Success. Updated the following files:\nA app.py\n",
+    }
+    assert example.tools == [
+        {
+            "type": "function",
+            "function": {
+                "name": "apply_patch",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"patch": {"type": "string"}},
+                    "required": ["patch"],
+                    "additionalProperties": True,
+                },
+            },
+        }
+    ]
+
+
+def test_convert_claude_code_stream_json_trace(tmp_path: Path):
+    trace_file = tmp_path / "claude-code.jsonl"
+    events = [
+        {
+            "type": "external_session_meta",
+            "payload": {
+                "id": "teich-session",
+                "source": "claude-code",
+                "model_provider": "anthropic",
+                "model": "claude-sonnet-4-6",
+                "cwd": "/workspace",
+            },
+        },
+        {"type": "external_message", "role": "user", "content": "Inspect the project"},
+        {
+            "type": "system",
+            "subtype": "init",
+            "session_id": "claude-session",
+            "model": "claude-sonnet-4-6",
+            "tools": ["Bash", "Edit"],
+        },
+        {
+            "type": "assistant",
+            "session_id": "claude-session",
+            "message": {
+                "role": "assistant",
+                "model": "claude-sonnet-4-6",
+                "content": [
+                    {"type": "text", "text": "I'll inspect the files."},
+                    {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": "ls"}},
+                ],
+                "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+            },
+        },
+        {
+            "type": "user",
+            "session_id": "claude-session",
+            "message": {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_1", "content": "README.md\nsrc"},
+                ],
+            },
+        },
+        {
+            "type": "result",
+            "session_id": "claude-session",
+            "result": "Done.",
+            "usage": {"input_tokens": 12, "output_tokens": 7, "total_tokens": 19},
+            "total_cost_usd": 0.01,
+        },
+    ]
+    trace_file.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
+
+    example = convert_trace_to_training_example(trace_file)
+
+    assert example.metadata["trace_type"] == "claude-code"
+    assert example.metadata["session_id"] == "claude-session"
+    assert example.metadata["model_provider"] == "anthropic"
+    assert example.prompt == "Inspect the project"
+    assert example.messages[0] == {"role": "user", "content": "Inspect the project"}
+    assert example.messages[1]["role"] == "assistant"
+    assert example.messages[1]["content"] == "I'll inspect the files."
+    assert example.messages[1]["tool_calls"] == [
+        {
+            "id": "toolu_1",
+            "type": "function",
+            "function": {"name": "Bash", "arguments": {"command": "ls"}},
+        }
+    ]
+    assert example.messages[2] == {
+        "role": "tool",
+        "tool_call_id": "toolu_1",
+        "name": "unknown_tool",
+        "content": "README.md\nsrc",
+    }
+    assert example.messages[3] == {"role": "assistant", "content": "Done."}
+    assert {tool["function"]["name"] for tool in example.tools} == {"Bash", "Edit"}
+
+
+def test_convert_external_agent_trace(tmp_path: Path):
+    trace_file = tmp_path / "hermes.jsonl"
+    events = [
+        {
+            "type": "external_session_meta",
+            "payload": {
+                "id": "hermes-session",
+                "source": "hermes-agent",
+                "model_provider": "hermes",
+                "model": "qwen/qwen3-coder",
+            },
+        },
+        {"type": "external_message", "role": "user", "content": "Build a CLI"},
+        {"type": "external_message", "role": "assistant", "content": "Built it."},
+    ]
+    trace_file.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
+
+    example = convert_trace_to_training_example(trace_file)
+
+    assert example.metadata["trace_type"] == "hermes-agent"
+    assert example.metadata["session_id"] == "hermes-session"
+    assert example.prompt == "Build a CLI"
+    assert example.messages == [
+        {"role": "user", "content": "Build a CLI"},
+        {"role": "assistant", "content": "Built it."},
+    ]
+
+
 def test_convert_trace_uses_reasoning_text_when_summary_is_empty(tmp_path: Path):
     trace_file = tmp_path / "trace.jsonl"
     events = [

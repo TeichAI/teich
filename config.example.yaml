@@ -1,7 +1,7 @@
 # Teich configuration
 #
 # Quick start:
-# 1. Choose agent.provider: codex, pi, or chat
+# 1. Choose agent.provider: codex, pi, claude-code, hermes, or chat
 # 2. Set model.model to the model you want to run
 # 3. Keep prompts in prompts.jsonl, or add inline prompts below
 # 4. Prefer TEICH_API_KEY / OPENROUTER_API_KEY / OPENAI_API_KEY in your environment for secrets
@@ -10,6 +10,8 @@
 agent:
   # codex = Codex CLI in Docker
   # pi = Pi coding agent in Docker
+  # claude-code = Claude Code CLI in Docker
+  # hermes = Hermes Agent CLI in Docker
   # chat = direct text-only dataset generation via an OpenAI-compatible API
   provider: pi
 
@@ -26,6 +28,7 @@ model:
   # Optional reasoning / thinking level.
   # - Codex: forwarded as model_reasoning_effort
   # - Pi: normalized to low / medium / high when supported
+  # - Claude Code / Hermes: model/provider specific
   reasoning_effort: medium
 
   # Optional Pi-specific provider overrides.

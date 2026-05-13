@@ -12,7 +12,7 @@ import pytest
 
 import teich.runner as runner_module
 from teich.config import APIConfig, Config, MCPConfig, ModelConfig, PromptInput
-from teich.runner import ChatRunner, CodexRunner, PiRunner, pending_prompt_inputs_for_resume
+from teich.runner import ChatRunner, ClaudeCodeRunner, CodexRunner, HermesRunner, PiRunner, pending_prompt_inputs_for_resume
 
 
 def test_codex_runner_init():
@@ -180,6 +180,121 @@ def test_docker_runners_keep_long_prompt_out_of_host_command_line(tmp_path: Path
     pi_command = mock_pi_run_process.call_args.args[0]
     assert long_prompt not in pi_command
     assert "@/workspace/.teich-prompt.txt" in pi_command
+
+
+def test_claude_code_runner_uses_stream_json_and_prompt_file(tmp_path: Path):
+    long_prompt = "x" * 40000
+    config = Config(
+        agent={"provider": "claude-code"},
+        api=APIConfig(provider="anthropic", api_key="sk-ant-test"),
+        model=ModelConfig(model="claude-sonnet-4-6", approval_policy="never"),
+        output={"traces_dir": tmp_path / "output", "sandbox_dir": tmp_path / "sandbox"},
+    )
+    with patch.object(ClaudeCodeRunner, "_ensure_image"):
+        runner = ClaudeCodeRunner(config)
+
+    with patch.object(runner, "_run_external_process", return_value=('{"type":"result","result":"done"}\n', "")) as mock_run, \
+         patch.object(runner, "_copy_workspace_snapshot"):
+        trace_path = runner.run_session(long_prompt, "claude-session")
+
+    command = mock_run.call_args.args[0]
+    command_text = " ".join(command)
+    assert long_prompt not in command
+    assert "claude" in command_text
+    assert "--output-format stream-json" in command_text
+    assert "--permission-mode bypassPermissions" in command_text
+    assert "< /workspace/.teich-prompt.txt" in command_text
+    assert "ANTHROPIC_API_KEY=sk-ant-test" in command
+    rows = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
+    assert rows[0]["type"] == "external_session_meta"
+    assert rows[1]["type"] == "external_message"
+    assert rows[1]["role"] == "user"
+    assert rows[2]["type"] == "result"
+
+
+def test_claude_code_runner_uses_openrouter_anthropic_skin_auth(tmp_path: Path):
+    config = Config(
+        agent={"provider": "claude-code"},
+        api=APIConfig(
+            provider="openrouter",
+            api_key="sk-or-test",
+            base_url="https://openrouter.ai/api/v1",
+        ),
+        model=ModelConfig(model="minimax/minimax-m2.5:free", approval_policy="never"),
+        output={"traces_dir": tmp_path / "output", "sandbox_dir": tmp_path / "sandbox"},
+    )
+    with patch.object(ClaudeCodeRunner, "_ensure_image"):
+        runner = ClaudeCodeRunner(config)
+
+    with patch.object(runner, "_run_external_process", return_value=('{"type":"result","result":"done"}\n', "")) as mock_run, \
+         patch.object(runner, "_copy_workspace_snapshot"):
+        trace_path = runner.run_session("smoke", "claude-openrouter-session")
+
+    command = mock_run.call_args.args[0]
+    command_text = " ".join(command)
+    assert "ANTHROPIC_AUTH_TOKEN=sk-or-test" in command
+    assert "ANTHROPIC_API_KEY=" in command
+    assert "ANTHROPIC_API_KEY=sk-or-test" not in command
+    assert "OPENROUTER_API_KEY=sk-or-test" in command
+    assert "ANTHROPIC_BASE_URL=http://127.0.0.1:17891" in command
+    assert "TEICH_CLAUDE_PROXY_TARGET=https://openrouter.ai/api/v1" in command
+    assert "TEICH_CLAUDE_PROXY_TARGET_MODEL=minimax/minimax-m2.5:free" in command
+    assert "--model claude-sonnet-4-6" in command_text
+    assert "--model minimax/minimax-m2.5:free" not in command_text
+    assert "node /home/codex/.claude/claude_openrouter_proxy.js" in command_text
+    rows = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
+    assert rows[0]["payload"]["model"] == "minimax/minimax-m2.5:free"
+
+
+def test_claude_code_runner_uses_continue_for_followups(tmp_path: Path):
+    config = Config(
+        agent={"provider": "claude"},
+        model=ModelConfig(model="claude-sonnet-4-6"),
+        output={"traces_dir": tmp_path / "output", "sandbox_dir": tmp_path / "sandbox"},
+    )
+    prompt_input = PromptInput(prompt="Build app", follow_up_prompts=["Add tests"])
+    with patch.object(ClaudeCodeRunner, "_ensure_image"):
+        runner = ClaudeCodeRunner(config)
+    with patch.object(runner, "_start_container") as mock_start, \
+         patch.object(runner, "_run_external_process", return_value=('{"type":"result","result":"done"}\n', "")) as mock_run, \
+         patch.object(runner, "_copy_workspace_snapshot"), \
+         patch.object(runner, "_remove_container") as mock_remove:
+        runner.run_session(prompt_input.prompt, "claude-followups", prompt_input=prompt_input)
+
+    mock_start.assert_called_once()
+    assert mock_run.call_count == 2
+    first_command = " ".join(mock_run.call_args_list[0].args[0])
+    second_command = " ".join(mock_run.call_args_list[1].args[0])
+    assert "--continue" not in first_command
+    assert "--continue" in second_command
+    mock_remove.assert_called_once_with("teich-claude-claude-followups")
+
+
+def test_hermes_runner_uses_chat_query_and_prompt_file(tmp_path: Path):
+    long_prompt = "x" * 40000
+    config = Config(
+        agent={"provider": "hermes"},
+        api=APIConfig(provider="openrouter", api_key="sk-or-test"),
+        output={"traces_dir": tmp_path / "output", "sandbox_dir": tmp_path / "sandbox"},
+    )
+    with patch.object(HermesRunner, "_ensure_image"):
+        runner = HermesRunner(config)
+    with patch.object(runner, "_run_external_process", return_value=("done", "")) as mock_run, \
+         patch.object(runner, "_copy_workspace_snapshot"):
+        trace_path = runner.run_session(long_prompt, "hermes-session")
+
+    command = mock_run.call_args.args[0]
+    command_text = " ".join(command)
+    assert long_prompt not in command
+    assert "hermes chat --provider openrouter" in command_text
+    assert "--model codex-mini-latest" in command_text
+    assert "--ignore-user-config" in command_text
+    assert '--source teich -q "$(cat /workspace/.teich-prompt.txt)"' in command_text
+    assert "OPENROUTER_API_KEY=sk-or-test" in command
+    rows = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
+    assert rows[0]["payload"]["source"] == "hermes-agent"
+    assert rows[-1]["role"] == "assistant"
+    assert rows[-1]["content"] == "done"
 
 
 def test_run_process_removes_named_container_on_failure():
@@ -1099,6 +1214,56 @@ def test_copy_normalized_session_file_populates_reasoning_summary(tmp_path: Path
     assert events[1]["payload"]["type"] == "message"
 
 
+def test_copy_normalized_session_file_converts_codex_custom_tool_events(tmp_path: Path):
+    source = tmp_path / "source.jsonl"
+    destination = tmp_path / "destination.jsonl"
+    source.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "custom_tool_call",
+                            "status": "completed",
+                            "call_id": "call_patch",
+                            "name": "apply_patch",
+                            "input": "*** Begin Patch\n*** Add File: app.py\n+print('hi')\n*** End Patch\n",
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "custom_tool_call_output",
+                            "call_id": "call_patch",
+                            "output": json.dumps({"output": "Success\n", "metadata": {"exit_code": 0}}),
+                        },
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    CodexRunner._copy_normalized_session_file(source, destination)
+
+    events = [json.loads(line) for line in destination.read_text(encoding="utf-8").splitlines() if line]
+    assert events[0]["payload"]["type"] == "function_call"
+    assert events[0]["payload"]["arguments"] == json.dumps(
+        {"patch": "*** Begin Patch\n*** Add File: app.py\n+print('hi')\n*** End Patch\n"},
+        ensure_ascii=False,
+    )
+    assert events[0]["payload"]["status"] == "completed"
+    assert events[1]["payload"] == {
+        "call_id": "call_patch",
+        "type": "function_call_output",
+        "output": "Success\n",
+    }
+
+
 def test_pi_runner_builds_command_and_project_settings(tmp_path: Path):
     config = Config(
         agent={"provider": "pi"},
@@ -1824,6 +1989,125 @@ def test_chat_runner_resume_appends_existing_chat_file(tmp_path: Path):
 
     rows = [json.loads(line) for line in destination.read_text(encoding="utf-8").splitlines()]
     assert [row["prompt"] for row in rows] == ["Hello", "Who are you?"]
+
+
+def test_chat_runner_resume_extends_existing_chat_row_with_follow_ups(tmp_path: Path):
+    config = Config(
+        agent={"provider": "chat"},
+        model=ModelConfig(model="gpt-4.1-mini"),
+        api=APIConfig(provider="openai", api_key="sk-test", wire_api="responses"),
+        output={"traces_dir": tmp_path / "output"},
+    )
+    runner = ChatRunner(config)
+    destination = tmp_path / "output" / "chat.jsonl"
+    destination.parent.mkdir(parents=True)
+    destination.write_text(
+        json.dumps(
+            {
+                "prompt": "Build app",
+                "response": "Built",
+                "messages": [
+                    {"role": "system", "content": "You are a helpful assistant", "thinking": None},
+                    {"role": "user", "content": "Build app", "thinking": None},
+                    {"role": "assistant", "content": "Built", "thinking": "planned"},
+                ],
+                "usage": {"input": 3, "output": 4, "totalTokens": 7},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    calls = []
+
+    def fake_turn(prompt: str, history: list[dict[str, str]] | None = None):
+        calls.append((prompt, list(history or [])))
+        if prompt == "Add tests":
+            return "Tests added", None, {"input": 1, "output": 2, "totalTokens": 3}, "gpt-4.1-mini"
+        if prompt == "Polish":
+            return "Polished", "checked", {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5}, "gpt-4.1-mini"
+        raise AssertionError(f"unexpected prompt: {prompt}")
+
+    prompt_input = PromptInput(prompt="Build app", follow_up_prompts=["Add tests", "Polish"])
+    with patch.object(runner, "_request_chat_turn", side_effect=fake_turn):
+        assert runner.run_all(max_concurrency=1, prompt_inputs=[prompt_input], resume=True) == [destination]
+
+    rows = [json.loads(line) for line in destination.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["prompt"] == "Build app"
+    assert row["follow_up_prompts"] == ["Add tests", "Polish"]
+    assert row["responses"] == ["Built", "Tests added", "Polished"]
+    assert row["response"] == "Polished"
+    assert row["thinking"] == "planned\n\nchecked"
+    assert row["usage"] == {"input": 6, "output": 9, "reasoning": 0, "totalTokens": 15}
+    assert [message["role"] for message in row["messages"]] == [
+        "system",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+    ]
+    assert [call[0] for call in calls] == ["Add tests", "Polish"]
+    assert calls[0][1] == [
+        {"role": "user", "content": "Build app"},
+        {"role": "assistant", "content": "Built"},
+    ]
+    assert calls[1][1][-2:] == [
+        {"role": "user", "content": "Add tests"},
+        {"role": "assistant", "content": "Tests added"},
+    ]
+
+
+def test_chat_runner_resume_extends_existing_partial_follow_up_row(tmp_path: Path):
+    config = Config(
+        agent={"provider": "chat"},
+        model=ModelConfig(model="gpt-4.1-mini"),
+        api=APIConfig(provider="openai", api_key="sk-test", wire_api="responses"),
+        output={"traces_dir": tmp_path / "output"},
+    )
+    runner = ChatRunner(config)
+    destination = tmp_path / "output" / "chat.jsonl"
+    destination.parent.mkdir(parents=True)
+    destination.write_text(
+        json.dumps(
+            {
+                "prompt": "Build app",
+                "follow_up_prompts": ["Add tests"],
+                "response": "Tests added",
+                "responses": ["Built", "Tests added"],
+                "messages": [
+                    {"role": "system", "content": "You are a helpful assistant", "thinking": None},
+                    {"role": "user", "content": "Build app", "thinking": None},
+                    {"role": "assistant", "content": "Built", "thinking": None},
+                    {"role": "user", "content": "Add tests", "thinking": None},
+                    {"role": "assistant", "content": "Tests added", "thinking": None},
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    calls = []
+
+    def fake_turn(prompt: str, history: list[dict[str, str]] | None = None):
+        calls.append((prompt, list(history or [])))
+        return "Polished", None, {"input": 1, "output": 1, "totalTokens": 2}, "gpt-4.1-mini"
+
+    prompt_input = PromptInput(prompt="Build app", follow_up_prompts=["Add tests", "Polish"])
+    with patch.object(runner, "_request_chat_turn", side_effect=fake_turn):
+        assert runner.run_all(max_concurrency=1, prompt_inputs=[prompt_input], resume=True) == [destination]
+
+    rows = [json.loads(line) for line in destination.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["follow_up_prompts"] == ["Add tests", "Polish"]
+    assert rows[0]["responses"] == ["Built", "Tests added", "Polished"]
+    assert [call[0] for call in calls] == ["Polish"]
+    assert calls[0][1][-2:] == [
+        {"role": "user", "content": "Add tests"},
+        {"role": "assistant", "content": "Tests added"},
+    ]
 
 
 def test_chat_runner_resume_continues_queue_after_first_concurrency_window(tmp_path: Path):

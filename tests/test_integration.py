@@ -55,7 +55,9 @@ class TestDockerImage:
         assert "pip --version" in content
         assert "pip3 --version" in content
         assert "ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright" in content
-        assert "npm install -g @openai/codex @mariozechner/pi-coding-agent playwright" in content
+        assert "npm install -g @openai/codex @anthropic-ai/claude-code @mariozechner/pi-coding-agent playwright" in content
+        assert "git clone --depth 1 https://github.com/NousResearch/hermes-agent.git" in content
+        assert "uv pip install --python /usr/local/lib/hermes-agent/venv/bin/python -e ." in content
         assert "npx playwright install --with-deps chromium" in content
         assert 'ENV NODE_PATH="/usr/local/lib/node_modules"' in content
 

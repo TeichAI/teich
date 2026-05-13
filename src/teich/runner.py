@@ -27,15 +27,20 @@ if TYPE_CHECKING:
 
 from .config import PromptInput
 
-from .converter import convert_trace_to_training_example
+from .converter import convert_trace_to_training_example, normalize_codex_trace_event
 
 RUNTIME_IMAGE_NAME = "teich-runtime:v3"
 RUNTIME_DOCKERFILE_NAME = "codex-runtime.Dockerfile"
 CODEX_HOME_IN_CONTAINER = "/home/codex/.codex"
+CLAUDE_HOME_IN_CONTAINER = "/home/codex/.claude"
+HERMES_HOME_IN_CONTAINER = "/home/codex/.hermes"
 PI_AGENT_DIR_IN_CONTAINER = "/home/codex/.pi/agent"
 PI_SESSIONS_DIR_IN_CONTAINER = "/home/codex/pi-sessions"
 WORKSPACE_IN_CONTAINER = "/workspace"
 LOCAL_PROVIDER_PROXY_SCRIPT_NAME = "local_provider_proxy.js"
+CLAUDE_OPENROUTER_PROXY_SCRIPT_NAME = "claude_openrouter_proxy.js"
+CLAUDE_OPENROUTER_PROXY_PORT = 17891
+CLAUDE_OPENROUTER_SURROGATE_MODEL = "claude-sonnet-4-6"
 TEICH_PROMPT_FILE_NAME = ".teich-prompt.txt"
 PI_SYSTEM_PROMPT_CUSTOM_TYPE = "teich-system-prompt"
 PI_EMPTY_TOOL_NOT_FOUND_TEXT = "Tool  not found"
@@ -71,6 +76,99 @@ const server = http.createServer(async (req, res) => {
       body,
       duplex: body ? 'half' : undefined,
       dispatcher: upstreamUrl.protocol === 'https:' ? undefined : undefined,
+    });
+
+    res.writeHead(upstream.status, Object.fromEntries(upstream.headers.entries()));
+    if (!upstream.body) {
+      res.end();
+      return;
+    }
+    Readable.fromWeb(upstream.body).pipe(res);
+  } catch (error) {
+    res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' });
+    res.end(String(error));
+  }
+});
+
+server.listen(listenPort, '127.0.0.1');
+""".strip()
+
+CLAUDE_OPENROUTER_PROXY_SCRIPT = """
+const http = require('node:http');
+const https = require('node:https');
+const { Readable } = require('node:stream');
+
+const target = new URL(process.env.TEICH_CLAUDE_PROXY_TARGET);
+const targetModel = process.env.TEICH_CLAUDE_PROXY_TARGET_MODEL;
+const listenPort = Number(process.env.TEICH_CLAUDE_PROXY_PORT || '17891');
+
+async function readRequestBody(req) {
+  const chunks = [];
+  for await (const chunk of req) {
+    chunks.push(chunk);
+  }
+  return chunks.length ? Buffer.concat(chunks) : undefined;
+}
+
+function upstreamUrlFor(reqUrl) {
+  const incoming = new URL(reqUrl || '/', 'http://127.0.0.1');
+  let pathname = incoming.pathname;
+  if (pathname.startsWith('/v1/')) {
+    pathname = pathname.slice('/v1'.length);
+  }
+  const basePath = target.pathname.replace(/\\/$/, '');
+  const upstream = new URL(target);
+  upstream.pathname = `${basePath}${pathname.startsWith('/') ? pathname : `/${pathname}`}`;
+  upstream.search = incoming.search;
+  return upstream;
+}
+
+function rewriteJsonBody(headers, body) {
+  if (!body || !targetModel) {
+    return body;
+  }
+  const contentType = String(headers['content-type'] || '');
+  if (!contentType.includes('json')) {
+    return body;
+  }
+  try {
+    const payload = JSON.parse(body.toString('utf8'));
+    if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+      if (typeof payload.model === 'string') {
+        payload.model = targetModel;
+      }
+      // Claude Code may send Anthropic-specific thinking controls that third-party
+      // OpenRouter models reject. Keep Teich's configured model, not Claude's
+      // surrogate model, as the provider-facing contract.
+      if (Object.prototype.hasOwnProperty.call(payload, 'thinking')) {
+        delete payload.thinking;
+      }
+      return Buffer.from(JSON.stringify(payload));
+    }
+  } catch {
+    return body;
+  }
+  return body;
+}
+
+const server = http.createServer(async (req, res) => {
+  const upstreamUrl = upstreamUrlFor(req.url);
+  const headers = { ...req.headers };
+  delete headers.host;
+  delete headers['content-length'];
+  const apiKey = headers['x-api-key'] || headers.authorization?.replace(/^Bearer\\s+/i, '');
+  if (apiKey && !headers.authorization) {
+    headers.authorization = `Bearer ${apiKey}`;
+  }
+
+  try {
+    const rawBody = req.method === 'GET' || req.method === 'HEAD' ? undefined : await readRequestBody(req);
+    const body = rewriteJsonBody(headers, rawBody);
+    const upstream = await fetch(upstreamUrl, {
+      method: req.method,
+      headers,
+      body,
+      duplex: body ? 'half' : undefined,
     });
 
     res.writeHead(upstream.status, Object.fromEntries(upstream.headers.entries()));
@@ -592,6 +690,7 @@ class DockerRuntimeRunner:
         prefix: str,
     ) -> tuple[Path, Path]:
         workspace_root = Path(tempfile.mkdtemp(prefix=f"{prefix}-{session_id}-"))
+        workspace_root.chmod(0o777)
         workspace = workspace_root
         if prompt_input is None:
             return workspace_root, workspace
@@ -762,6 +861,43 @@ class DockerRuntimeRunner:
                     continue
 
                 event_type = event.get("type")
+                if event_type == "external_session_meta":
+                    payload = event.get("payload")
+                    if isinstance(payload, dict):
+                        provider = payload.get("model_provider")
+                        model = payload.get("model")
+                        if isinstance(provider, str) and provider.strip() and not metrics.provider:
+                            metrics.provider = provider.strip()
+                        if isinstance(model, str) and model.strip() and not metrics.model:
+                            metrics.model = model.strip()
+                    continue
+
+                if event_type == "system" and event.get("subtype") == "init":
+                    model = event.get("model")
+                    if isinstance(model, str) and model.strip() and not metrics.model:
+                        metrics.model = model.strip()
+                    continue
+
+                if event_type == "assistant":
+                    payload = event.get("message")
+                    if isinstance(payload, dict):
+                        model = payload.get("model")
+                        if isinstance(model, str) and model.strip() and not metrics.model:
+                            metrics.model = model.strip()
+                        usage = payload.get("usage")
+                        if isinstance(usage, dict):
+                            metrics.add_structured_usage(usage)
+                    continue
+
+                if event_type == "result":
+                    usage = event.get("usage")
+                    if isinstance(usage, dict):
+                        metrics.add_structured_usage(usage)
+                    total_cost = event.get("total_cost_usd")
+                    if isinstance(total_cost, (int, float)) and not isinstance(total_cost, bool):
+                        metrics.total_cost += float(total_cost)
+                    continue
+
                 if event_type == "session_meta":
                     payload = event.get("payload")
                     if isinstance(payload, dict) and not metrics.provider:
@@ -1191,22 +1327,7 @@ class CodexRunner(DockerRuntimeRunner):
 
     @classmethod
     def _normalize_trace_event(cls, event: dict[str, object]) -> dict[str, object]:
-        payload = event.get("payload")
-        if not isinstance(payload, dict):
-            return event
-        if event.get("type") != "response_item" or payload.get("type") != "reasoning":
-            return event
-        summary = payload.get("summary")
-        if isinstance(summary, list) and any(
-            isinstance(item, dict) and isinstance(item.get("text"), str) and item.get("text", "").strip()
-            for item in summary
-        ):
-            return event
-        normalized_event = dict(event)
-        normalized_payload = dict(payload)
-        normalized_payload["summary"] = cls._reasoning_summary_from_content(normalized_payload)
-        normalized_event["payload"] = normalized_payload
-        return normalized_event
+        return normalize_codex_trace_event(event)
 
     @classmethod
     def _copy_normalized_session_file(cls, source_path: Path, destination: Path) -> None:
@@ -1519,6 +1640,526 @@ class CodexRunner(DockerRuntimeRunner):
         )
 
 
+class ExternalCliRunner(DockerRuntimeRunner):
+    """Shared Docker-backed runner for agents that expose a one-shot CLI."""
+
+    provider_name = "external-agent"
+    container_kind = "agent"
+    home_in_container = "/home/codex/.agent"
+    source_name = "external-agent"
+    default_model_provider = "external"
+
+    @staticmethod
+    def _provider_env_key(provider: str) -> str:
+        normalized = re.sub(r"[^a-zA-Z0-9_]+", "_", provider.strip().lower())
+        aliases = {
+            "anthropic": "ANTHROPIC_API_KEY",
+            "claude": "ANTHROPIC_API_KEY",
+            "claude_code": "ANTHROPIC_API_KEY",
+            "claude-code": "ANTHROPIC_API_KEY",
+            "openai": "OPENAI_API_KEY",
+            "openrouter": "OPENROUTER_API_KEY",
+            "nous": "NOUS_API_KEY",
+            "nous_portal": "NOUS_API_KEY",
+            "google": "GOOGLE_API_KEY",
+            "gemini": "GEMINI_API_KEY",
+            "deepseek": "DEEPSEEK_API_KEY",
+            "xai": "XAI_API_KEY",
+            "grok": "XAI_API_KEY",
+            "zai": "GLM_API_KEY",
+            "z_ai": "GLM_API_KEY",
+            "glm": "GLM_API_KEY",
+        }
+        return aliases.get(normalized, f"{normalized.upper() or 'TEICH'}_API_KEY")
+
+    def _api_env_items(self) -> list[tuple[str, str]]:
+        api_key = self.config.get_api_key() or ""
+        if not api_key:
+            return []
+        provider_env_key = self._provider_env_key(self.config.api.provider)
+        items = [("TEICH_API_KEY", api_key), (provider_env_key, api_key)]
+        return list(dict.fromkeys(items))
+
+    def _base_url_env_items(self) -> list[tuple[str, str]]:
+        base_url = self._container_base_url(self.config.get_base_url())
+        if not base_url:
+            return []
+        return [
+            ("TEICH_BASE_URL", base_url),
+            ("OPENAI_BASE_URL", base_url),
+            ("ANTHROPIC_BASE_URL", base_url),
+        ]
+
+    def _build_external_docker_base_command(
+        self,
+        workspace: Path,
+        home_dir: Path,
+        container_name: str,
+        *,
+        detached: bool = False,
+    ) -> list[str]:
+        command = [
+            "docker",
+            "run",
+            *([] if detached else ["--rm"]),
+            *(["-d"] if detached else []),
+            "--name",
+            container_name,
+            "--user",
+            "codex",
+            "-e",
+            "HOME=/home/codex",
+            "-e",
+            f"HERMES_HOME={HERMES_HOME_IN_CONTAINER}",
+            "-v",
+            f"{workspace}:{WORKSPACE_IN_CONTAINER}",
+            "-v",
+            f"{home_dir}:{self.home_in_container}",
+            "-w",
+            WORKSPACE_IN_CONTAINER,
+        ]
+        configured_base_url = self.config.get_base_url()
+        if configured_base_url and self._container_base_url(configured_base_url) != configured_base_url:
+            command.extend(["--add-host", "host.docker.internal:host-gateway"])
+        for key, value in [*self._api_env_items(), *self._base_url_env_items()]:
+            command.extend(["-e", f"{key}={value}"])
+        command.append(self.image_name)
+        return command
+
+    def _build_shell_command(self, *, continue_session: bool = False) -> str:
+        raise NotImplementedError
+
+    def _build_external_command(
+        self,
+        workspace: Path,
+        home_dir: Path,
+        container_name: str,
+        *,
+        continue_session: bool = False,
+    ) -> list[str]:
+        command = self._build_external_docker_base_command(workspace, home_dir, container_name)
+        command.extend(["bash", "-lc", self._build_shell_command(continue_session=continue_session)])
+        return command
+
+    def _build_external_persistent_container_command(
+        self,
+        workspace: Path,
+        home_dir: Path,
+        container_name: str,
+    ) -> list[str]:
+        command = self._build_external_docker_base_command(workspace, home_dir, container_name, detached=True)
+        command.extend(["sleep", "infinity"])
+        return command
+
+    def _build_external_exec_command(self, container_name: str, *, continue_session: bool = False) -> list[str]:
+        return [
+            "docker",
+            "exec",
+            "--user",
+            "codex",
+            "-w",
+            WORKSPACE_IN_CONTAINER,
+            container_name,
+            "bash",
+            "-lc",
+            self._build_shell_command(continue_session=continue_session),
+        ]
+
+    def _run_external_process(self, command: list[str], container_name: str | None) -> tuple[str, str]:
+        process: subprocess.Popen[str] | None = None
+        try:
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        except FileNotFoundError as exc:
+            if shutil.which(command[0]) is None:
+                raise RuntimeError(
+                    "Docker runtime not available. Ensure Docker is installed and the runtime image can be built."
+                ) from exc
+            raise RuntimeError(f"Failed to start Docker runtime process: {exc}") from exc
+        self._register_active_process(process, container_name)
+        try:
+            try:
+                stdout, stderr = process.communicate(timeout=self.config.timeout_seconds)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                stdout, stderr = process.communicate()
+                raise RuntimeError(f"Session timed out after {self.config.timeout_seconds}s")
+            if process.returncode:
+                raise subprocess.CalledProcessError(
+                    process.returncode,
+                    process.args,
+                    output=stdout,
+                    stderr=stderr,
+                )
+            return stdout, stderr
+        except BaseException:
+            self._terminate_process(process, container_name)
+            raise
+        finally:
+            self._unregister_active_process(process)
+
+    def _resolve_output_path(self, file_name: str) -> Path:
+        destination = self.config.output.traces_dir / file_name
+        if not destination.exists():
+            return destination
+        stem = destination.stem
+        suffix = destination.suffix
+        counter = 1
+        while True:
+            candidate = destination.with_name(f"{stem}_{counter}{suffix}")
+            if not candidate.exists():
+                return candidate
+            counter += 1
+
+    def _session_meta_event(self, session_id: str, started_at: datetime, workspace: Path) -> dict[str, object]:
+        return {
+            "timestamp": started_at.isoformat().replace("+00:00", "Z"),
+            "type": "external_session_meta",
+            "payload": {
+                "id": session_id,
+                "timestamp": started_at.isoformat().replace("+00:00", "Z"),
+                "cwd": str(workspace),
+                "source": self.source_name,
+                "model_provider": self.default_model_provider,
+                "model": self.config.get_effective_model(),
+            },
+        }
+
+    @staticmethod
+    def _event_timestamp() -> str:
+        return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    def _events_from_turn_output(
+        self,
+        prompt: str,
+        stdout: str,
+        stderr: str,
+        *,
+        turn_index: int,
+    ) -> list[dict[str, object]]:
+        events: list[dict[str, object]] = [
+            {
+                "timestamp": self._event_timestamp(),
+                "type": "external_message",
+                "role": "user",
+                "turn_index": turn_index,
+                "content": prompt,
+            }
+        ]
+        if stdout.strip():
+            events.append(
+                {
+                    "timestamp": self._event_timestamp(),
+                    "type": "external_message",
+                    "role": "assistant",
+                    "turn_index": turn_index,
+                    "content": stdout.strip(),
+                }
+            )
+        if stderr.strip():
+            events.append(
+                {
+                    "timestamp": self._event_timestamp(),
+                    "type": "external_stderr",
+                    "turn_index": turn_index,
+                    "content": stderr.strip(),
+                }
+            )
+        return events
+
+    def _write_events(self, destination: Path, events: list[dict[str, object]]) -> None:
+        with destination.open("a", encoding="utf-8") as handle:
+            for event in events:
+                handle.write(json.dumps(event, separators=(",", ":"), ensure_ascii=False) + "\n")
+
+    def run_session(
+        self,
+        prompt: str,
+        session_id: str | None = None,
+        progress_callback: SessionProgressCallback | None = None,
+        progress_base: SessionProgressUpdate | None = None,
+        prompt_input: PromptInput | None = None,
+    ) -> Path:
+        if session_id is None:
+            session_id = str(uuid.uuid4())
+        workspace_root, workspace = self._prepare_workspace(session_id, prompt_input, self.container_kind)
+        home_dir = Path(tempfile.mkdtemp(prefix=f"{self.container_kind}-home-{session_id}-"))
+        home_dir.chmod(0o777)
+        started_at = datetime.now(timezone.utc)
+        container_name = self._container_name(self.container_kind, session_id)
+        turn_prompts = _agent_turn_prompts(prompt, prompt_input)
+        destination = self._resolve_output_path(f"{self.source_name}-{session_id}.jsonl")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            workspace.mkdir(parents=True, exist_ok=True)
+            self._write_events(destination, [self._session_meta_event(session_id, started_at, workspace)])
+            if len(turn_prompts) > 1:
+                self._start_container(self._build_external_persistent_container_command(workspace, home_dir, container_name))
+            for turn_index, turn_prompt in enumerate(turn_prompts):
+                (workspace / TEICH_PROMPT_FILE_NAME).write_text(turn_prompt, encoding="utf-8")
+                (workspace / TEICH_PROMPT_FILE_NAME).chmod(0o666)
+                if len(turn_prompts) > 1:
+                    command = self._build_external_exec_command(container_name, continue_session=turn_index > 0)
+                else:
+                    command = self._build_external_command(
+                        workspace,
+                        home_dir,
+                        container_name,
+                        continue_session=turn_index > 0,
+                    )
+                try:
+                    stdout, stderr = self._run_external_process(command, container_name)
+                except subprocess.CalledProcessError as exc:
+                    stderr = exc.stderr if isinstance(exc.stderr, str) else (exc.stderr or "")
+                    stdout = exc.output if isinstance(exc.output, str) else (exc.output or "")
+                    details = stderr.strip() or stdout.strip()
+                    raise RuntimeError(f"Session {session_id[:8]} failed: {details}") from exc
+                self._write_events(
+                    destination,
+                    self._events_from_turn_output(turn_prompt, stdout, stderr, turn_index=turn_index),
+                )
+                if progress_callback and progress_base:
+                    progress_callback(
+                        SessionProgressUpdate(
+                            prompt_id=progress_base.prompt_id,
+                            prompt_index=progress_base.prompt_index,
+                            total_prompts=progress_base.total_prompts,
+                            prompt=progress_base.prompt,
+                            prompt_preview=progress_base.prompt_preview,
+                            status="running",
+                            session_id=session_id,
+                            started_at=progress_base.started_at,
+                            trace_path=destination,
+                            metrics=self._summarize_trace_file(destination),
+                        )
+                    )
+            self._copy_workspace_snapshot(workspace, self._sandbox_destination(destination))
+            return destination
+        except BaseException:
+            raise
+        finally:
+            if len(turn_prompts) > 1:
+                self._remove_container(container_name)
+            shutil.rmtree(workspace_root, ignore_errors=True)
+            shutil.rmtree(home_dir, ignore_errors=True)
+
+
+class ClaudeCodeRunner(ExternalCliRunner):
+    """Runs Claude Code in non-interactive stream-json mode."""
+
+    provider_name = "claude-code"
+    container_kind = "claude"
+    home_in_container = CLAUDE_HOME_IN_CONTAINER
+    source_name = "claude-code"
+    default_model_provider = "anthropic"
+
+    def _needs_openrouter_model_proxy(self) -> bool:
+        if self._provider_env_key(self.config.api.provider) != "OPENROUTER_API_KEY":
+            return False
+        if not self.config.get_base_url():
+            return False
+        model = self.config.get_effective_model().strip().lower()
+        return not (model.startswith("claude-") or model.startswith("anthropic/claude-"))
+
+    def _claude_visible_model(self) -> str:
+        if self._needs_openrouter_model_proxy():
+            return CLAUDE_OPENROUTER_SURROGATE_MODEL
+        return self.config.get_effective_model()
+
+    def _base_url_env_items(self) -> list[tuple[str, str]]:
+        if not self._needs_openrouter_model_proxy():
+            return super()._base_url_env_items()
+        base_url = self._container_base_url(self.config.get_base_url())
+        if not base_url:
+            return []
+        proxy_base_url = f"http://127.0.0.1:{CLAUDE_OPENROUTER_PROXY_PORT}"
+        return [
+            ("TEICH_BASE_URL", base_url),
+            ("OPENAI_BASE_URL", base_url),
+            ("ANTHROPIC_BASE_URL", proxy_base_url),
+            ("TEICH_CLAUDE_PROXY_TARGET", base_url),
+            ("TEICH_CLAUDE_PROXY_TARGET_MODEL", self.config.get_effective_model()),
+            ("TEICH_CLAUDE_PROXY_PORT", str(CLAUDE_OPENROUTER_PROXY_PORT)),
+        ]
+
+    def _api_env_items(self) -> list[tuple[str, str]]:
+        api_key = self.config.get_api_key() or ""
+        if not api_key:
+            return []
+        provider_env_key = self._provider_env_key(self.config.api.provider)
+        if provider_env_key == "OPENROUTER_API_KEY":
+            return [
+                ("TEICH_API_KEY", api_key),
+                ("ANTHROPIC_AUTH_TOKEN", api_key),
+                ("ANTHROPIC_API_KEY", ""),
+                ("OPENROUTER_API_KEY", api_key),
+            ]
+        items = [("TEICH_API_KEY", api_key), ("ANTHROPIC_API_KEY", api_key), (provider_env_key, api_key)]
+        return list(dict.fromkeys(items))
+
+    def _permission_mode(self) -> str | None:
+        approval_policy = (self.config.model.approval_policy or "").strip().lower()
+        if approval_policy == "never":
+            return "bypassPermissions"
+        if approval_policy in {"on-request", "on_failure", "on-failure"}:
+            return "default"
+        return None
+
+    @staticmethod
+    def _write_openrouter_proxy(home_dir: Path) -> Path:
+        home_dir.mkdir(parents=True, exist_ok=True)
+        proxy_script = home_dir / CLAUDE_OPENROUTER_PROXY_SCRIPT_NAME
+        proxy_script.write_text(CLAUDE_OPENROUTER_PROXY_SCRIPT + "\n", encoding="utf-8")
+        proxy_script.chmod(0o755)
+        return proxy_script
+
+    def _openrouter_proxy_shell_prefix(self) -> str:
+        proxy_script = f"{self.home_in_container}/{CLAUDE_OPENROUTER_PROXY_SCRIPT_NAME}"
+        return f"node {shlex.quote(proxy_script)} >/tmp/claude-openrouter-proxy.log 2>&1 & sleep 1 && "
+
+    def _build_shell_command(self, *, continue_session: bool = False) -> str:
+        claude_command = [
+            "claude",
+            "-p",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--model",
+            self._claude_visible_model(),
+        ]
+        permission_mode = self._permission_mode()
+        if permission_mode:
+            claude_command.extend(["--permission-mode", permission_mode])
+        if continue_session:
+            claude_command.append("--continue")
+        return f"{shlex.join(claude_command)} < {shlex.quote(WORKSPACE_IN_CONTAINER + '/' + TEICH_PROMPT_FILE_NAME)}"
+
+    def _build_external_command(
+        self,
+        workspace: Path,
+        home_dir: Path,
+        container_name: str,
+        *,
+        continue_session: bool = False,
+    ) -> list[str]:
+        if not self._needs_openrouter_model_proxy():
+            return super()._build_external_command(
+                workspace,
+                home_dir,
+                container_name,
+                continue_session=continue_session,
+            )
+        self._write_openrouter_proxy(home_dir)
+        command = self._build_external_docker_base_command(workspace, home_dir, container_name)
+        command.extend(
+            [
+                "bash",
+                "-lc",
+                f"{self._openrouter_proxy_shell_prefix()}exec {self._build_shell_command(continue_session=continue_session)}",
+            ]
+        )
+        return command
+
+    def _build_external_persistent_container_command(
+        self,
+        workspace: Path,
+        home_dir: Path,
+        container_name: str,
+    ) -> list[str]:
+        if not self._needs_openrouter_model_proxy():
+            return super()._build_external_persistent_container_command(workspace, home_dir, container_name)
+        self._write_openrouter_proxy(home_dir)
+        command = self._build_external_docker_base_command(workspace, home_dir, container_name, detached=True)
+        command.extend(["bash", "-lc", f"{self._openrouter_proxy_shell_prefix()}exec sleep infinity"])
+        return command
+
+    def _events_from_turn_output(
+        self,
+        prompt: str,
+        stdout: str,
+        stderr: str,
+        *,
+        turn_index: int,
+    ) -> list[dict[str, object]]:
+        events: list[dict[str, object]] = [
+            {
+                "timestamp": self._event_timestamp(),
+                "type": "external_message",
+                "role": "user",
+                "turn_index": turn_index,
+                "content": prompt,
+            }
+        ]
+        fallback_lines: list[str] = []
+        for raw_line in stdout.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                parsed = json.loads(line)
+            except json.JSONDecodeError:
+                fallback_lines.append(line)
+                continue
+            if isinstance(parsed, dict):
+                parsed.setdefault("teich_turn_index", turn_index)
+                events.append(parsed)
+            else:
+                fallback_lines.append(line)
+        fallback = "\n".join(fallback_lines).strip()
+        if fallback:
+            events.append(
+                {
+                    "timestamp": self._event_timestamp(),
+                    "type": "external_message",
+                    "role": "assistant",
+                    "turn_index": turn_index,
+                    "content": fallback,
+                }
+            )
+        if stderr.strip():
+            events.append(
+                {
+                    "timestamp": self._event_timestamp(),
+                    "type": "external_stderr",
+                    "turn_index": turn_index,
+                    "content": stderr.strip(),
+                }
+            )
+        return events
+
+
+class HermesRunner(ExternalCliRunner):
+    """Runs Hermes Agent through its non-interactive chat CLI."""
+
+    provider_name = "hermes"
+    container_kind = "hermes"
+    home_in_container = HERMES_HOME_IN_CONTAINER
+    source_name = "hermes-agent"
+    default_model_provider = "hermes"
+
+    def _build_shell_command(self, *, continue_session: bool = False) -> str:
+        del continue_session
+        prompt_path = shlex.quote(WORKSPACE_IN_CONTAINER + "/" + TEICH_PROMPT_FILE_NAME)
+        hermes_command = [
+            "hermes",
+            "chat",
+            "--provider",
+            self.config.api.provider,
+            "--model",
+            self.config.get_effective_model(),
+            "--quiet",
+            "--yolo",
+            "--ignore-user-config",
+            "--source",
+            "teich",
+        ]
+        return f"{shlex.join(hermes_command)} -q \"$(cat {prompt_path})\""
+
+
 class ChatRunner(DockerRuntimeRunner):
     """Generates text-only chat datasets from prompt inputs via an OpenAI-compatible API."""
 
@@ -1797,6 +2438,226 @@ class ChatRunner(DockerRuntimeRunner):
             totals["totalTokens"] = totals["input"] + totals["output"] + totals["reasoning"]
         return totals
 
+    @staticmethod
+    def _read_chat_training_rows(destination: Path) -> list[dict[str, Any]]:
+        if not destination.exists():
+            return []
+        rows: list[dict[str, Any]] = []
+        with destination.open("r", encoding="utf-8") as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                row = json.loads(line)
+                if not isinstance(row, dict):
+                    raise ValueError(f"Chat dataset row in {destination} is not a JSON object.")
+                rows.append(row)
+        return rows
+
+    @staticmethod
+    def _write_chat_training_rows(destination: Path, rows: list[dict[str, Any]]) -> None:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with tmp_path.open("w", encoding="utf-8") as handle:
+                for row in rows:
+                    handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_path, destination)
+        finally:
+            if tmp_path.exists():
+                tmp_path.unlink()
+
+    @staticmethod
+    def _chat_row_base_prompt(row: dict[str, Any]) -> str:
+        prompt = row.get("prompt")
+        if isinstance(prompt, str) and prompt.strip():
+            return prompt
+        return _prompt_from_training_messages(row.get("messages"))
+
+    @staticmethod
+    def _chat_user_prompts_from_messages(messages: Any) -> list[str]:
+        if not isinstance(messages, list):
+            return []
+        user_prompts: list[str] = []
+        for message in messages:
+            if not isinstance(message, dict) or message.get("role") != "user":
+                continue
+            content = ChatRunner._extract_content_text(message.get("content"))
+            if content:
+                user_prompts.append(content)
+        return user_prompts
+
+    @classmethod
+    def _chat_row_follow_up_prompts(cls, row: dict[str, Any], base_prompt: str) -> list[str]:
+        follow_up_prompts = row.get("follow_up_prompts")
+        if isinstance(follow_up_prompts, list):
+            return [prompt.strip() for prompt in follow_up_prompts if isinstance(prompt, str) and prompt.strip()]
+
+        user_prompts = cls._chat_user_prompts_from_messages(row.get("messages"))
+        if len(user_prompts) <= 1:
+            return []
+        if _prompt_text_completion_key(user_prompts[0]) != _prompt_text_completion_key(base_prompt):
+            return []
+        return user_prompts[1:]
+
+    @staticmethod
+    def _chat_assistant_responses_from_messages(messages: Any) -> list[str]:
+        if not isinstance(messages, list):
+            return []
+        responses: list[str] = []
+        for message in messages:
+            if not isinstance(message, dict) or message.get("role") != "assistant":
+                continue
+            content = ChatRunner._extract_content_text(message.get("content"))
+            if content:
+                responses.append(content)
+        return responses
+
+    @classmethod
+    def _chat_row_responses(cls, row: dict[str, Any], messages: list[dict[str, Any]]) -> list[str]:
+        responses = row.get("responses")
+        if isinstance(responses, list):
+            clean_responses = [response.strip() for response in responses if isinstance(response, str) and response.strip()]
+            if clean_responses:
+                return clean_responses
+
+        assistant_responses = cls._chat_assistant_responses_from_messages(messages)
+        if assistant_responses:
+            return assistant_responses
+
+        response = row.get("response")
+        if isinstance(response, str) and response.strip():
+            return [response.strip()]
+        return []
+
+    @classmethod
+    def _chat_row_completed_follow_up_prompts(cls, row: dict[str, Any], base_prompt: str) -> list[str]:
+        follow_up_prompts = cls._chat_row_follow_up_prompts(row, base_prompt)
+        if not follow_up_prompts:
+            return []
+
+        messages = row.get("messages")
+        if isinstance(messages, list):
+            assistant_turns = len(cls._chat_assistant_responses_from_messages(messages))
+        else:
+            responses = row.get("responses")
+            if isinstance(responses, list):
+                assistant_turns = len([response for response in responses if isinstance(response, str) and response.strip()])
+            elif isinstance(row.get("response"), str) and row.get("response", "").strip():
+                assistant_turns = 1 + len(follow_up_prompts)
+            else:
+                assistant_turns = 0
+
+        completed_follow_up_count = max(0, min(len(follow_up_prompts), assistant_turns - 1))
+        return follow_up_prompts[:completed_follow_up_count]
+
+    @staticmethod
+    def _prompt_sequence_matches_prefix(prefix: list[str], prompts: list[str]) -> bool:
+        if len(prefix) > len(prompts):
+            return False
+        return [
+            _prompt_text_completion_key(prompt)
+            for prompt in prefix
+        ] == [
+            _prompt_text_completion_key(prompt)
+            for prompt in prompts[: len(prefix)]
+        ]
+
+    @classmethod
+    def _chat_row_can_extend(cls, row: dict[str, Any], prompt_input: PromptInput) -> tuple[bool, list[str]]:
+        base_prompt = cls._chat_row_base_prompt(row)
+        if not base_prompt.strip():
+            return False, []
+        if _prompt_text_completion_key(base_prompt) != _prompt_text_completion_key(prompt_input.prompt):
+            return False, []
+        if not _training_example_has_answer(row):
+            return False, []
+
+        completed_follow_ups = cls._chat_row_completed_follow_up_prompts(row, base_prompt)
+        if len(completed_follow_ups) >= len(prompt_input.follow_up_prompts):
+            return False, completed_follow_ups
+        if not cls._prompt_sequence_matches_prefix(completed_follow_ups, prompt_input.follow_up_prompts):
+            return False, completed_follow_ups
+        return True, completed_follow_ups
+
+    @classmethod
+    def _find_chat_row_to_extend(
+        cls,
+        rows: list[dict[str, Any]],
+        prompt_input: PromptInput,
+    ) -> tuple[int, dict[str, Any]] | None:
+        best: tuple[int, dict[str, Any], int] | None = None
+        for index, row in enumerate(rows):
+            can_extend, completed_follow_ups = cls._chat_row_can_extend(row, prompt_input)
+            if not can_extend:
+                continue
+            completed_turns = len(completed_follow_ups)
+            if best is None or completed_turns > best[2]:
+                best = (index, row, completed_turns)
+        if best is None:
+            return None
+        return best[0], best[1]
+
+    @classmethod
+    def _chat_row_completion_key(cls, row: dict[str, Any]) -> str | None:
+        prompt = cls._chat_row_base_prompt(row)
+        if not prompt.strip() or not _training_example_has_answer(row):
+            return None
+        return _prompt_completion_key(_prompt_input_from_training_example(row, prompt))
+
+    @classmethod
+    def _chat_rows_include_completed_prompt(cls, rows: list[dict[str, Any]], prompt_input: PromptInput) -> bool:
+        prompt_key = _prompt_completion_key(prompt_input)
+        return any(cls._chat_row_completion_key(row) == prompt_key for row in rows)
+
+    def _chat_messages_from_row(self, row: dict[str, Any], prompt_input: PromptInput) -> list[dict[str, Any]]:
+        messages: list[dict[str, Any]] = []
+        existing_messages = row.get("messages")
+        if isinstance(existing_messages, list):
+            for message in existing_messages:
+                if not isinstance(message, dict) or message.get("role") not in {"system", "user", "assistant"}:
+                    continue
+                messages.append(dict(message))
+
+        if not any(message.get("role") == "system" for message in messages):
+            system_prompt = row.get("system") if isinstance(row.get("system"), str) and row.get("system", "").strip() else self._chat_system_prompt()
+            messages.insert(0, {"role": "system", "content": system_prompt, "thinking": None})
+
+        if not any(message.get("role") == "user" for message in messages):
+            messages.append({"role": "user", "content": prompt_input.prompt, "thinking": None})
+
+        if not any(message.get("role") == "assistant" for message in messages):
+            response = row.get("response")
+            if isinstance(response, str) and response.strip():
+                messages.append({"role": "assistant", "content": response.strip(), "thinking": row.get("thinking")})
+
+        return messages
+
+    @staticmethod
+    def _chat_history_from_messages(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
+        history: list[dict[str, str]] = []
+        for message in messages:
+            role = message.get("role")
+            if role not in {"user", "assistant"}:
+                continue
+            content = ChatRunner._extract_content_text(message.get("content"))
+            if content:
+                history.append({"role": role, "content": content})
+        return history
+
+    @staticmethod
+    def _chat_thinking_parts_from_messages(messages: list[dict[str, Any]]) -> list[str]:
+        thinking_parts: list[str] = []
+        for message in messages:
+            if message.get("role") != "assistant":
+                continue
+            thinking = message.get("thinking") or message.get("reasoning_content")
+            if isinstance(thinking, str) and thinking.strip():
+                thinking_parts.append(thinking.strip())
+        return thinking_parts
+
     def _request_chat_conversation(self, prompt_input: PromptInput) -> dict[str, Any]:
         if not prompt_input.follow_up_prompts:
             return self._request_chat_completion(prompt_input.prompt)
@@ -1840,6 +2701,89 @@ class ChatRunner(DockerRuntimeRunner):
                 "turn_count": len(prompt_input.turn_prompts()),
             },
         }
+
+    def _request_chat_conversation_from_existing(
+        self,
+        prompt_input: PromptInput,
+        existing_row: dict[str, Any],
+    ) -> dict[str, Any]:
+        base_prompt = self._chat_row_base_prompt(existing_row) or prompt_input.prompt
+        completed_follow_ups = self._chat_row_completed_follow_up_prompts(existing_row, base_prompt)
+        missing_follow_ups = prompt_input.follow_up_prompts[len(completed_follow_ups):]
+        messages = self._chat_messages_from_row(existing_row, prompt_input)
+        history = self._chat_history_from_messages(messages)
+        responses = self._chat_row_responses(existing_row, messages)
+        thinking_parts = self._chat_thinking_parts_from_messages(messages)
+        usages: list[dict[str, Any] | None] = [
+            existing_row.get("usage") if isinstance(existing_row.get("usage"), dict) else None
+        ]
+        model = existing_row.get("model") if isinstance(existing_row.get("model"), str) and existing_row.get("model") else self.config.get_effective_model()
+
+        for prompt in missing_follow_ups:
+            content, thinking, usage, model = self._request_chat_turn(prompt, history)
+            messages.append({"role": "user", "content": prompt, "thinking": None})
+            messages.append({"role": "assistant", "content": content, "thinking": thinking})
+            history.append({"role": "user", "content": prompt})
+            history.append({"role": "assistant", "content": content})
+            responses.append(content)
+            if isinstance(thinking, str) and thinking.strip():
+                thinking_parts.append(thinking.strip())
+            usages.append(usage)
+
+        thinking_text = "\n\n".join(thinking_parts) or None
+        metadata = existing_row.get("metadata") if isinstance(existing_row.get("metadata"), dict) else {}
+        metadata = {
+            **metadata,
+            "trace_type": "chat",
+            "model_provider": self.config.api.provider,
+            "model": model,
+            "turn_count": len(prompt_input.turn_prompts()),
+        }
+        system_prompt = existing_row.get("system") if isinstance(existing_row.get("system"), str) and existing_row.get("system", "").strip() else self._chat_system_prompt()
+        return {
+            "messages": messages,
+            "system": system_prompt,
+            "prompt": prompt_input.prompt,
+            "follow_up_prompts": prompt_input.follow_up_prompts,
+            "thinking": thinking_text,
+            "response": responses[-1] if responses else "",
+            "responses": responses,
+            "model": model,
+            "provider": self.config.api.provider,
+            "usage": self._merge_usage_totals(usages),
+            "metadata": metadata,
+        }
+
+    def _request_or_extend_chat_conversation(
+        self,
+        prompt_input: PromptInput,
+        destination: Path,
+        append_lock: threading.Lock | None,
+    ) -> dict[str, Any]:
+        extension: tuple[int, dict[str, Any]] | None = None
+        if prompt_input.follow_up_prompts and append_lock is not None and destination.exists():
+            with append_lock:
+                rows = self._read_chat_training_rows(destination)
+                extension = self._find_chat_row_to_extend(rows, prompt_input)
+
+        if extension is None:
+            training_row = self._request_chat_conversation(prompt_input)
+            if append_lock is not None:
+                with append_lock:
+                    self._append_chat_training_row(destination, training_row)
+            return training_row
+
+        training_row = self._request_chat_conversation_from_existing(prompt_input, extension[1])
+        if append_lock is not None:
+            with append_lock:
+                rows = self._read_chat_training_rows(destination)
+                latest_extension = self._find_chat_row_to_extend(rows, prompt_input)
+                if latest_extension is not None:
+                    rows[latest_extension[0]] = training_row
+                    self._write_chat_training_rows(destination, rows)
+                elif not self._chat_rows_include_completed_prompt(rows, prompt_input):
+                    self._append_chat_training_row(destination, training_row)
+        return training_row
 
     def _resolve_output_path(self, file_name: str) -> Path:
         destination = self.config.output.traces_dir / file_name
@@ -1919,10 +2863,7 @@ class ChatRunner(DockerRuntimeRunner):
                 raise RuntimeError("Chat runner does not support mcp_servers.")
             if prompt_input.github_repo:
                 raise RuntimeError("Chat runner does not support github_repo prompt inputs.")
-            training_row = self._request_chat_conversation(prompt_input)
-            if append_lock is not None:
-                with append_lock:
-                    self._append_chat_training_row(destination, training_row)
+            training_row = self._request_or_extend_chat_conversation(prompt_input, destination, append_lock)
             if progress_callback:
                 progress_callback(
                     SessionProgressUpdate(

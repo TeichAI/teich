@@ -26,21 +26,32 @@ RUN ln -sf /usr/bin/python3 /usr/local/bin/python && \
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 ENV VIRTUAL_ENV=/opt/venv
 
-# Install Astral uv and @openai/codex in one layer
+# Install Astral uv and npm-backed agent CLIs in one layer
 # Use npm cache mount for faster installs
 RUN --mount=type=cache,target=/root/.npm \
     mkdir -p ${PLAYWRIGHT_BROWSERS_PATH} && \
     curl -LsSf https://astral.sh/uv/install.sh | sh && \
     mv /root/.local/bin/uv /usr/local/bin/uv && \
     mv /root/.local/bin/uvx /usr/local/bin/uvx && \
-    npm install -g @openai/codex @mariozechner/pi-coding-agent playwright && \
+    npm install -g @openai/codex @anthropic-ai/claude-code @mariozechner/pi-coding-agent playwright && \
     npx playwright install --with-deps chromium && \
-    node --version && npm --version && npx --version && uv --version && uvx --version && python --version && python3 --version && pip --version && pip3 --version && codex --version && pi --version
+    node --version && npm --version && npx --version && uv --version && uvx --version && python --version && python3 --version && pip --version && pip3 --version && codex --version && claude --version && pi --version
+
+RUN --mount=type=cache,target=/root/.cache/uv \
+    git clone --depth 1 https://github.com/NousResearch/hermes-agent.git /usr/local/lib/hermes-agent && \
+    cd /usr/local/lib/hermes-agent && \
+    uv venv venv --python python3 && \
+    uv pip install --python /usr/local/lib/hermes-agent/venv/bin/python -e . && \
+    printf '#!/usr/bin/env bash\nunset PYTHONPATH\nunset PYTHONHOME\nexec /usr/local/lib/hermes-agent/venv/bin/hermes "$@"\n' > /usr/local/bin/hermes && \
+    chmod +x /usr/local/bin/hermes && \
+    (hermes --version || hermes --help >/dev/null)
 
 # Create working directory and user in one layer
 WORKDIR /workspace
 RUN useradd -m -s /bin/bash codex && \
     mkdir -p /home/codex/.codex/sessions && \
+    mkdir -p /home/codex/.claude && \
+    mkdir -p /home/codex/.hermes && \
     chown -R codex:codex /home/codex /workspace ${PLAYWRIGHT_BROWSERS_PATH} ${VIRTUAL_ENV}
 
 USER codex

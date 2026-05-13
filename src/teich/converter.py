@@ -139,6 +139,107 @@ def _reasoning_summary(payload: dict[str, Any]) -> str | None:
     return result or None
 
 
+def _reasoning_summary_blocks_from_content(payload: dict[str, Any]) -> list[dict[str, str]]:
+    content = payload.get("content")
+    if not isinstance(content, list):
+        return []
+    summary: list[dict[str, str]] = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") != "reasoning_text":
+            continue
+        text = item.get("text")
+        if isinstance(text, str) and text.strip():
+            summary.append({"type": "summary_text", "text": text.strip()})
+    return summary
+
+
+def _custom_tool_arguments(name: str, value: Any) -> dict[str, Any]:
+    if name == "apply_patch":
+        return {"patch": value if isinstance(value, str) else _normalize_json_like_value(value)}
+    return {"input": _normalize_json_like_value(value)}
+
+
+def _custom_tool_output_value(value: Any) -> Any:
+    if not isinstance(value, str):
+        return _normalize_json_like_value(value)
+    stripped = value.strip()
+    if not stripped:
+        return ""
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        return value
+    if isinstance(parsed, dict) and isinstance(parsed.get("output"), str):
+        return parsed["output"]
+    return _normalize_json_like_value(parsed)
+
+
+def normalize_codex_trace_event(event: dict[str, Any]) -> dict[str, Any]:
+    payload = event.get("payload")
+    if not isinstance(payload, dict) or event.get("type") != "response_item":
+        return event
+
+    payload_type = payload.get("type")
+    if payload_type == "reasoning":
+        summary = payload.get("summary")
+        if isinstance(summary, list) and any(
+            isinstance(item, dict) and isinstance(item.get("text"), str) and item.get("text", "").strip()
+            for item in summary
+        ):
+            return event
+        normalized_payload = dict(payload)
+        normalized_payload["summary"] = _reasoning_summary_blocks_from_content(normalized_payload)
+        normalized_event = dict(event)
+        normalized_event["payload"] = normalized_payload
+        return normalized_event
+
+    if payload_type == "custom_tool_call":
+        name = payload.get("name")
+        call_id = payload.get("call_id")
+        if not isinstance(name, str) or not isinstance(call_id, str):
+            return event
+        normalized_payload = {
+            key: value
+            for key, value in payload.items()
+            if key not in {"type", "input"}
+        }
+        normalized_payload.update(
+            {
+                "type": "function_call",
+                "name": name,
+                "call_id": call_id,
+                "arguments": json.dumps(_custom_tool_arguments(name, payload.get("input")), ensure_ascii=False),
+            }
+        )
+        normalized_event = dict(event)
+        normalized_event["payload"] = normalized_payload
+        return normalized_event
+
+    if payload_type == "custom_tool_call_output":
+        call_id = payload.get("call_id")
+        if not isinstance(call_id, str):
+            return event
+        normalized_payload = {
+            key: value
+            for key, value in payload.items()
+            if key not in {"type", "output"}
+        }
+        normalized_payload.update(
+            {
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": _custom_tool_output_value(payload.get("output")),
+            }
+        )
+        normalized_event = dict(event)
+        normalized_event["payload"] = normalized_payload
+        return normalized_event
+
+    return event
+
+
 def _normalize_json_like_value(value: Any) -> Any:
     if isinstance(value, dict):
         return {key: _normalize_json_like_value(item) for key, item in value.items()}
@@ -318,6 +419,14 @@ def _detect_trace_type(events: list[dict[str, Any]]) -> str:
         if not isinstance(event, dict):
             continue
         event_type = event.get("type")
+        if event_type == "external_session_meta":
+            payload = event.get("payload")
+            source = payload.get("source") if isinstance(payload, dict) else None
+            if isinstance(source, str) and source.strip().lower() in {"claude", "claude-code", "claude_code"}:
+                return "claude_code"
+            return "external_agent"
+        if event_type in {"assistant", "user", "system", "result"} and isinstance(event.get("session_id"), str):
+            return "claude_code"
         if event_type in {"session_meta", "turn_context", "response_item", "event_msg"}:
             return "codex"
         if event_type in {
@@ -334,6 +443,263 @@ def _detect_trace_type(events: list[dict[str, Any]]) -> str:
         }:
             return "pi"
     return "codex"
+
+
+def _claude_text_from_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content.strip()
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        block_type = block.get("type")
+        if block_type in {"text", "input_text", "output_text"}:
+            text = block.get("text")
+            if isinstance(text, str) and text.strip():
+                parts.append(text.strip())
+        elif block_type == "tool_result":
+            text = block.get("content")
+            if isinstance(text, str) and text.strip():
+                parts.append(text.strip())
+    return "\n".join(parts).strip()
+
+
+def _claude_tool_result_text(block: dict[str, Any]) -> str:
+    content = block.get("content")
+    if isinstance(content, str):
+        return content
+    return _first_text_block(content)
+
+
+def _convert_claude_code_trace_to_training_example(
+    trace_file: Path,
+    events: list[dict[str, Any]],
+) -> TrainingExample:
+    messages: list[dict[str, Any]] = []
+    tool_names: set[str] = set()
+    tool_argument_samples: dict[str, list[Any]] = {}
+    session_meta: dict[str, Any] = {}
+    session_id: str | None = None
+    model: str | None = None
+    usage: dict[str, Any] | None = None
+    total_cost_usd: Any = None
+    prompt = ""
+
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        event_type = event.get("type")
+        if event_type == "external_session_meta":
+            payload = event.get("payload")
+            if isinstance(payload, dict):
+                session_meta = payload
+                value = payload.get("id")
+                if isinstance(value, str) and value.strip():
+                    session_id = value.strip()
+                value = payload.get("model")
+                if isinstance(value, str) and value.strip():
+                    model = value.strip()
+            continue
+        if event_type == "external_message":
+            role = event.get("role")
+            content = event.get("content")
+            if not isinstance(role, str) or not isinstance(content, str):
+                continue
+            normalized_role = _normalize_role(role)
+            if normalized_role == "user" and content.strip() and not prompt:
+                prompt = content.strip()
+            messages.append({"role": normalized_role, "content": content})
+            continue
+        if event_type == "system":
+            if isinstance(event.get("session_id"), str):
+                session_id = event["session_id"]
+            if event.get("subtype") == "init":
+                value = event.get("model")
+                if isinstance(value, str) and value.strip():
+                    model = value.strip()
+                tools = event.get("tools")
+                if isinstance(tools, list):
+                    for tool in tools:
+                        if isinstance(tool, str) and tool.strip():
+                            tool_names.add(tool.strip())
+                        elif isinstance(tool, dict):
+                            name = tool.get("name")
+                            if isinstance(name, str) and name.strip():
+                                tool_names.add(name.strip())
+            continue
+        if event_type in {"user", "assistant"} and isinstance(event.get("session_id"), str):
+            session_id = event["session_id"]
+
+        if event_type == "user":
+            payload = event.get("message")
+            if not isinstance(payload, dict):
+                continue
+            content_blocks = payload.get("content")
+            if isinstance(content_blocks, list) and any(
+                isinstance(block, dict) and block.get("type") == "tool_result"
+                for block in content_blocks
+            ):
+                for block in content_blocks:
+                    if not isinstance(block, dict) or block.get("type") != "tool_result":
+                        continue
+                    tool_call_id = block.get("tool_use_id") or block.get("tool_call_id")
+                    if not isinstance(tool_call_id, str) or not tool_call_id:
+                        continue
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call_id,
+                            "name": "unknown_tool",
+                            "content": _claude_tool_result_text(block),
+                        }
+                    )
+                continue
+            content = _claude_text_from_content(content_blocks)
+            if content and not prompt:
+                prompt = content
+            if content:
+                messages.append({"role": "user", "content": content})
+            continue
+
+        if event_type == "assistant":
+            payload = event.get("message")
+            if not isinstance(payload, dict):
+                continue
+            value = payload.get("model")
+            if isinstance(value, str) and value.strip():
+                model = value.strip()
+            payload_usage = payload.get("usage")
+            if isinstance(payload_usage, dict):
+                usage = payload_usage
+            content_blocks = payload.get("content")
+            content = _claude_text_from_content(content_blocks)
+            message: dict[str, Any] = {"role": "assistant", "content": content}
+            tool_calls: list[dict[str, Any]] = []
+            if isinstance(content_blocks, list):
+                for block in content_blocks:
+                    if not isinstance(block, dict) or block.get("type") != "tool_use":
+                        continue
+                    tool_call_id = block.get("id")
+                    tool_name = block.get("name")
+                    if not isinstance(tool_call_id, str) or not isinstance(tool_name, str):
+                        continue
+                    if not tool_call_id or not tool_name:
+                        continue
+                    arguments = _normalize_json_like_value(block.get("input") or {})
+                    tool_names.add(tool_name)
+                    tool_argument_samples.setdefault(tool_name, []).append(arguments)
+                    tool_calls.append(
+                        {
+                            "id": tool_call_id,
+                            "type": "function",
+                            "function": {
+                                "name": tool_name,
+                                "arguments": arguments,
+                            },
+                        }
+                    )
+            if tool_calls:
+                message["tool_calls"] = tool_calls
+            if content or tool_calls:
+                messages.append(message)
+            continue
+
+        if event_type == "result":
+            value = event.get("session_id")
+            if isinstance(value, str) and value.strip():
+                session_id = value.strip()
+            payload_usage = event.get("usage")
+            if isinstance(payload_usage, dict):
+                usage = payload_usage
+            if event.get("total_cost_usd") is not None:
+                total_cost_usd = event.get("total_cost_usd")
+            result = event.get("result")
+            if isinstance(result, str) and result.strip():
+                last_content = messages[-1].get("content") if messages else None
+                if last_content != result.strip():
+                    messages.append({"role": "assistant", "content": result.strip()})
+
+    tools = [
+        _build_tool_entry(name, {"parameters": _infer_tool_parameters_schema(tool_argument_samples.get(name, []))})
+        for name in sorted(tool_names)
+    ]
+    if not prompt:
+        prompt = next(
+            (
+                message.get("content", "")
+                for message in messages
+                if message.get("role") == "user" and isinstance(message.get("content"), str)
+            ),
+            "",
+        )
+    metadata: dict[str, Any] = {
+        "source_file": trace_file.name,
+        "session_id": session_id or session_meta.get("id") or trace_file.stem,
+        "trace_type": "claude-code",
+        "model_provider": session_meta.get("model_provider") or "anthropic",
+        "model": model or session_meta.get("model"),
+        "cwd": session_meta.get("cwd"),
+        "cli_version": session_meta.get("cli_version"),
+        "turn_count": sum(1 for message in messages if message.get("role") == "user"),
+    }
+    if usage:
+        metadata["usage"] = usage
+    if total_cost_usd is not None:
+        metadata["total_cost_usd"] = total_cost_usd
+    return TrainingExample(
+        source_file=trace_file,
+        prompt=prompt,
+        messages=messages,
+        tools=tools,
+        metadata=metadata,
+    )
+
+
+def _convert_external_agent_trace_to_training_example(
+    trace_file: Path,
+    events: list[dict[str, Any]],
+) -> TrainingExample:
+    messages: list[dict[str, Any]] = []
+    session_meta: dict[str, Any] = {}
+    prompt = ""
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") == "external_session_meta":
+            payload = event.get("payload")
+            if isinstance(payload, dict):
+                session_meta = payload
+            continue
+        if event.get("type") != "external_message":
+            continue
+        role = event.get("role")
+        content = event.get("content")
+        if not isinstance(role, str) or not isinstance(content, str):
+            continue
+        normalized_role = _normalize_role(role)
+        if normalized_role == "user" and content.strip() and not prompt:
+            prompt = content.strip()
+        if content.strip() or normalized_role == "assistant":
+            messages.append({"role": normalized_role, "content": content})
+    metadata = {
+        "source_file": trace_file.name,
+        "session_id": session_meta.get("id") or trace_file.stem,
+        "trace_type": session_meta.get("source") or "external-agent",
+        "model_provider": session_meta.get("model_provider"),
+        "model": session_meta.get("model"),
+        "cwd": session_meta.get("cwd"),
+        "cli_version": session_meta.get("cli_version"),
+        "turn_count": sum(1 for message in messages if message.get("role") == "user"),
+    }
+    return TrainingExample(
+        source_file=trace_file,
+        prompt=prompt,
+        messages=messages,
+        tools=[],
+        metadata=metadata,
+    )
 
 
 def load_trace_file(trace_file: Path) -> list[dict[str, Any]]:
@@ -365,6 +731,7 @@ def _convert_codex_trace_to_training_example(
     for event in events:
         if not isinstance(event, dict):
             continue
+        event = normalize_codex_trace_event(event)
         event_type = event.get("type")
         payload = event.get("payload")
         if event_type == "session_meta" and isinstance(payload, dict):
@@ -786,6 +1153,10 @@ def convert_trace_to_training_example(trace_file: Path) -> TrainingExample:
             )
         return _structured_training_example_from_row(trace_file, events[0], 1)
     trace_type = _detect_trace_type(events)
+    if trace_type == "claude_code":
+        return _convert_claude_code_trace_to_training_example(trace_file, events)
+    if trace_type == "external_agent":
+        return _convert_external_agent_trace_to_training_example(trace_file, events)
     if trace_type == "pi":
         return _convert_pi_trace_to_training_example(trace_file, events)
     return _convert_codex_trace_to_training_example(trace_file, events)
@@ -811,6 +1182,10 @@ def _convert_jsonl_file_to_training_rows(jsonl_file: Path) -> list[dict[str, Any
             for row_index, row in enumerate(rows, start=1)
         ]
     trace_type = _detect_trace_type(rows)
+    if trace_type == "claude_code":
+        return [_convert_claude_code_trace_to_training_example(jsonl_file, rows).to_dict()]
+    if trace_type == "external_agent":
+        return [_convert_external_agent_trace_to_training_example(jsonl_file, rows).to_dict()]
     if trace_type == "pi":
         return [_convert_pi_trace_to_training_example(jsonl_file, rows).to_dict()]
     return [_convert_codex_trace_to_training_example(jsonl_file, rows).to_dict()]
