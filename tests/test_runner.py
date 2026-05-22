@@ -239,7 +239,7 @@ def test_docker_runners_keep_long_prompt_out_of_host_command_line(tmp_path: Path
 
     pi_command = mock_pi_run_process.call_args.args[0]
     assert long_prompt not in pi_command
-    assert "@/workspace/.teich-prompt.txt" in pi_command
+    assert any("$(cat /workspace/.teich-prompt.txt)" in part for part in pi_command)
 
 
 def test_claude_code_runner_uses_stream_json_and_prompt_file(tmp_path: Path):
@@ -400,6 +400,42 @@ def test_hermes_runner_uses_chat_query_and_prompt_file(tmp_path: Path):
     assert rows[-1]["content"] == "done"
 
 
+def test_hermes_runner_writes_custom_endpoint_runtime_config(tmp_path: Path):
+    config = Config(
+        agent={"provider": "hermes"},
+        api=APIConfig(provider="openai", base_url="https://lm.gptbox.dev/v1", api_key="none"),
+        model=ModelConfig(model="Opus-Agent", context_length=131072),
+        output={"traces_dir": tmp_path / "output", "sandbox_dir": tmp_path / "sandbox"},
+    )
+    with patch.object(HermesRunner, "_ensure_image"):
+        runner = HermesRunner(config)
+
+    home_dir = tmp_path / "home"
+    home_dir.mkdir()
+    runner._write_hermes_runtime_config(home_dir)
+
+    command = runner._build_shell_command()
+    hermes_config = json.loads((home_dir / "config.yaml").read_text(encoding="utf-8"))
+
+    assert "hermes chat --provider custom" in command
+    assert hermes_config["model"] == {
+        "default": "Opus-Agent",
+        "provider": "custom",
+        "base_url": "https://lm.gptbox.dev/v1",
+        "api_mode": "chat_completions",
+        "context_length": 131072,
+    }
+    assert hermes_config["custom_providers"] == [
+        {
+            "name": "teich-custom",
+            "base_url": "https://lm.gptbox.dev/v1",
+            "model": "Opus-Agent",
+            "api_mode": "chat_completions",
+            "models": {"Opus-Agent": {"context_length": 131072}},
+        }
+    ]
+
+
 def test_external_runner_decodes_subprocess_output_as_utf8(tmp_path: Path):
     config = Config(
         agent={"provider": "hermes"},
@@ -521,13 +557,177 @@ def test_hermes_runner_exports_delegated_sessions_as_separate_files(tmp_path: Pa
     exported = runner._export_hermes_state_sessions(home_dir, tmp_path / "workspace")
 
     assert set(exported) == {"parent-session", "child-session"}
-    parent_rows = [json.loads(line) for line in exported["parent-session"].read_text(encoding="utf-8").splitlines()]
-    child_rows = [json.loads(line) for line in exported["child-session"].read_text(encoding="utf-8").splitlines()]
-    assert exported["parent-session"] != exported["child-session"]
-    assert parent_rows[0]["payload"]["parent_session_id"] is None
-    assert child_rows[0]["payload"]["parent_session_id"] == "parent-session"
-    assert child_rows[1]["role"] == "user"
-    assert child_rows[2]["content"] == "subagent smoke ok"
+    assert exported["parent-session"] == exported["child-session"]
+    rows = [json.loads(line) for line in exported["parent-session"].read_text(encoding="utf-8").splitlines()]
+    assert exported["parent-session"].name == "hermes-agent.jsonl"
+    assert len(rows) == 2
+    rows_by_session = {row["id"]: row for row in rows}
+    parent_row = rows_by_session["parent-session"]
+    child_row = rows_by_session["child-session"]
+    parent_meta = parent_row["metadata"]
+    child_meta = child_row["metadata"]
+    assert set(parent_row) == {"id", "task", "traces", "tools", "metadata"}
+    assert parent_meta["source"] == "cli"
+    assert parent_meta["parent_session_id"] is None
+    assert child_meta["parent_session_id"] == "parent-session"
+    assert child_row["task"] == "sub task"
+    assert child_row["traces"][0] == {"from": "human", "value": "sub task"}
+    assert child_row["traces"][1] == {"from": "gpt", "value": "subagent smoke ok"}
+    assert any(tool["function"]["name"] == "delegate_task" for tool in child_row["tools"])
+
+
+def test_hermes_runner_exports_current_state_db_fields_as_native_rows(tmp_path: Path):
+    config = Config(
+        agent={"provider": "hermes"},
+        api=APIConfig(provider="openrouter"),
+        model=ModelConfig(model="minimax/minimax-m2.5:free"),
+        output={"traces_dir": tmp_path / "output", "sandbox_dir": tmp_path / "sandbox"},
+    )
+    with patch.object(HermesRunner, "_ensure_image"):
+        runner = HermesRunner(config)
+
+    home_dir = tmp_path / "home"
+    home_dir.mkdir()
+    connection = sqlite3.connect(home_dir / "state.db")
+    connection.executescript(
+        """
+        CREATE TABLE sessions (
+            id TEXT PRIMARY KEY,
+            source TEXT NOT NULL,
+            user_id TEXT,
+            model TEXT,
+            model_config TEXT,
+            system_prompt TEXT,
+            parent_session_id TEXT,
+            started_at REAL NOT NULL,
+            ended_at REAL,
+            end_reason TEXT,
+            message_count INTEGER DEFAULT 0,
+            tool_call_count INTEGER DEFAULT 0,
+            input_tokens INTEGER DEFAULT 0,
+            output_tokens INTEGER DEFAULT 0,
+            cache_read_tokens INTEGER DEFAULT 0,
+            cache_write_tokens INTEGER DEFAULT 0,
+            reasoning_tokens INTEGER DEFAULT 0,
+            billing_provider TEXT,
+            billing_base_url TEXT,
+            billing_mode TEXT,
+            estimated_cost_usd REAL,
+            actual_cost_usd REAL,
+            cost_status TEXT,
+            cost_source TEXT,
+            pricing_version TEXT,
+            title TEXT,
+            api_call_count INTEGER DEFAULT 0
+        );
+        CREATE TABLE messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT,
+            tool_call_id TEXT,
+            tool_calls TEXT,
+            tool_name TEXT,
+            timestamp REAL NOT NULL,
+            token_count INTEGER,
+            finish_reason TEXT,
+            reasoning TEXT,
+            reasoning_content TEXT,
+            reasoning_details TEXT,
+            codex_reasoning_items TEXT,
+            codex_message_items TEXT
+        );
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO sessions (
+            id, source, model, model_config, system_prompt, parent_session_id,
+            started_at, ended_at, end_reason, message_count, tool_call_count,
+            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+            reasoning_tokens, billing_provider, billing_base_url, billing_mode,
+            estimated_cost_usd, actual_cost_usd, cost_status, cost_source,
+            api_call_count
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "current-session",
+            "cli",
+            "minimax/minimax-m2.5:free",
+            "{}",
+            "System for Hermes",
+            None,
+            1_778_672_000,
+            1_778_672_003,
+            "completed",
+            2,
+            1,
+            10,
+            4,
+            2,
+            1,
+            3,
+            "openrouter",
+            "https://openrouter.ai/api/v1",
+            None,
+            0.001,
+            None,
+            "estimated",
+            "provider",
+            1,
+        ),
+    )
+    connection.executemany(
+        """
+        INSERT INTO messages (
+            session_id, role, content, tool_call_id, tool_calls, tool_name,
+            timestamp, token_count, finish_reason, reasoning, reasoning_content,
+            reasoning_details, codex_reasoning_items, codex_message_items
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            ("current-session", "user", "inspect", None, None, None, 1_778_672_000, None, None, None, None, None, None, None),
+            (
+                "current-session",
+                "assistant",
+                "",
+                None,
+                json.dumps([{"id": "call_1", "type": "function", "function": {"name": "read_file", "arguments": {"path": "README.md"}}}]),
+                None,
+                1_778_672_001,
+                4,
+                "tool_calls",
+                None,
+                "Need to inspect the README.",
+                json.dumps([{"type": "reasoning_text", "text": "Need context."}]),
+                json.dumps([{"type": "reasoning", "summary": []}]),
+                json.dumps([{"type": "message", "content": []}]),
+            ),
+        ],
+    )
+    connection.commit()
+    connection.close()
+
+    exported = runner._export_hermes_state_sessions(home_dir, tmp_path / "workspace")
+    rows = [json.loads(line) for line in exported["current-session"].read_text(encoding="utf-8").splitlines()]
+
+    assert len(rows) == 1
+    assert rows[0]["id"] == "current-session"
+    assert rows[0]["task"] == "inspect"
+    assert any(tool["function"]["name"] == "read_file" for tool in rows[0]["tools"])
+    metadata = rows[0]["metadata"]
+    assert metadata["source"] == "cli"
+    assert metadata["teich_export_status"] == "completed"
+    assert metadata["teich_partial"] is False
+    assert metadata["total_tokens"] == 14
+    assert metadata["estimated_cost_usd"] == 0.001
+    assert metadata["ended_at"] == 1_778_672_003
+    assert rows[0]["traces"][0] == {"from": "system", "value": "System for Hermes"}
+    assert rows[0]["traces"][1] == {"from": "human", "value": "inspect"}
+    assert rows[0]["traces"][2]["from"] == "gpt"
+    assert "<think>\nNeed to inspect the README.\n</think>" in rows[0]["traces"][2]["value"]
+    assert '"name": "read_file"' in rows[0]["traces"][2]["value"]
+    assert '"path": "README.md"' in rows[0]["traces"][2]["value"]
 
 
 def _write_minimal_hermes_delegation_state_db(home_dir: Path) -> None:
@@ -605,13 +805,19 @@ def test_hermes_runner_moves_failed_state_db_exports_to_partials(tmp_path: Path)
 
     assert not list((tmp_path / "output").glob("*.jsonl"))
     partials = sorted((tmp_path / "output" / "partials").glob("*.jsonl"))
-    assert len(partials) == 2
+    assert len(partials) == 1
+    assert partials[0].name == "hermes-agent.jsonl"
     rows_by_session = {}
-    for path in partials:
-        first = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
-        rows_by_session[first["payload"]["id"]] = first
-    assert rows_by_session["parent-session"]["payload"]["parent_session_id"] is None
-    assert rows_by_session["child-session"]["payload"]["parent_session_id"] == "parent-session"
+    for row in [json.loads(line) for line in partials[0].read_text(encoding="utf-8").splitlines()]:
+        metadata = row["metadata"]
+        rows_by_session[metadata["id"]] = metadata
+        assert row["traces"][0]["from"] == "human"
+        assert row["task"]
+        assert metadata["source"] == "cli"
+        assert metadata["teich_export_status"] == "partial"
+        assert metadata["teich_partial"] is True
+    assert rows_by_session["parent-session"]["parent_session_id"] is None
+    assert rows_by_session["child-session"]["parent_session_id"] == "parent-session"
 
 
 def test_run_process_removes_named_container_on_failure():
@@ -826,8 +1032,8 @@ def test_pi_run_session_runs_follow_up_prompts_by_continuing_session(tmp_path: P
         runner.run_session("Build app", "pi-session", prompt_input=prompt_input)
 
     assert prompt_file_values == ["Build app", "Add tests"]
-    assert "--continue" not in commands[0]
-    assert "--continue" in commands[1]
+    assert "--continue" not in " ".join(commands[0])
+    assert "--continue" in " ".join(commands[1])
     assert mock_start_container.call_count == 1
     assert container_session_dir is not None
     assert mock_remove_container.call_args.args == ("teich-pi-pi-session",)
@@ -1117,6 +1323,85 @@ def test_summarize_trace_file_keeps_missing_provider_usage_unknown(tmp_path: Pat
     assert metrics.total_cost == 0.0
     assert metrics.has_token_usage is False
     assert metrics.has_cost is False
+
+
+def test_summarize_trace_file_reads_hermes_session_meta(tmp_path: Path):
+    trace_file = tmp_path / "hermes-trace.jsonl"
+    trace_file.write_text(
+        json.dumps(
+            {
+                "type": "hermes_session_meta",
+                "payload": {
+                    "model_provider": "openrouter",
+                    "model": "minimax/minimax-m2.5:free",
+                    "input_tokens": 10,
+                    "output_tokens": 4,
+                    "cache_read_tokens": 2,
+                    "reasoning_tokens": 1,
+                    "total_tokens": 17,
+                    "estimated_cost_usd": 0.001,
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    metrics = CodexRunner._summarize_trace_file(trace_file)
+
+    assert metrics.provider == "openrouter"
+    assert metrics.model == "minimax/minimax-m2.5:free"
+    assert metrics.input_tokens == 10
+    assert metrics.output_tokens == 4
+    assert metrics.cache_read_tokens == 2
+    assert metrics.reasoning_tokens == 1
+    assert metrics.total_tokens == 17
+    assert metrics.total_cost == 0.001
+    assert metrics.has_token_usage is True
+    assert metrics.has_cost is True
+
+
+def test_summarize_trace_file_reads_hermes_export_session(tmp_path: Path):
+    trace_file = tmp_path / "hermes-trace.jsonl"
+    trace_file.write_text(
+        json.dumps(
+            {
+                "id": "session-1",
+                "task": "hello",
+                "traces": [
+                    {"from": "human", "value": "hello"},
+                    {"from": "gpt", "value": "hi"},
+                ],
+                "tools": [],
+                "metadata": {
+                    "source": "cli",
+                    "model_provider": "custom",
+                    "model": "Opus-Agent",
+                    "input_tokens": 11,
+                    "output_tokens": 7,
+                    "cache_read_tokens": 3,
+                    "reasoning_tokens": 2,
+                    "total_tokens": 23,
+                    "estimated_cost_usd": 0.002,
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    metrics = CodexRunner._summarize_trace_file(trace_file)
+
+    assert metrics.provider == "custom"
+    assert metrics.model == "Opus-Agent"
+    assert metrics.input_tokens == 11
+    assert metrics.output_tokens == 7
+    assert metrics.cache_read_tokens == 3
+    assert metrics.reasoning_tokens == 2
+    assert metrics.total_tokens == 23
+    assert metrics.total_cost == 0.002
+    assert metrics.has_token_usage is True
+    assert metrics.has_cost is True
 
 
 def test_summarize_trace_file_prefers_codex_total_usage(tmp_path: Path):
@@ -1572,6 +1857,40 @@ def test_copy_normalized_session_file_populates_reasoning_summary(tmp_path: Path
     assert events[1]["payload"]["type"] == "message"
 
 
+def test_copy_normalized_session_file_unwraps_codex_prompt_file_user_message(tmp_path: Path):
+    source = tmp_path / "source.jsonl"
+    destination = tmp_path / "destination.jsonl"
+    source.write_text(
+        json.dumps(
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": '<file name="/workspace/.teich-prompt.txt">\nCan you build me a dependency map for a software system?\n</file>',
+                        }
+                    ],
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    CodexRunner._copy_normalized_session_file(source, destination)
+
+    events = [json.loads(line) for line in destination.read_text(encoding="utf-8").splitlines() if line]
+    assert events[0]["payload"]["content"] == [
+        {
+            "type": "input_text",
+            "text": "Can you build me a dependency map for a software system?",
+        }
+    ]
+
+
 def test_copy_normalized_session_file_converts_codex_custom_tool_events(tmp_path: Path):
     source = tmp_path / "source.jsonl"
     destination = tmp_path / "destination.jsonl"
@@ -1664,7 +1983,7 @@ def test_pi_runner_builds_command_and_project_settings(tmp_path: Path):
         }
     }
 
-    with patch.object(PiRunner, "_resolve_pi_executable", return_value="@mariozechner/pi-coding-agent"):
+    with patch.object(PiRunner, "_resolve_pi_executable", return_value="pi"):
         command = runner._build_pi_command(
             "Inspect the repo",
             tmp_path / "workspace",
@@ -1684,6 +2003,8 @@ def test_pi_runner_builds_command_and_project_settings(tmp_path: Path):
             "HOME=/home/codex",
             "-e",
             "PI_CODING_AGENT_DIR=/home/codex/.pi/agent",
+            "-e",
+            "PI_OFFLINE=1",
             "-v",
             f"{tmp_path / 'workspace'}:/workspace",
             "-v",
@@ -1693,26 +2014,17 @@ def test_pi_runner_builds_command_and_project_settings(tmp_path: Path):
             "-w",
             "/workspace",
             "teich-runtime:v3",
-            "npx",
-            "-y",
-            "@mariozechner/pi-coding-agent",
-            "--mode",
-            "json",
-            "--session-dir",
-            "/home/codex/pi-sessions",
-            "--provider",
-            "teich-anthropic",
-            "--model",
-            "claude-sonnet-4-20250514",
-            "--thinking",
-            "high",
-            "--print",
-            "@/workspace/.teich-prompt.txt",
+            "sh",
+            "-lc",
+            "exec pi --mode json --session-dir "
+            "/home/codex/pi-sessions --provider teich-anthropic --model "
+            "claude-sonnet-4-20250514 --thinking high --print "
+            '"$(cat /workspace/.teich-prompt.txt)"',
         ]
 
 
 def test_pi_runner_resolves_pi_executable_from_path():
-    assert PiRunner._resolve_pi_executable() == "@mariozechner/pi-coding-agent"
+    assert PiRunner._resolve_pi_executable() == "pi"
 
 
 def test_pi_run_session_moves_partial_trace_on_failure(tmp_path: Path):
@@ -3023,6 +3335,56 @@ def test_pi_runner_strips_provider_from_exported_trace(tmp_path: Path):
             "content": [{"type": "text", "text": "done"}],
         },
     }
+
+
+def test_pi_runner_unwraps_prompt_file_user_message_in_exported_trace(tmp_path: Path):
+    config = Config(agent={"provider": "pi"}, output={"traces_dir": tmp_path / "output"})
+    with patch.object(PiRunner, '_ensure_image'):
+        runner = PiRunner(config)
+    session_dir = tmp_path / "sessions"
+    session_dir.mkdir(parents=True)
+    session_file = session_dir / "session.jsonl"
+    session_file.write_text(
+        "\n".join(
+            [
+                json.dumps({"type": "session", "id": "pi-session"}),
+                json.dumps(
+                    {
+                        "type": "message",
+                        "id": "44931461",
+                        "parentId": "02980b33",
+                        "timestamp": "2026-05-22T00:28:39.346Z",
+                        "message": {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": '<file name="/workspace/.teich-prompt.txt">\nCan you build me a dependency map for a software system?\n</file>',
+                                }
+                            ],
+                            "timestamp": 1_779_409_719_345,
+                        },
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = runner._extract_session_file(
+        "session-id",
+        session_dir,
+        datetime.fromtimestamp(0, tz=timezone.utc),
+    )
+
+    exported_events = [json.loads(line) for line in result.read_text(encoding="utf-8").splitlines() if line]
+    assert exported_events[1]["message"]["content"] == [
+        {
+            "type": "text",
+            "text": "Can you build me a dependency map for a software system?",
+        }
+    ]
 
 
 def test_pi_runner_injects_captured_system_prompt_into_exported_trace(tmp_path: Path):

@@ -33,6 +33,11 @@ model:
   # safe,terminal,file,skills,memory,session_search,delegation
   reasoning_effort: medium
 
+  # Optional context length override for providers that support it.
+  # Useful for Hermes custom endpoints when /v1/models reports a served
+  # context below Hermes' minimum but the endpoint supports a larger window.
+  context_length: null
+
   # Optional Pi-specific provider overrides.
   # Teich already defaults maxTokens to 131072 even if this block is omitted.
   # Uncomment to customize the Pi/OpenRouter model entry further.
@@ -87,7 +92,7 @@ output:
   # Where generated .jsonl files are written.
   # - codex / pi: normalized copies of native agent session traces
   # - claude-code: native Claude Code transcript JSONL from .claude/projects/...
-  # - hermes: one external trace per native Hermes session, including delegated subagents
+  # - hermes: one Hermes-native trace per session, including delegated subagents
   # - chat: text-only training rows with messages/prompt/response/thinking fields
   traces_dir: ./output
 

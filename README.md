@@ -174,7 +174,7 @@ Outputs:
 
 - `codex` / `pi`: normalized copies of native agent session JSONL files in `output/`, sandboxes in `sandbox/`, and a `README.md`
 - `claude-code`: native Claude Code transcript JSONL copied from `.claude/projects/...`, sandboxes in `sandbox/`, and a `README.md`
-- `hermes`: one Teich `external_*` trace JSONL per Hermes native session from `state.db`, including delegated subagent sessions as separate files linked by `parent_session_id`, sandboxes in `sandbox/`, and a `README.md`
+- `hermes`: one Hermes-native session JSONL per session exported from `state.db` in the `export_all(source="cli")` shape, including delegated subagent sessions as separate files linked by `parent_session_id`, sandboxes in `sandbox/`, and a `README.md`
 - `chat`: text-only JSONL training rows in `output/` and a dataset `README.md`
 
 Only completed runs are kept at the top level of `output/`. Failed or interrupted agent traces are preserved under `output/partials/` for debugging, and Teich excludes that directory from resume detection, conversion, README generation, and Hugging Face uploads.
@@ -219,7 +219,7 @@ Recommended `prompts.jsonl`:
 - `codex` copies the native Codex session JSONL out of the mounted `CODEX_HOME/sessions` directory, then normalizes known Codex event-shape edge cases.
 - `pi` copies the native Pi session JSONL out of the mounted `/home/codex/pi-sessions` directory, then normalizes and validates tool-call structure before writing output.
 - `claude-code` copies Claude Code's native transcript JSONL from `.claude/projects/...` so the output keeps Claude's own `user`, `assistant`, `system`, and `result` event format. With OpenRouter non-Claude models, Teich runs a local in-container proxy: Claude Code sees a Claude surrogate model name, while the proxy rewrites outbound requests back to the configured model. The native assistant/result events keep the provider-returned model and usage fields when Claude Code records them.
-- `hermes` runs with built-in toolsets `safe,terminal,file,skills,memory,session_search,delegation`, then exports Hermes Agent native `state.db` sessions into Teich `external_*` trace events with provider/model metadata. Delegated subagents remain separate trace files rather than being merged into the orchestrator session; child traces include `parent_session_id`.
+- `hermes` runs with built-in toolsets `safe,terminal,file,skills,memory,session_search,delegation`, then exports Hermes Agent `state.db` sessions using the native `export_all(source="cli")` session shape: one session object per JSONL file with a nested `messages` list. Delegated subagents remain separate trace files rather than being merged into the orchestrator session; child traces include `parent_session_id`.
 - `chat` calls an OpenAI-compatible API directly and writes structured training rows instead of raw agent traces.
 
 ### Generate a text-only chat dataset
@@ -448,7 +448,7 @@ publish:
 
 Dataset tags are auto-generated from the provider and model:
 
-- `codex` / `pi` / `claude-code` / `hermes`: `agent-traces`, `<provider>`, `distillation`, `<model>`, `teich`
+- `codex` / `pi` / `claude-code` / `hermes`: `agent-traces`, `format:agent-traces`, `<provider>`, `distillation`, `<model>`, `teich`
 - `chat`: `conversational`, `distillation`, `teich`, `<model>`
 
 If `publish.hf_token` is omitted, Teich also accepts `HF_TOKEN`, `HUGGINGFACE_HUB_TOKEN`, or `TEICH_HF_TOKEN` from the environment.

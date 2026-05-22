@@ -20,7 +20,14 @@ def test_default_config():
     assert config.timeout_seconds == 600
     assert config.mcp_servers == []
     assert config.prompts == []
-    assert config.get_dataset_tags() == ["agent-traces", "codex", "distillation", "codex-mini-latest", "teich"]
+    assert config.get_dataset_tags() == [
+        "agent-traces",
+        "format:agent-traces",
+        "codex",
+        "distillation",
+        "codex-mini-latest",
+        "teich",
+    ]
 
 
 def test_config_from_yaml(tmp_path: Path, monkeypatch):

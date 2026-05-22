@@ -384,6 +384,49 @@ api:
         mock_api_cls.assert_not_called()
 
 
+def test_generate_command_does_not_prompt_to_publish_after_keyboard_interrupt(tmp_path: Path):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(f"""
+agent:
+  provider: chat
+model:
+  model: gpt-4.1-mini
+prompts:
+  - Hello
+output:
+  traces_dir: {tmp_path}/output
+publish:
+  repo_id: armand0e/test-dataset
+  hf_token: hf-test123
+api:
+  provider: openai
+  api_key: sk-test
+  wire_api: responses
+""")
+    output_dir = tmp_path / "output"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "chat.jsonl").write_text(
+        json.dumps({"prompt": "Hello", "response": "Hi", "messages": [{"role": "assistant", "content": "Hi"}]})
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with patch('teich.cli.ChatRunner') as mock_runner, patch('teich.cli.HfApi') as mock_api_cls:
+        mock_instance = MagicMock()
+        mock_instance.run_all.side_effect = KeyboardInterrupt
+        mock_runner.return_value = mock_instance
+
+        result = runner.invoke(app, ["generate", "-c", str(config_file)])
+
+        assert result.exit_code == 130
+        assert "Wrote README for partial outputs" in result.output
+        assert "Upload successful traces to Hugging Face dataset" not in result.output
+        assert "Skipping Hugging Face upload for interrupted run" in result.output
+        assert 'hf upload armand0e/test-dataset . . --repo-type dataset --exclude "partials/**"' in result.output
+        assert "Interrupted. Completed outputs remain on disk" in result.output
+        mock_api_cls.assert_not_called()
+
+
 def test_generate_command_can_publish_partial_outputs_after_failure(tmp_path: Path):
     config_file = tmp_path / "config.yaml"
     config_file.write_text(f"""

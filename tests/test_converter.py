@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from teich.converter import convert_trace_to_training_example
+from teich.converter import convert_trace_to_training_example, convert_traces_to_training_data
 
 
 def test_convert_pi_trace_ignores_malformed_tool_calls(tmp_path: Path):
@@ -523,6 +523,150 @@ def test_convert_external_agent_trace_preserves_hermes_tool_calls_and_parent_met
     }
     assert example.messages[3]["reasoning_content"] == "Checked output."
     assert [tool["function"]["name"] for tool in example.tools] == ["delegate_task"]
+
+
+def test_convert_hermes_native_trace_preserves_raw_messages_and_metadata(tmp_path: Path):
+    trace_file = tmp_path / "hermes-agent.jsonl"
+    metadata = {
+        "id": "child-session",
+        "source": "cli",
+        "teich_export_status": "completed",
+        "teich_partial": False,
+        "model_provider": "openrouter",
+        "configured_model_provider": "openrouter",
+        "model": "minimax/minimax-m2.5:free",
+        "parent_session_id": "parent-session",
+        "tool_call_count": 1,
+        "input_tokens": 12,
+        "output_tokens": 5,
+        "cache_read_tokens": 3,
+        "reasoning_tokens": 2,
+        "total_tokens": 22,
+        "estimated_cost_usd": 0.001,
+        "billing_provider": "openrouter",
+        "billing_base_url": "https://openrouter.ai/api/v1",
+        "system_prompt": "Use the delegated task contract.",
+    }
+    conversation = [
+        {"from": "system", "value": "Use the delegated task contract."},
+        {"from": "human", "value": "Delegate a task"},
+        {
+            "from": "gpt",
+            "value": '<think>\nNeed isolated context.\n</think>\n<tool_call>\n{"name": "delegate_task", "arguments": {"prompt": "sub task"}}\n</tool_call>',
+        },
+        {
+            "from": "tool",
+            "value": '<tool_response>\n{"tool_call_id": "call_1", "name": "delegate_task", "content": "subagent smoke ok"}\n</tool_response>',
+        },
+        {"from": "gpt", "value": "<think>\nChecked output.\n</think>\nDone."},
+    ]
+    row = {
+        "id": "child-session",
+        "task": "Delegate a task",
+        "traces": conversation,
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "delegate_task",
+                    "description": "Spawn an isolated delegated subagent session.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"prompt": {"type": "string"}},
+                        "required": ["prompt"],
+                    },
+                },
+            }
+        ],
+        "metadata": metadata,
+    }
+    trace_file.write_text(json.dumps(row) + "\n", encoding="utf-8")
+
+    example = convert_trace_to_training_example(trace_file)
+
+    assert example.metadata["trace_type"] == "hermes"
+    assert example.metadata["teich_export_status"] == "completed"
+    assert example.metadata["teich_partial"] is False
+    assert example.metadata["session_id"] == "child-session"
+    assert example.metadata["parent_session_id"] == "parent-session"
+    assert example.metadata["model_provider"] == "openrouter"
+    assert example.metadata["configured_model_provider"] == "openrouter"
+    assert example.metadata["billing_provider"] == "openrouter"
+    assert example.metadata["billing_base_url"] == "https://openrouter.ai/api/v1"
+    assert example.metadata["estimated_cost_usd"] == 0.001
+    assert example.metadata["system_prompt"] == "Use the delegated task contract."
+    assert example.prompt == "Delegate a task"
+    assert example.messages[2]["tool_calls"][0]["function"] == {
+        "name": "delegate_task",
+        "arguments": {"prompt": "sub task"},
+    }
+    assert example.messages[2]["reasoning_content"] == "Need isolated context."
+    assert example.messages[3] == {
+        "role": "tool",
+        "content": "subagent smoke ok",
+        "tool_call_id": "call_1",
+        "name": "delegate_task",
+    }
+    assert example.messages[4]["reasoning_content"] == "Checked output."
+    assert example.tools[0]["function"]["name"] == "delegate_task"
+    assert [tool["function"]["name"] for tool in example.tools] == ["delegate_task"]
+
+
+def test_convert_hermes_aggregate_jsonl_returns_one_training_row_per_trace(tmp_path: Path):
+    trace_file = tmp_path / "hermes-agent.jsonl"
+    rows = [
+        {
+            "id": "session-1",
+            "task": "first prompt",
+            "traces": [
+                {"from": "human", "value": "first prompt"},
+                {"from": "gpt", "value": "first answer"},
+            ],
+            "tools": [],
+            "metadata": {"id": "session-1", "source": "cli", "model_provider": "custom", "model": "Opus-Agent"},
+        },
+        {
+            "id": "session-2",
+            "task": "second prompt",
+            "traces": [
+                {"from": "human", "value": "second prompt"},
+                {"from": "gpt", "value": "second answer"},
+            ],
+            "tools": [],
+            "metadata": {"id": "session-2", "source": "cli", "model_provider": "custom", "model": "Opus-Agent"},
+        },
+    ]
+    trace_file.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+    examples = convert_traces_to_training_data(trace_file)
+
+    assert [example["prompt"] for example in examples] == ["first prompt", "second prompt"]
+    assert [example["metadata"]["session_id"] for example in examples] == ["session-1", "session-2"]
+    assert examples[1]["messages"][1] == {"role": "assistant", "content": "second answer"}
+
+
+def test_convert_hermes_raw_message_jsonl_without_meta(tmp_path: Path):
+    trace_file = tmp_path / "legacy-hermes.jsonl"
+    trace_file.write_text(
+        "\n".join(
+            [
+                json.dumps({"role": "user", "content": "Build a CLI"}),
+                json.dumps({"role": "assistant", "content": "Built it."}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    example = convert_trace_to_training_example(trace_file)
+
+    assert example.metadata["trace_type"] == "hermes"
+    assert example.metadata["session_id"] == "legacy-hermes"
+    assert example.prompt == "Build a CLI"
+    assert example.messages == [
+        {"role": "user", "content": "Build a CLI"},
+        {"role": "assistant", "content": "Built it."},
+    ]
 
 
 def test_convert_trace_uses_reasoning_text_when_summary_is_empty(tmp_path: Path):

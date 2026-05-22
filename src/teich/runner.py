@@ -39,6 +39,224 @@ PI_AGENT_DIR_IN_CONTAINER = "/home/codex/.pi/agent"
 PI_SESSIONS_DIR_IN_CONTAINER = "/home/codex/pi-sessions"
 WORKSPACE_IN_CONTAINER = "/workspace"
 HERMES_DEFAULT_TOOLSETS = "safe,terminal,file,skills,memory,session_search,delegation"
+HERMES_AGGREGATE_TRACE_FILE_NAME = "hermes-agent.jsonl"
+HERMES_AGGREGATE_WRITE_LOCK = threading.Lock()
+
+
+def _make_tree_world_writable(path: Path) -> None:
+    """Allow the unprivileged container user to write host-created mount paths."""
+    try:
+        path.chmod(0o777 if path.is_dir() else 0o666)
+    except OSError:
+        return
+    if not path.is_dir():
+        return
+    for child in path.rglob("*"):
+        try:
+            child.chmod(0o777 if child.is_dir() else 0o666)
+        except OSError:
+            continue
+
+
+HERMES_UNIVERSAL_TOOLS: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "terminal",
+            "description": "Execute shell commands in the session workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string"},
+                    "background": {"type": "boolean", "default": False},
+                    "timeout": {"type": "integer", "minimum": 1},
+                    "workdir": {"type": "string"},
+                    "pty": {"type": "boolean", "default": False},
+                },
+                "required": ["command"],
+                "additionalProperties": True,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "process",
+            "description": "Inspect or control background processes started by terminal.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "poll", "log", "wait", "kill", "write", "submit"],
+                    },
+                    "session_id": {"type": "string"},
+                    "data": {"type": "string"},
+                    "timeout": {"type": "integer", "minimum": 1},
+                    "offset": {"type": "integer"},
+                    "limit": {"type": "integer", "minimum": 1},
+                },
+                "required": ["action"],
+                "additionalProperties": True,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": "Read a text file with optional pagination.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "offset": {"type": "integer", "minimum": 1, "default": 1},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 2000, "default": 500},
+                },
+                "required": ["path"],
+                "additionalProperties": True,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_files",
+            "description": "Search file contents or find files by name.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string"},
+                    "target": {"type": "string", "enum": ["content", "files"], "default": "content"},
+                    "path": {"type": "string", "default": "."},
+                    "file_glob": {"type": "string"},
+                    "limit": {"type": "integer", "default": 50},
+                    "offset": {"type": "integer", "default": 0},
+                    "output_mode": {
+                        "type": "string",
+                        "enum": ["content", "files_only", "count"],
+                        "default": "content",
+                    },
+                    "context": {"type": "integer", "default": 0},
+                },
+                "required": ["pattern"],
+                "additionalProperties": True,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "write_file",
+            "description": "Write complete file content, replacing existing content.",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+                "required": ["path", "content"],
+                "additionalProperties": True,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "patch",
+            "description": "Apply targeted file edits or multi-file patches.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "mode": {"type": "string", "enum": ["replace", "patch"], "default": "replace"},
+                    "path": {"type": "string"},
+                    "old_string": {"type": "string"},
+                    "new_string": {"type": "string"},
+                    "replace_all": {"type": "boolean", "default": False},
+                    "patch": {"type": "string"},
+                },
+                "required": ["mode"],
+                "additionalProperties": True,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "skill_view",
+            "description": "Load a Hermes skill by name.",
+            "parameters": {
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+                "required": ["name"],
+                "additionalProperties": True,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "skill_manage",
+            "description": "Create, update, patch, or inspect Hermes skills.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string"},
+                    "name": {"type": "string"},
+                    "content": {"type": "string"},
+                    "path": {"type": "string"},
+                },
+                "required": ["action"],
+                "additionalProperties": True,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "memory",
+            "description": "Store or retrieve durable session memory.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string"},
+                    "key": {"type": "string"},
+                    "value": {"type": "string"},
+                    "query": {"type": "string"},
+                },
+                "required": ["action"],
+                "additionalProperties": True,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "session_search",
+            "description": "Search previous Hermes session transcripts.",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}, "limit": {"type": "integer", "default": 10}},
+                "required": ["query"],
+                "additionalProperties": True,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delegate_task",
+            "description": "Spawn an isolated delegated subagent session for a bounded task.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string"},
+                    "description": {"type": "string"},
+                    "subagent_type": {"type": "string"},
+                },
+                "required": ["prompt"],
+                "additionalProperties": True,
+            },
+        },
+    },
+]
 TEXT_SUBPROCESS_KWARGS = {"text": True, "encoding": "utf-8", "errors": "replace"}
 LOCAL_PROVIDER_PROXY_SCRIPT_NAME = "local_provider_proxy.js"
 CLAUDE_OPENROUTER_PROXY_SCRIPT_NAME = "claude_openrouter_proxy.js"
@@ -467,6 +685,62 @@ def _unwrap_teich_prompt_file(prompt: str) -> str:
     return prompt
 
 
+def _normalize_teich_prompt_content(content: Any) -> tuple[Any, bool]:
+    if isinstance(content, str):
+        normalized = _unwrap_teich_prompt_file(content)
+        return normalized, normalized != content
+    if not isinstance(content, list):
+        return content, False
+    normalized_blocks: list[Any] = []
+    changed = False
+    for block in content:
+        if isinstance(block, str):
+            normalized = _unwrap_teich_prompt_file(block)
+            normalized_blocks.append(normalized)
+            changed = changed or normalized != block
+            continue
+        if not isinstance(block, dict):
+            normalized_blocks.append(block)
+            continue
+        text = block.get("text")
+        if not isinstance(text, str):
+            normalized_blocks.append(block)
+            continue
+        normalized_text = _unwrap_teich_prompt_file(text)
+        if normalized_text == text:
+            normalized_blocks.append(block)
+            continue
+        normalized_block = dict(block)
+        normalized_block["text"] = normalized_text
+        normalized_blocks.append(normalized_block)
+        changed = True
+    return normalized_blocks if changed else content, changed
+
+
+def _normalize_teich_prompt_user_event(event: dict[str, Any]) -> dict[str, Any]:
+    if event.get("role") == "user":
+        normalized_content, changed = _normalize_teich_prompt_content(event.get("content"))
+        if changed:
+            normalized_event = dict(event)
+            normalized_event["content"] = normalized_content
+            return normalized_event
+        return event
+
+    for envelope_key in ("message", "payload"):
+        payload = event.get(envelope_key)
+        if not isinstance(payload, dict) or payload.get("role") != "user":
+            continue
+        normalized_content, changed = _normalize_teich_prompt_content(payload.get("content"))
+        if not changed:
+            return event
+        normalized_event = dict(event)
+        normalized_payload = dict(payload)
+        normalized_payload["content"] = normalized_content
+        normalized_event[envelope_key] = normalized_payload
+        return normalized_event
+    return event
+
+
 def _message_text(content: Any) -> str:
     if isinstance(content, str):
         return content.strip()
@@ -809,6 +1083,50 @@ class DockerRuntimeRunner:
         return destination
 
     @staticmethod
+    def _hermes_metadata_path(trace_path: Path) -> Path:
+        return trace_path.with_suffix(".metadata.json")
+
+    @classmethod
+    def _load_hermes_metadata_sidecar(cls, trace_file: Path) -> dict[str, Any] | None:
+        metadata_path = cls._hermes_metadata_path(trace_file)
+        if not metadata_path.exists():
+            return None
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return metadata if isinstance(metadata, dict) else None
+
+    @staticmethod
+    def _hermes_session_payload_to_usage(payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "input_tokens": payload.get("input_tokens"),
+            "output_tokens": payload.get("output_tokens"),
+            "reasoning_tokens": payload.get("reasoning_tokens"),
+            "cached_input_tokens": payload.get("cache_read_tokens"),
+            "cacheWrite": payload.get("cache_write_tokens"),
+            "total_tokens": payload.get("total_tokens"),
+        }
+
+    @classmethod
+    def _apply_hermes_session_metrics(cls, metrics: TraceMetrics, payload: dict[str, Any]) -> None:
+        provider = payload.get("model_provider") or payload.get("billing_provider")
+        model = payload.get("model")
+        if isinstance(provider, str) and provider.strip() and not metrics.provider:
+            metrics.provider = provider.strip()
+        if isinstance(model, str) and model.strip() and not metrics.model:
+            metrics.model = model.strip()
+        metrics.add_structured_usage(cls._hermes_session_payload_to_usage(payload))
+        cost = payload.get("actual_cost_usd")
+        if cost is None:
+            cost = payload.get("estimated_cost_usd")
+        if cost is None:
+            cost = payload.get("total_cost")
+        if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+            metrics.has_cost = True
+            metrics.total_cost += float(cost)
+
+    @staticmethod
     def _copy_workspace_snapshot(workspace: Path, destination: Path) -> None:
         if destination.exists():
             shutil.rmtree(destination, ignore_errors=True)
@@ -1098,6 +1416,9 @@ class DockerRuntimeRunner:
     @classmethod
     def _summarize_trace_file(cls, trace_file: Path) -> TraceMetrics:
         metrics = TraceMetrics()
+        sidecar_metadata = cls._load_hermes_metadata_sidecar(trace_file)
+        if sidecar_metadata is not None:
+            cls._apply_hermes_session_metrics(metrics, sidecar_metadata)
         codex_total_usage: dict[str, Any] | None = None
         codex_estimated_usage: dict[str, Any] | None = None
         previous_codex_total_usage: dict[str, Any] | None = None
@@ -1110,7 +1431,15 @@ class DockerRuntimeRunner:
                 if not isinstance(event, dict):
                     continue
 
+                metadata = event.get("metadata")
+                if isinstance(event.get("traces"), list) and isinstance(metadata, dict):
+                    cls._apply_hermes_session_metrics(metrics, metadata)
+                    continue
+
                 if isinstance(event.get("messages"), list):
+                    if isinstance(event.get("source"), str) and event.get("source") == "cli":
+                        cls._apply_hermes_session_metrics(metrics, event)
+                        continue
                     if isinstance(event.get("provider"), str) and event.get("provider") and not metrics.provider:
                         metrics.provider = event["provider"]
                     metadata = event.get("metadata")
@@ -1132,6 +1461,12 @@ class DockerRuntimeRunner:
                     continue
 
                 event_type = event.get("type")
+                if event_type == "hermes_session_meta":
+                    payload = event.get("payload")
+                    if isinstance(payload, dict):
+                        cls._apply_hermes_session_metrics(metrics, payload)
+                    continue
+
                 if event_type == "external_session_meta":
                     payload = event.get("payload")
                     if isinstance(payload, dict):
@@ -1631,7 +1966,7 @@ class CodexRunner(DockerRuntimeRunner):
 
     @classmethod
     def _normalize_trace_event(cls, event: dict[str, object]) -> dict[str, object]:
-        return normalize_codex_trace_event(event)
+        return _normalize_teich_prompt_user_event(normalize_codex_trace_event(event))
 
     @classmethod
     def _copy_normalized_session_file(cls, source_path: Path, destination: Path) -> None:
@@ -2536,13 +2871,19 @@ class HermesRunner(ExternalCliRunner):
     source_name = "hermes-agent"
     default_model_provider = "hermes"
 
+    def _hermes_cli_provider(self) -> str:
+        provider = self.config.api.provider.strip().lower()
+        if self.config.get_base_url() and provider in {"openai", "custom"}:
+            return "custom"
+        return self.config.api.provider
+
     def _build_shell_command(self, *, continue_session: bool = False) -> str:
         prompt_path = shlex.quote(WORKSPACE_IN_CONTAINER + "/" + TEICH_PROMPT_FILE_NAME)
         hermes_command = [
             "hermes",
             "chat",
             "--provider",
-            self.config.api.provider,
+            self._hermes_cli_provider(),
             "--model",
             self.config.get_effective_model(),
             "--toolsets",
@@ -2596,61 +2937,208 @@ class HermesRunner(ExternalCliRunner):
                     return value
         return None
 
-    def _hermes_session_meta_event(self, row: sqlite3.Row, workspace: Path) -> dict[str, object]:
-        session_id = str(row["id"])
-        payload: dict[str, object] = {
-            "id": session_id,
-            "timestamp": self._hermes_timestamp(self._sqlite_row_get(row, "started_at")),
-            "cwd": str(workspace),
-            "source": self.source_name,
-            "model_provider": self.config.api.provider or self.default_model_provider,
-            "model": self._sqlite_row_get(row, "model") or self.config.get_effective_model(),
-            "hermes_source": self._sqlite_row_get(row, "source"),
-            "parent_session_id": self._sqlite_row_get(row, "parent_session_id"),
-            "message_count": self._sqlite_row_get(row, "message_count"),
-            "tool_call_count": self._sqlite_row_get(row, "tool_call_count"),
-            "input_tokens": self._sqlite_row_get(row, "input_tokens"),
-            "output_tokens": self._sqlite_row_get(row, "output_tokens"),
-            "total_tokens": self._sqlite_row_get(row, "total_tokens"),
-            "total_cost": self._sqlite_row_get(row, "total_cost"),
-            "has_finished": bool(self._sqlite_row_get(row, "has_finished")),
+    def _write_hermes_runtime_config(self, home_dir: Path) -> None:
+        if self._hermes_cli_provider().strip().lower() != "custom":
+            return
+        base_url = self._container_base_url(self.config.get_base_url())
+        if not base_url:
+            return
+        api_key = (self.config.get_api_key() or "").strip()
+        if api_key.lower() in {"none", "null", "dummy", "placeholder", "example"}:
+            api_key = ""
+        model = self.config.get_effective_model()
+        custom_provider: dict[str, object] = {
+            "name": "teich-custom",
+            "base_url": base_url,
+            "model": model,
+            "api_mode": "chat_completions",
         }
-        model_config = self._json_or_original(self._sqlite_row_get(row, "model_config"))
-        if model_config:
-            payload["model_config"] = model_config
+        model_config: dict[str, object] = {
+            "default": model,
+            "provider": "custom",
+            "base_url": base_url,
+            "api_mode": "chat_completions",
+        }
+        if self.config.model.context_length:
+            context_length = int(self.config.model.context_length)
+            custom_provider["models"] = {model: {"context_length": context_length}}
+            model_config["context_length"] = context_length
+        if api_key:
+            custom_provider["api_key"] = api_key
+            model_config["api_key"] = api_key
+        hermes_config = {
+            "model": model_config,
+            "custom_providers": [custom_provider],
+        }
+        (home_dir / "config.yaml").write_text(json.dumps(hermes_config, indent=2), encoding="utf-8")
+
+    @staticmethod
+    def _decode_hermes_content(value: Any) -> Any:
+        if isinstance(value, str) and value.startswith("\x00json:"):
+            try:
+                return json.loads(value[len("\x00json:"):])
+            except json.JSONDecodeError:
+                return value
+        return value
+
+    def _hermes_session_export(
+        self,
+        row: sqlite3.Row,
+        messages: list[dict[str, object]],
+        workspace: Path,
+        *,
+        partial: bool = False,
+    ) -> dict[str, object]:
+        session = dict(row)
+        input_tokens = self._sqlite_row_get(row, "input_tokens")
+        output_tokens = self._sqlite_row_get(row, "output_tokens")
+        total_tokens = self._sqlite_row_get(row, "total_tokens")
+        if total_tokens is None and (input_tokens is not None or output_tokens is not None):
+            total_tokens = (input_tokens or 0) + (output_tokens or 0)
+        actual_cost = self._sqlite_row_get(row, "actual_cost_usd")
+        estimated_cost = self._sqlite_row_get(row, "estimated_cost_usd")
+        total_cost = actual_cost if actual_cost is not None else estimated_cost
+        if total_cost is None:
+            total_cost = self._sqlite_row_get(row, "total_cost")
+
+        session.update(
+            {
+                "timestamp": self._hermes_timestamp(self._sqlite_row_get(row, "started_at")),
+                "cwd": str(workspace),
+                "teich_export_status": "partial" if partial else "completed",
+                "teich_partial": partial,
+                "model_provider": self._hermes_cli_provider() or self.default_model_provider,
+                "configured_model_provider": self.config.api.provider or self.default_model_provider,
+                "model": self._sqlite_row_get(row, "model") or self.config.get_effective_model(),
+                "configured_context_length": self.config.model.context_length,
+                "total_tokens": total_tokens,
+                "estimated_cost_usd": estimated_cost,
+                "actual_cost_usd": actual_cost,
+                "total_cost": total_cost,
+                "messages": messages,
+            }
+        )
+        model_config = self._json_or_original(session.get("model_config"))
+        if model_config is not None:
+            session["model_config"] = model_config
+        return session
+
+    @staticmethod
+    def _hermes_tool_call_xml(tool_call: dict[str, Any]) -> str | None:
+        function = tool_call.get("function")
+        name = None
+        arguments: Any = {}
+        if isinstance(function, dict):
+            raw_name = function.get("name")
+            if isinstance(raw_name, str) and raw_name:
+                name = raw_name
+            arguments = function.get("arguments") or {}
+        raw_name = tool_call.get("name")
+        if name is None and isinstance(raw_name, str) and raw_name:
+            name = raw_name
+        if not name:
+            return None
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except json.JSONDecodeError:
+                arguments = {"value": arguments}
+        payload = {"name": name, "arguments": arguments if isinstance(arguments, dict) else {"value": arguments}}
+        return f"<tool_call>\n{json.dumps(payload, ensure_ascii=False)}\n</tool_call>"
+
+    def _hermes_conversation_item(self, message: dict[str, object]) -> dict[str, str] | None:
+        role = message.get("role")
+        content = str(message.get("content") or "")
+        if role == "user":
+            return {"from": "human", "value": content}
+        if role == "tool":
+            payload = {
+                "tool_call_id": message.get("tool_call_id"),
+                "name": message.get("name") or message.get("tool_name"),
+                "content": content,
+            }
+            return {"from": "tool", "value": f"<tool_response>\n{json.dumps(payload, ensure_ascii=False)}\n</tool_response>"}
+        if role == "assistant":
+            parts: list[str] = []
+            reasoning = message.get("reasoning_content") or message.get("reasoning")
+            if isinstance(reasoning, str) and reasoning.strip():
+                parts.append(f"<think>\n{reasoning.strip()}\n</think>")
+            if content.strip():
+                parts.append(content)
+            tool_calls = message.get("tool_calls")
+            if isinstance(tool_calls, list):
+                for tool_call in tool_calls:
+                    if isinstance(tool_call, dict):
+                        tool_call_xml = self._hermes_tool_call_xml(tool_call)
+                        if tool_call_xml:
+                            parts.append(tool_call_xml)
+            return {"from": "gpt", "value": "\n".join(parts)}
+        return None
+
+    def _hermes_conversation_export(
+        self,
+        row: sqlite3.Row,
+        messages: list[dict[str, object]],
+    ) -> list[dict[str, str]]:
+        conversation: list[dict[str, str]] = []
         system_prompt = self._sqlite_row_get(row, "system_prompt")
         if isinstance(system_prompt, str) and system_prompt.strip():
-            payload["system_prompt"] = system_prompt
+            conversation.append({"from": "system", "value": system_prompt.strip()})
+        for message in messages:
+            item = self._hermes_conversation_item(message)
+            if item is not None:
+                conversation.append(item)
+        return conversation
+
+    @staticmethod
+    def _hermes_trace_task(conversation: list[dict[str, str]]) -> str:
+        for item in conversation:
+            if item.get("from") == "human":
+                value = item.get("value")
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        return ""
+
+    @staticmethod
+    def _hermes_tools_snapshot() -> list[dict[str, Any]]:
+        return json.loads(json.dumps(HERMES_UNIVERSAL_TOOLS))
+
+    def _hermes_trace_row(
+        self,
+        row: sqlite3.Row,
+        messages: list[dict[str, object]],
+        workspace: Path,
+        *,
+        partial: bool = False,
+    ) -> dict[str, object]:
+        traces = self._hermes_conversation_export(row, messages)
+        metadata = self._hermes_session_export(row, messages, workspace, partial=partial)
+        metadata.pop("messages", None)
+        session_id = str(metadata.get("id") or self._sqlite_row_get(row, "id") or "")
         return {
-            "timestamp": self._hermes_timestamp(self._sqlite_row_get(row, "started_at")),
-            "type": "external_session_meta",
-            "payload": payload,
+            "id": session_id,
+            "task": self._hermes_trace_task(traces),
+            "traces": traces,
+            "tools": self._hermes_tools_snapshot(),
+            "metadata": metadata,
         }
 
-    def _hermes_message_event(self, row: sqlite3.Row) -> dict[str, object]:
-        event: dict[str, object] = {
-            "timestamp": self._hermes_timestamp(self._sqlite_row_get(row, "timestamp")),
-            "type": "external_message",
-            "role": self._sqlite_row_get(row, "role") or "assistant",
-            "hermes_session_id": self._sqlite_row_get(row, "session_id"),
-            "content": self._sqlite_row_get(row, "content") or "",
-        }
-        for source_key, event_key in (
-            ("tool_call_id", "tool_call_id"),
-            ("tool_name", "name"),
-            ("finish_reason", "finish_reason"),
-            ("token_count", "token_count"),
-        ):
-            value = self._sqlite_row_get(row, source_key)
-            if value is not None and value != "":
-                event[event_key] = value
-        tool_calls = self._json_or_original(self._sqlite_row_get(row, "tool_calls"))
+    def _hermes_aggregate_trace_path(self, *, partial: bool = False) -> Path:
+        if partial:
+            return self.config.output.traces_dir / "partials" / HERMES_AGGREGATE_TRACE_FILE_NAME
+        return self.config.output.traces_dir / HERMES_AGGREGATE_TRACE_FILE_NAME
+
+    def _hermes_message_export(self, row: sqlite3.Row) -> dict[str, object]:
+        message = dict(row)
+        message["content"] = self._decode_hermes_content(message.get("content")) or ""
+        tool_calls = self._json_or_original(message.get("tool_calls"))
         if tool_calls:
-            event["tool_calls"] = tool_calls
-        reasoning = self._sqlite_row_get(row, "reasoning_content") or self._sqlite_row_get(row, "reasoning")
-        if isinstance(reasoning, str) and reasoning.strip():
-            event["reasoning_content"] = reasoning
-        return event
+            message["tool_calls"] = tool_calls
+        for key in ("reasoning_details", "codex_reasoning_items", "codex_message_items"):
+            value = self._json_or_original(message.get(key))
+            if value is not None and value != "":
+                message[key] = value
+        return message
 
     def _export_hermes_state_sessions(
         self,
@@ -2666,24 +3154,28 @@ class HermesRunner(ExternalCliRunner):
         connection = sqlite3.connect(state_db)
         connection.row_factory = sqlite3.Row
         try:
-            sessions = connection.execute("SELECT * FROM sessions ORDER BY started_at ASC, id ASC").fetchall()
+            sessions = connection.execute(
+                "SELECT * FROM sessions WHERE source = ? ORDER BY started_at ASC, id ASC",
+                ("cli",),
+            ).fetchall()
+            rows: list[dict[str, object]] = []
             for session_row in sessions:
-                session_id = str(session_row["id"])
-                file_name = f"{self.source_name}-{self._safe_session_file_id(session_id)}.jsonl"
-                destination = (
-                    self._resolve_partial_output_path(file_name)
-                    if partial
-                    else self._resolve_output_path(file_name)
-                )
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                events = [self._hermes_session_meta_event(session_row, workspace)]
-                messages = connection.execute(
-                    "SELECT * FROM messages WHERE session_id = ? ORDER BY timestamp ASC, id ASC",
-                    (session_id,),
+                message_rows = connection.execute(
+                    "SELECT * FROM messages WHERE session_id = ? ORDER BY id ASC",
+                    (str(session_row["id"]),),
                 ).fetchall()
-                events.extend(self._hermes_message_event(message_row) for message_row in messages)
-                self._write_events(destination, events)
-                exported[session_id] = destination
+                messages = [self._hermes_message_export(message_row) for message_row in message_rows]
+                rows.append(self._hermes_trace_row(session_row, messages, workspace, partial=partial))
+            if not rows:
+                return {}
+            destination = self._hermes_aggregate_trace_path(partial=partial)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with HERMES_AGGREGATE_WRITE_LOCK:
+                self._write_events(destination, rows)
+            for row in rows:
+                session_id = str(row.get("id") or "")
+                if session_id:
+                    exported[session_id] = destination
         finally:
             connection.close()
         return exported
@@ -2709,6 +3201,7 @@ class HermesRunner(ExternalCliRunner):
         stdout_parts: list[str] = []
         try:
             workspace.mkdir(parents=True, exist_ok=True)
+            self._write_hermes_runtime_config(home_dir)
             if len(turn_prompts) > 1:
                 self._start_container(self._build_external_persistent_container_command(workspace, home_dir, container_name))
             for turn_index, turn_prompt in enumerate(turn_prompts):
@@ -2802,6 +3295,8 @@ class HermesRunner(ExternalCliRunner):
             event = json.loads(first_line)
         except json.JSONDecodeError:
             return False
+        if isinstance(event, dict) and isinstance(event.get("metadata"), dict):
+            return event["metadata"].get("parent_session_id") in {None, ""}
         payload = event.get("payload") if isinstance(event, dict) else None
         return isinstance(payload, dict) and payload.get("parent_session_id") in {None, ""}
 
@@ -3906,10 +4401,11 @@ class PiRunner(DockerRuntimeRunner):
             json.dumps(self._project_settings(), indent=2) + "\n",
             encoding="utf-8",
         )
+        _make_tree_world_writable(settings_dir)
 
     @staticmethod
     def _resolve_pi_executable() -> str:
-        return "@mariozechner/pi-coding-agent"
+        return "pi"
 
     def _build_pi_command(
         self,
@@ -3932,6 +4428,8 @@ class PiRunner(DockerRuntimeRunner):
             "HOME=/home/codex",
             "-e",
             f"PI_CODING_AGENT_DIR={PI_AGENT_DIR_IN_CONTAINER}",
+            "-e",
+            "PI_OFFLINE=1",
             "-v",
             f"{workspace}:{WORKSPACE_IN_CONTAINER}",
             "-v",
@@ -3952,8 +4450,6 @@ class PiRunner(DockerRuntimeRunner):
     def _build_pi_agent_command(self, continue_session: bool = False) -> list[str]:
         configured_base_url = self.config.get_base_url()
         pi_command = [
-            "npx",
-            "-y",
             self._resolve_pi_executable(),
             "--mode",
             "json",
@@ -3977,8 +4473,9 @@ class PiRunner(DockerRuntimeRunner):
             pi_command.extend(["--api-key", api_key])
         if continue_session:
             pi_command.append("--continue")
-        pi_command.extend(["--print", f"@{WORKSPACE_IN_CONTAINER}/{TEICH_PROMPT_FILE_NAME}"])
-        return pi_command
+        prompt_path = shlex.quote(f"{WORKSPACE_IN_CONTAINER}/{TEICH_PROMPT_FILE_NAME}")
+        shell_command = f"exec {shlex.join(pi_command)} --print \"$(cat {prompt_path})\""
+        return ["sh", "-lc", shell_command]
 
     def _build_pi_persistent_container_command(
         self,
@@ -3999,6 +4496,8 @@ class PiRunner(DockerRuntimeRunner):
             "HOME=/home/codex",
             "-e",
             f"PI_CODING_AGENT_DIR={PI_AGENT_DIR_IN_CONTAINER}",
+            "-e",
+            "PI_OFFLINE=1",
             "-v",
             f"{workspace}:{WORKSPACE_IN_CONTAINER}",
             "-v",
@@ -4030,6 +4529,7 @@ class PiRunner(DockerRuntimeRunner):
 
     @classmethod
     def _normalize_pi_trace_event(cls, event: dict[str, object]) -> dict[str, object]:
+        event = _normalize_teich_prompt_user_event(event)
         if event.get("type") == "model_change":
             normalized_event = dict(event)
             normalized_event.pop("provider", None)
@@ -4234,11 +4734,14 @@ class PiRunner(DockerRuntimeRunner):
         workspace_root, workspace = self._prepare_workspace(session_id, prompt_input, "pi")
         agent_dir = Path(tempfile.mkdtemp(prefix=f"pi-agent-{session_id}-"))
         session_dir = Path(tempfile.mkdtemp(prefix=f"pi-sessions-{session_id}-"))
+        _make_tree_world_writable(agent_dir)
+        _make_tree_world_writable(session_dir)
         started_at = datetime.now(timezone.utc)
         container_name = self._container_name("pi", session_id)
         turn_prompts = _agent_turn_prompts(prompt, prompt_input)
         try:
             self._write_pi_agent_settings(agent_dir)
+            _make_tree_world_writable(agent_dir)
             workspace.mkdir(parents=True, exist_ok=True)
             self._write_pi_project_settings(workspace)
             if len(turn_prompts) > 1:

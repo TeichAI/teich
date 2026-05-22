@@ -97,6 +97,7 @@ class ModelConfig(BaseModel):
     approval_policy: str = "never"
     sandbox: str = "danger-full-access"
     reasoning_effort: str | None = None
+    context_length: int | None = None
     approval_mode: str | None = "none"
     pi_model_overrides: dict[str, object] = Field(default_factory=lambda: {"maxTokens": 131072})
 
@@ -302,7 +303,7 @@ class Config(BaseModel):
         if provider == "chat":
             ordered_tags = ["conversational", "distillation", "teich", model_name]
         else:
-            ordered_tags = ["agent-traces", provider, "distillation", model_name, "teich"]
+            ordered_tags = ["agent-traces", "format:agent-traces", provider, "distillation", model_name, "teich"]
         tags: list[str] = []
         seen: set[str] = set()
         for tag in ordered_tags:

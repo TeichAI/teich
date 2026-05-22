@@ -668,8 +668,12 @@ def _claude_code_tool_schema_from_definition(tool: dict[str, Any]) -> dict[str, 
 
 def _detect_trace_type(events: list[dict[str, Any]]) -> str:
     for event in events:
+        if _is_hermes_conversation(event):
+            return "hermes"
         if not isinstance(event, dict):
             continue
+        if _is_hermes_trace_row(event):
+            return "hermes"
         event_type = event.get("type")
         if event_type == "external_session_meta":
             payload = event.get("payload")
@@ -677,6 +681,12 @@ def _detect_trace_type(events: list[dict[str, Any]]) -> str:
             if isinstance(source, str) and source.strip().lower() in {"claude", "claude-code", "claude_code"}:
                 return "claude_code"
             return "external_agent"
+        if event_type == "hermes_session_meta":
+            return "hermes"
+        if _is_hermes_export_session(event):
+            return "hermes"
+        if isinstance(event.get("role"), str) and event_type is None:
+            return "hermes"
         if event_type in {"assistant", "user", "system", "result"} and (
             isinstance(event.get("session_id"), str) or isinstance(event.get("sessionId"), str)
         ):
@@ -975,6 +985,256 @@ def _convert_claude_code_trace_to_training_example(
         tools=tools,
         metadata=metadata,
     )
+
+
+def _convert_hermes_trace_to_training_example(
+    trace_file: Path,
+    events: list[dict[str, Any]],
+) -> TrainingExample:
+    messages: list[dict[str, Any]] = []
+    tool_names: set[str] = set()
+    tool_argument_samples: dict[str, list[Any]] = {}
+    session_meta: dict[str, Any] = {}
+    prompt = ""
+    message_events = events
+    explicit_tools: list[dict[str, Any]] | None = None
+    sidecar_meta = _load_hermes_metadata_sidecar(trace_file)
+    if sidecar_meta:
+        session_meta = sidecar_meta
+    if len(events) == 1 and _is_hermes_trace_row(events[0]):
+        row = events[0]
+        metadata = row.get("metadata")
+        if isinstance(metadata, dict):
+            session_meta = metadata
+        row_prompt = row.get("task")
+        if isinstance(row_prompt, str) and row_prompt.strip():
+            prompt = row_prompt.strip()
+        tools = row.get("tools")
+        if isinstance(tools, list):
+            explicit_tools = [tool for tool in tools if isinstance(tool, dict)]
+        message_events = _hermes_conversation_to_events(row.get("traces"))
+    elif len(events) == 1 and _is_hermes_conversation(events[0]):
+        message_events = _hermes_conversation_to_events(events[0])
+    elif len(events) == 1 and isinstance(events[0], dict) and isinstance(events[0].get("messages"), list):
+        session_meta = {key: value for key, value in events[0].items() if key != "messages"}
+        message_events = [event for event in events[0]["messages"] if isinstance(event, dict)]
+
+    for event in message_events:
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") == "hermes_session_meta":
+            payload = event.get("payload")
+            if isinstance(payload, dict):
+                session_meta = payload
+            continue
+
+        role = event.get("role")
+        if not isinstance(role, str):
+            continue
+        normalized_role = _normalize_role(role)
+        content, inline_reasoning = _message_content_and_inline_reasoning(event.get("content"))
+        if normalized_role == "user" and content.strip() and not prompt:
+            prompt = content.strip()
+
+        if normalized_role == "tool":
+            message: dict[str, Any] = {"role": "tool", "content": content}
+            tool_call_id = event.get("tool_call_id")
+            if isinstance(tool_call_id, str) and tool_call_id:
+                message["tool_call_id"] = tool_call_id
+            tool_name = event.get("name") or event.get("tool_name")
+            if isinstance(tool_name, str) and tool_name:
+                message["name"] = tool_name
+                tool_names.add(tool_name)
+            messages.append(message)
+            continue
+
+        message = {"role": normalized_role, "content": content}
+        if normalized_role == "assistant":
+            reasoning = event.get("reasoning_content") or event.get("reasoning") or inline_reasoning
+            if isinstance(reasoning, str) and reasoning.strip():
+                message["reasoning_content"] = reasoning.strip()
+            for key in ("reasoning_details", "codex_reasoning_items", "codex_message_items"):
+                value = event.get(key)
+                if value:
+                    message[key] = _normalize_json_like_value(value)
+
+        raw_tool_calls = _normalize_json_like_value(event.get("tool_calls"))
+        tool_calls: list[dict[str, Any]] = []
+        if isinstance(raw_tool_calls, list):
+            for raw_tool_call in raw_tool_calls:
+                if not isinstance(raw_tool_call, dict):
+                    continue
+                function = raw_tool_call.get("function")
+                function_name = None
+                arguments: Any = {}
+                if isinstance(function, dict):
+                    value = function.get("name")
+                    if isinstance(value, str) and value:
+                        function_name = value
+                    arguments = _parse_function_arguments(function.get("arguments"))
+                value = raw_tool_call.get("name")
+                if function_name is None and isinstance(value, str) and value:
+                    function_name = value
+                if not function_name:
+                    continue
+                tool_call_id = raw_tool_call.get("id") or event.get("tool_call_id")
+                if not isinstance(tool_call_id, str) or not tool_call_id:
+                    tool_call_id = f"{function_name}_{len(tool_calls) + 1}"
+                tool_names.add(function_name)
+                tool_argument_samples.setdefault(function_name, []).append(arguments)
+                tool_calls.append(
+                    {
+                        "id": tool_call_id,
+                        "type": "function",
+                        "function": {
+                            "name": function_name,
+                            "arguments": arguments,
+                        },
+                    }
+                )
+        if tool_calls:
+            message["tool_calls"] = tool_calls
+        if content.strip() or normalized_role == "assistant" or tool_calls or "reasoning_content" in message:
+            messages.append(message)
+
+    tools = explicit_tools or [
+        _build_tool_entry(name, {"parameters": _infer_tool_parameters_schema(tool_argument_samples.get(name, []))})
+        for name in sorted(tool_names)
+    ]
+    metadata = {
+        "source_file": trace_file.name,
+        "session_id": session_meta.get("id") or trace_file.stem,
+        "trace_type": "hermes",
+        "teich_export_status": session_meta.get("teich_export_status"),
+        "teich_partial": session_meta.get("teich_partial"),
+        "model_provider": session_meta.get("model_provider"),
+        "configured_model_provider": session_meta.get("configured_model_provider"),
+        "model": session_meta.get("model"),
+        "configured_context_length": session_meta.get("configured_context_length"),
+        "cwd": session_meta.get("cwd"),
+        "parent_session_id": session_meta.get("parent_session_id"),
+        "hermes_source": session_meta.get("hermes_source"),
+        "message_count": session_meta.get("message_count"),
+        "tool_call_count": session_meta.get("tool_call_count"),
+        "input_tokens": session_meta.get("input_tokens"),
+        "output_tokens": session_meta.get("output_tokens"),
+        "cache_read_tokens": session_meta.get("cache_read_tokens"),
+        "cache_write_tokens": session_meta.get("cache_write_tokens"),
+        "reasoning_tokens": session_meta.get("reasoning_tokens"),
+        "total_tokens": session_meta.get("total_tokens"),
+        "estimated_cost_usd": session_meta.get("estimated_cost_usd"),
+        "actual_cost_usd": session_meta.get("actual_cost_usd"),
+        "total_cost": session_meta.get("total_cost"),
+        "cost_status": session_meta.get("cost_status"),
+        "cost_source": session_meta.get("cost_source"),
+        "billing_provider": session_meta.get("billing_provider"),
+        "billing_base_url": session_meta.get("billing_base_url"),
+        "billing_mode": session_meta.get("billing_mode"),
+        "system_prompt": session_meta.get("system_prompt"),
+        "turn_count": sum(1 for message in messages if message.get("role") == "user"),
+    }
+    return TrainingExample(
+        source_file=trace_file,
+        prompt=prompt,
+        messages=messages,
+        tools=tools,
+        metadata=metadata,
+    )
+
+
+def _hermes_metadata_path(trace_file: Path) -> Path:
+    return trace_file.with_suffix(".metadata.json")
+
+
+def _load_hermes_metadata_sidecar(trace_file: Path) -> dict[str, Any]:
+    metadata_path = _hermes_metadata_path(trace_file)
+    if not metadata_path.exists():
+        return {}
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _is_hermes_conversation(value: Any) -> bool:
+    return (
+        isinstance(value, list)
+        and bool(value)
+        and all(isinstance(item, dict) and isinstance(item.get("from"), str) and isinstance(item.get("value"), str) for item in value)
+    )
+
+
+def _is_hermes_trace_row(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("id"), str)
+        and isinstance(value.get("traces"), list)
+        and _is_hermes_conversation(value.get("traces"))
+    )
+
+
+def _extract_xml_blocks(value: str, tag: str) -> tuple[list[str], str]:
+    pattern = re.compile(rf"<{tag}>\s*(.*?)\s*</{tag}>", re.DOTALL)
+    blocks = [match.group(1).strip() for match in pattern.finditer(value)]
+    stripped = pattern.sub("", value).strip()
+    return blocks, stripped
+
+
+def _hermes_conversation_to_events(conversation: Any) -> list[dict[str, Any]]:
+    if not _is_hermes_conversation(conversation):
+        return []
+    events: list[dict[str, Any]] = []
+    for item in conversation:
+        source_role = item.get("from")
+        value = item.get("value") or ""
+        if source_role == "system":
+            events.append({"role": "system", "content": value})
+        elif source_role == "human":
+            events.append({"role": "user", "content": value})
+        elif source_role == "tool":
+            tool_blocks, fallback_content = _extract_xml_blocks(value, "tool_response")
+            parsed = _normalize_json_like_value(tool_blocks[0]) if tool_blocks else fallback_content
+            if not isinstance(parsed, dict):
+                parsed = {"content": parsed}
+            events.append(
+                {
+                    "role": "tool",
+                    "content": json.dumps(parsed.get("content"), ensure_ascii=False)
+                    if isinstance(parsed.get("content"), (dict, list))
+                    else str(parsed.get("content") or ""),
+                    "tool_call_id": parsed.get("tool_call_id"),
+                    "tool_name": parsed.get("name"),
+                }
+            )
+        elif source_role == "gpt":
+            thinking_blocks, without_thinking = _extract_xml_blocks(value, "think")
+            tool_blocks, content = _extract_xml_blocks(without_thinking, "tool_call")
+            tool_calls: list[dict[str, Any]] = []
+            for index, block in enumerate(tool_blocks, start=1):
+                parsed = _normalize_json_like_value(block)
+                if not isinstance(parsed, dict):
+                    continue
+                name = parsed.get("name")
+                if not isinstance(name, str) or not name:
+                    continue
+                tool_calls.append(
+                    {
+                        "id": f"{name}_{index}",
+                        "type": "function",
+                        "function": {
+                            "name": name,
+                            "arguments": parsed.get("arguments") if isinstance(parsed.get("arguments"), dict) else {},
+                        },
+                    }
+                )
+            event: dict[str, Any] = {"role": "assistant", "content": content}
+            if thinking_blocks:
+                event["reasoning_content"] = "\n\n".join(block for block in thinking_blocks if block)
+            if tool_calls:
+                event["tool_calls"] = tool_calls
+            events.append(event)
+    return events
 
 
 def _convert_external_agent_trace_to_training_example(
@@ -1426,8 +1686,16 @@ def _convert_pi_trace_to_training_example(
     )
 
 
+def _is_hermes_export_session(value: Any) -> bool:
+    return isinstance(value, dict) and isinstance(value.get("messages"), list) and (
+        value.get("source") == "cli"
+        or isinstance(value.get("started_at"), (int, float))
+        or isinstance(value.get("parent_session_id"), str)
+    )
+
+
 def _is_structured_training_row(value: Any) -> bool:
-    return isinstance(value, dict) and isinstance(value.get("messages"), list)
+    return isinstance(value, dict) and isinstance(value.get("messages"), list) and not _is_hermes_export_session(value)
 
 
 def _normalize_training_message(message: Any) -> dict[str, Any] | None:
@@ -1541,6 +1809,8 @@ def convert_trace_to_training_example(trace_file: Path) -> TrainingExample:
     trace_type = _detect_trace_type(events)
     if trace_type == "claude_code":
         return _convert_claude_code_trace_to_training_example(trace_file, events)
+    if trace_type == "hermes":
+        return _convert_hermes_trace_to_training_example(trace_file, events)
     if trace_type == "external_agent":
         return _convert_external_agent_trace_to_training_example(trace_file, events)
     if trace_type == "pi":
@@ -1570,6 +1840,18 @@ def _convert_jsonl_file_to_training_rows(jsonl_file: Path) -> list[dict[str, Any
     trace_type = _detect_trace_type(rows)
     if trace_type == "claude_code":
         return [_convert_claude_code_trace_to_training_example(jsonl_file, rows).to_dict()]
+    if trace_type == "hermes":
+        if all(_is_hermes_trace_row(row) for row in rows):
+            return [
+                _convert_hermes_trace_to_training_example(jsonl_file, [row]).to_dict()
+                for row in rows
+            ]
+        if all(isinstance(row, dict) and isinstance(row.get("messages"), list) for row in rows):
+            return [
+                _convert_hermes_trace_to_training_example(jsonl_file, [row]).to_dict()
+                for row in rows
+            ]
+        return [_convert_hermes_trace_to_training_example(jsonl_file, rows).to_dict()]
     if trace_type == "external_agent":
         return [_convert_external_agent_trace_to_training_example(jsonl_file, rows).to_dict()]
     if trace_type == "pi":

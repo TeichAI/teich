@@ -141,6 +141,17 @@ def _prompt_publish_partial_outputs(cfg: Config) -> str | None:
     return repo_url
 
 
+def _print_interrupted_upload_hint(cfg: Config) -> None:
+    repo_id = cfg.get_publish_repo_id()
+    if not repo_id:
+        return
+    private_flag = " --private" if cfg.publish.private else ""
+    upload_command = f'hf upload {repo_id} . . --repo-type dataset --exclude "partials/**"{private_flag}'
+    console.print("[yellow]Skipping Hugging Face upload for interrupted run.[/yellow]")
+    console.print("[cyan]To upload the completed outputs later, run this from the output folder:[/cyan]")
+    console.print(f"  {upload_command}", soft_wrap=True)
+
+
 @app.command()
 def generate(
     config: Path = typer.Option(
@@ -269,7 +280,7 @@ def generate(
         readme_path = _try_write_partial_output_metadata(cfg)
         if readme_path:
             console.print(f"\n[green]Wrote README for partial outputs: {readme_path}[/green]")
-            _prompt_publish_partial_outputs(cfg)
+            _print_interrupted_upload_hint(cfg)
         console.print("\n[yellow]Interrupted. Completed outputs remain on disk.[/yellow]")
         raise typer.Exit(130)
     except Exception as e:
@@ -529,6 +540,11 @@ model:
   # safe,terminal,file,skills,memory,session_search,delegation
   reasoning_effort: medium
 
+  # Optional context length override for providers that support it.
+  # Useful for Hermes custom endpoints when /v1/models reports a served
+  # context below Hermes' minimum but the endpoint supports a larger window.
+  context_length: null
+
   # Optional Pi-specific provider overrides.
   # Teich already defaults maxTokens to 131072 even if this block is omitted.
   # Uncomment to customize the Pi/OpenRouter model entry further.
@@ -583,7 +599,7 @@ output:
   # Where generated .jsonl files are written.
   # - codex / pi: normalized copies of native agent session traces
   # - claude-code: native Claude Code transcript JSONL from .claude/projects/...
-  # - hermes: one external trace per native Hermes session, including delegated subagents
+  # - hermes: one Hermes-native trace per session, including delegated subagents
   # - chat: text-only training rows with messages/prompt/response/thinking fields
   traces_dir: ./output
 
