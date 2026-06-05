@@ -1,7 +1,30 @@
 import json
 from pathlib import Path
 
+from teich import detect_trace_type
 from teich.converter import convert_trace_to_training_example, convert_traces_to_training_data
+
+
+def test_detect_trace_type_returns_known_trace_type():
+    cases = [
+        ([{"type": "session_meta", "payload": {"id": "codex-session"}}], "codex"),
+        (
+            [{"type": "user", "session_id": "claude-session", "message": {"role": "user", "content": "hello"}}],
+            "claude_code",
+        ),
+        ([{"type": "session", "id": "pi-session"}], "pi"),
+        (
+            [{"id": "hermes-session", "source": "cli", "messages": [{"role": "user", "content": "hello"}]}],
+            "hermes",
+        ),
+    ]
+
+    for events, expected_trace_type in cases:
+        assert detect_trace_type(events) == expected_trace_type
+
+
+def test_detect_trace_type_returns_none_for_non_agent_jsonl():
+    assert detect_trace_type([{"text": "hello"}, {"text": "world"}]) is None
 
 
 def test_convert_pi_trace_ignores_malformed_tool_calls(tmp_path: Path):

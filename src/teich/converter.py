@@ -5,11 +5,12 @@ import re
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 
 _INLINE_THINKING_BLOCK_PATTERN = re.compile(r"<(think|thinking)>(.*?)</\1>", re.DOTALL)
 PI_SYSTEM_PROMPT_CUSTOM_TYPE = "teich-system-prompt"
+TraceType = Literal["claude_code", "codex", "external_agent", "hermes", "pi"]
 
 _CLAUDE_CODE_BUILTIN_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     "Task": {
@@ -691,7 +692,7 @@ def _claude_code_tool_schema_from_definition(tool: dict[str, Any]) -> dict[str, 
     return schema
 
 
-def _detect_trace_type(events: list[dict[str, Any]]) -> str:
+def _detect_trace_type(events: list[Any], default: TraceType | None = "codex") -> TraceType | None:
     for event in events:
         if _is_hermes_conversation(event):
             return "hermes"
@@ -731,7 +732,11 @@ def _detect_trace_type(events: list[dict[str, Any]]) -> str:
             "label",
         }:
             return "pi"
-    return "codex"
+    return default
+
+
+def detect_trace_type(events: list[Any]) -> TraceType | None:
+    return _detect_trace_type(events, default=None)
 
 
 def _claude_text_from_content(content: Any) -> str:

@@ -64,6 +64,7 @@ Use only the pieces you need:
 | --- | --- |
 | Generate coding-agent traces | `teich generate` with `agent.provider: codex`, `pi`, `claude-code`, or `hermes` |
 | Generate text-only chat rows | `teich generate` with `agent.provider: chat` |
+| Detect supported raw trace events | `detect_trace_type()` |
 | Load raw traces manually | `load_traces()` |
 | Prepare local/HF/mixed datasets for training | `prepare_data()` |
 | Apply response-only labels after TRL/Unsloth tokenization | `mask_data()` |
@@ -530,6 +531,7 @@ Assistant messages capture:
 from teich import (
     prepare_data,        # Recommended: render trainer-friendly text rows
     mask_data,           # Recommended: apply Teich labels after SFTTrainer tokenization
+    detect_trace_type,   # Detect supported parsed trace events, or return None
     load_traces,         # Fallback: load rows for fully manual processing
     row_fits_context,    # Public chat-template render + token fit check for one row
     validate_tool_calls, # Validate tool-call names and required arguments
@@ -539,6 +541,8 @@ from teich import (
     TrainingExample,     # Typed training example
 )
 ```
+
+`detect_trace_type(events)` returns `codex`, `claude_code`, `pi`, `hermes`, or `external_agent` for supported parsed trace events, and `None` for ordinary JSON rows.
 
 `README.md` is the package readme used for PyPI, so these examples are the canonical public package docs.
 
