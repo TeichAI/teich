@@ -1089,19 +1089,20 @@ def test_normalize_codex_trace_orders_empty_assistant_before_prior_tool_call(tmp
     ]
 
 
-def test_normalize_claude_code_trace_moves_empty_assistant_after_reasoning():
+def test_normalize_claude_code_trace_drops_empty_assistant_fragment():
     events = [
         {
             "type": "assistant",
             "sessionId": "session-1",
             "timestamp": "2026-05-13T00:00:02.000Z",
-            "message": {"role": "assistant", "content": []},
+            "message": {"id": "msg_1", "role": "assistant", "content": []},
         },
         {
             "type": "assistant",
             "sessionId": "session-1",
             "timestamp": "2026-05-13T00:00:03.000Z",
             "message": {
+                "id": "msg_1",
                 "role": "assistant",
                 "content": [{"type": "thinking", "thinking": "Need to inspect first."}],
             },
@@ -1110,8 +1111,8 @@ def test_normalize_claude_code_trace_moves_empty_assistant_after_reasoning():
 
     normalized = normalize_claude_code_trace_events(events)
 
+    assert len(normalized) == 1
     assert normalized[0]["message"]["content"][0]["type"] == "thinking"
-    assert normalized[1]["message"]["content"] == []
 
 
 def test_normalize_claude_code_trace_orders_text_before_prior_tool_use():
@@ -1121,6 +1122,7 @@ def test_normalize_claude_code_trace_orders_text_before_prior_tool_use():
             "sessionId": "session-1",
             "timestamp": "2026-05-13T00:00:02.000Z",
             "message": {
+                "id": "msg_1",
                 "role": "assistant",
                 "content": [{"type": "tool_use", "id": "toolu_1", "name": "Read", "input": {}}],
             },
@@ -1130,6 +1132,7 @@ def test_normalize_claude_code_trace_orders_text_before_prior_tool_use():
             "sessionId": "session-1",
             "timestamp": "2026-05-13T00:00:03.000Z",
             "message": {
+                "id": "msg_1",
                 "role": "assistant",
                 "content": [{"type": "text", "text": "I’ll inspect the file."}],
             },
@@ -1140,6 +1143,78 @@ def test_normalize_claude_code_trace_orders_text_before_prior_tool_use():
 
     assert normalized[0]["message"]["content"][0]["type"] == "text"
     assert normalized[1]["message"]["content"][0]["type"] == "tool_use"
+
+
+def test_normalize_claude_code_trace_groups_message_fragments_and_drops_blank_text():
+    events = [
+        {
+            "type": "assistant",
+            "sessionId": "session-1",
+            "timestamp": "2026-05-13T00:00:02.000Z",
+            "message": {
+                "id": "msg_1",
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": "toolu_1", "name": "Read", "input": {}}],
+            },
+        },
+        {
+            "type": "assistant",
+            "sessionId": "session-1",
+            "timestamp": "2026-05-13T00:00:03.000Z",
+            "message": {"id": "msg_1", "role": "assistant", "content": [{"type": "text", "text": " "}]},
+        },
+        {
+            "type": "assistant",
+            "sessionId": "session-1",
+            "timestamp": "2026-05-13T00:00:04.000Z",
+            "message": {"id": "msg_1", "role": "assistant", "content": [{"type": "text", "text": "."}]},
+        },
+        {
+            "type": "assistant",
+            "sessionId": "session-1",
+            "timestamp": "2026-05-13T00:00:05.000Z",
+            "message": {
+                "id": "msg_1",
+                "role": "assistant",
+                "content": [{"type": "thinking", "thinking": "Need to inspect first."}],
+            },
+        },
+        {
+            "type": "assistant",
+            "sessionId": "session-1",
+            "timestamp": "2026-05-13T00:00:06.000Z",
+            "message": {
+                "id": "msg_1",
+                "role": "assistant",
+                "content": [{"type": "redacted_thinking", "data": "opaque"}],
+            },
+        },
+        {
+            "type": "assistant",
+            "sessionId": "session-1",
+            "timestamp": "2026-05-13T00:00:07.000Z",
+            "message": {
+                "id": "msg_1",
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": "toolu_2", "name": "Bash", "input": {}}],
+            },
+        },
+    ]
+
+    normalized = normalize_claude_code_trace_events(events)
+
+    assert [event["message"]["content"][0]["type"] for event in normalized] == [
+        "thinking",
+        "redacted_thinking",
+        "tool_use",
+        "tool_use",
+    ]
+    assert [event["timestamp"] for event in normalized] == [
+        "2026-05-13T00:00:02.000Z",
+        "2026-05-13T00:00:05.000Z",
+        "2026-05-13T00:00:06.000Z",
+        "2026-05-13T00:00:07.000Z",
+    ]
 
 
 def test_convert_trace_normalizes_nested_json_encoded_tool_arguments(tmp_path: Path):

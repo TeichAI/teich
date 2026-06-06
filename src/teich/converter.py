@@ -961,6 +961,16 @@ def _claude_assistant_content_blocks(event: dict[str, Any]) -> list[dict[str, An
     return [block for block in content if isinstance(block, dict)]
 
 
+def _claude_message_id(event: dict[str, Any]) -> str | None:
+    if event.get("type") != "assistant":
+        return None
+    payload = event.get("message")
+    if not isinstance(payload, dict):
+        return None
+    message_id = payload.get("id")
+    return message_id if isinstance(message_id, str) and message_id else None
+
+
 def _claude_assistant_event_has_reasoning(event: dict[str, Any]) -> bool:
     blocks = _claude_assistant_content_blocks(event)
     if _claude_reasoning_from_content(blocks):
@@ -985,18 +995,6 @@ def _claude_assistant_event_has_text_output(event: dict[str, Any]) -> bool:
     return False
 
 
-def _claude_assistant_event_has_output(event: dict[str, Any]) -> bool:
-    return _claude_assistant_event_has_tool_use(event) or _claude_assistant_event_has_text_output(event)
-
-
-def _claude_empty_assistant_event(event: dict[str, Any]) -> bool:
-    return (
-        event.get("type") == "assistant"
-        and not _claude_assistant_event_has_output(event)
-        and not _claude_assistant_event_has_reasoning(event)
-    )
-
-
 def _same_claude_session(left: dict[str, Any], right: dict[str, Any]) -> bool:
     left_session = left.get("session_id") or left.get("sessionId")
     right_session = right.get("session_id") or right.get("sessionId")
@@ -1005,55 +1003,77 @@ def _same_claude_session(left: dict[str, Any], right: dict[str, Any]) -> bool:
     return True
 
 
-def _claude_output_fragment(event: dict[str, Any]) -> bool:
-    return (
-        _claude_empty_assistant_event(event)
-        or _claude_assistant_event_has_output(event)
-        and not _claude_assistant_event_has_reasoning(event)
-    )
+def _claude_emptyish_text(text: Any) -> bool:
+    if not isinstance(text, str):
+        return True
+    stripped = text.strip()
+    return not stripped or stripped in {".", "..", "...", "…"}
 
 
-def _claude_tool_call_fragment(event: dict[str, Any]) -> bool:
-    return _claude_assistant_event_has_tool_use(event) and not _claude_assistant_event_has_reasoning(event)
+def _drop_claude_assistant_fragment(event: dict[str, Any]) -> bool:
+    if event.get("type") != "assistant":
+        return False
+    if _claude_assistant_event_has_reasoning(event) or _claude_assistant_event_has_tool_use(event):
+        return False
+
+    blocks = _claude_assistant_content_blocks(event)
+    if not blocks:
+        return True
+    text_types = {"text", "input_text", "output_text"}
+    return all(block.get("type") in text_types and _claude_emptyish_text(block.get("text")) for block in blocks)
 
 
-def _claude_text_output_fragment(event: dict[str, Any]) -> bool:
-    return (
-        _claude_assistant_event_has_text_output(event)
-        and not _claude_assistant_event_has_tool_use(event)
-        and not _claude_assistant_event_has_reasoning(event)
-    )
+def _claude_assistant_fragment_rank(event: dict[str, Any]) -> int:
+    if _claude_assistant_event_has_reasoning(event):
+        return 0
+    if _claude_assistant_event_has_text_output(event):
+        return 1
+    if _claude_assistant_event_has_tool_use(event):
+        return 2
+    return 3
+
+
+def _normalize_claude_assistant_group(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    kept_events = [event for event in events if not _drop_claude_assistant_fragment(event)]
+    if len(kept_events) <= 1:
+        return kept_events
+
+    indexed_events = list(enumerate(kept_events))
+    indexed_events.sort(key=lambda item: (_claude_assistant_fragment_rank(item[1]), item[0]))
+    ordered_events = [event for _, event in indexed_events]
+    if ordered_events == kept_events:
+        return kept_events
+    return _events_with_reassigned_timestamps(ordered_events, kept_events)
 
 
 def normalize_claude_code_trace_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ordered_events: list[dict[str, Any]] = []
-    for event in events:
+    index = 0
+    while index < len(events):
+        event = events[index]
         if not isinstance(event, dict):
             ordered_events.append(event)
+            index += 1
             continue
-        if _claude_assistant_event_has_reasoning(event) and not _claude_assistant_event_has_output(event):
-            output_suffix: list[dict[str, Any]] = []
-            while (
-                ordered_events
-                and _claude_output_fragment(ordered_events[-1])
-                and _same_claude_session(ordered_events[-1], event)
-            ):
-                output_suffix.insert(0, ordered_events.pop())
-            if output_suffix:
-                ordered_events.extend(_events_with_rotated_timestamps(event, output_suffix))
-                continue
-        if _claude_text_output_fragment(event):
-            output_suffix = []
-            while (
-                ordered_events
-                and _claude_tool_call_fragment(ordered_events[-1])
-                and _same_claude_session(ordered_events[-1], event)
-            ):
-                output_suffix.insert(0, ordered_events.pop())
-            if output_suffix:
-                ordered_events.extend(_events_with_rotated_timestamps(event, output_suffix))
-                continue
+        if event.get("type") == "assistant":
+            message_id = _claude_message_id(event)
+            group = [event]
+            index += 1
+            while index < len(events):
+                next_event = events[index]
+                if not isinstance(next_event, dict) or next_event.get("type") != "assistant":
+                    break
+                if not _same_claude_session(event, next_event):
+                    break
+                next_message_id = _claude_message_id(next_event)
+                if (message_id is not None or next_message_id is not None) and next_message_id != message_id:
+                    break
+                group.append(next_event)
+                index += 1
+            ordered_events.extend(_normalize_claude_assistant_group(group))
+            continue
         ordered_events.append(event)
+        index += 1
     return ordered_events
 
 

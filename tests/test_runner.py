@@ -634,7 +634,11 @@ def test_claude_code_extract_orders_split_reasoning_before_output(tmp_path: Path
                 json.dumps(
                     {
                         "type": "assistant",
-                        "message": {"role": "assistant", "content": [{"type": "text", "text": "I'll edit it."}]},
+                        "message": {
+                            "id": "msg_1",
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": "I'll edit it."}],
+                        },
                         "sessionId": "native-session",
                         "timestamp": "2026-05-13T00:00:02.000Z",
                     }
@@ -643,6 +647,7 @@ def test_claude_code_extract_orders_split_reasoning_before_output(tmp_path: Path
                     {
                         "type": "assistant",
                         "message": {
+                            "id": "msg_1",
                             "role": "assistant",
                             "content": [{"type": "thinking", "thinking": "Need a small edit."}],
                         },
@@ -654,6 +659,7 @@ def test_claude_code_extract_orders_split_reasoning_before_output(tmp_path: Path
                     {
                         "type": "assistant",
                         "message": {
+                            "id": "msg_1",
                             "role": "assistant",
                             "content": [{"type": "tool_use", "id": "toolu_1", "name": "Edit", "input": {}}],
                         },
@@ -665,6 +671,7 @@ def test_claude_code_extract_orders_split_reasoning_before_output(tmp_path: Path
                     {
                         "type": "assistant",
                         "message": {
+                            "id": "msg_1",
                             "role": "assistant",
                             "content": [{"type": "redacted_thinking", "data": "opaque"}],
                         },
