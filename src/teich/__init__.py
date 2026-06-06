@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-__version__ = "0.1.1a79"
+__version__ = "0.1.1a80"
 
 from .audit import SFTAuditReport, audit_sft_dataset
 from .config import Config, load_config
