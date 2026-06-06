@@ -109,6 +109,8 @@ Requirements for agent trace generation:
 - Docker
 - API key for the configured provider, such as OpenAI, OpenRouter, or Anthropic. Local OpenAI-compatible endpoints are also supported where the selected runner can use them.
 
+The bundled Docker runtime runs agent CLIs as the non-root `codex` user, but includes passwordless `apt` / `apt-get` wrappers so generated agents can install missing system packages when a task needs them.
+
 `agent.provider: chat` does not require Docker.
 
 The Python utilities also work without Docker if you already have traces or structured JSONL datasets.

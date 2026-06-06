@@ -14,7 +14,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from teich.config import Config, APIConfig, ModelConfig
-from teich.runner import CodexRunner
+from teich.runner import CodexRunner, RUNTIME_CONTAINER_USER, RUNTIME_IMAGE_NAME
 
 
 # Skip integration tests if Docker is not available
@@ -30,6 +30,11 @@ requires_docker = pytest.mark.skipif(
 requires_api_key = pytest.mark.skipif(
     not os.getenv("OPENAI_API_KEY"),
     reason="OPENAI_API_KEY not set"
+)
+
+requires_runtime_smoke = pytest.mark.skipif(
+    os.getenv("TEICH_RUN_DOCKER_RUNTIME_SMOKE") != "1",
+    reason="set TEICH_RUN_DOCKER_RUNTIME_SMOKE=1 to run Docker package-manager smoke",
 )
 
 
@@ -81,6 +86,34 @@ class TestDockerImage:
         )
 
         assert result.returncode == 0, f"Docker build failed: {result.stderr}"
+
+    @requires_docker
+    @requires_runtime_smoke
+    @pytest.mark.slow
+    def test_runtime_container_can_install_system_packages(self):
+        """Verify generated agents can use apt-get for missing system dependencies."""
+        CodexRunner(Config())
+
+        result = subprocess.run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--user",
+                RUNTIME_CONTAINER_USER,
+                "-e",
+                "HOME=/home/codex",
+                RUNTIME_IMAGE_NAME,
+                "bash",
+                "-lc",
+                "test \"$(id -u)\" != 0 && test \"$(command -v apt-get)\" = /usr/local/bin/apt-get && apt-get update -qq",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
 
 
 class TestRunnerIntegration:

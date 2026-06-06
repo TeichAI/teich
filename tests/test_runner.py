@@ -21,6 +21,7 @@ from teich.runner import (
     DockerRuntimeRunner,
     HermesRunner,
     PiRunner,
+    RUNTIME_CONTAINER_USER,
     pending_prompt_inputs_for_resume,
 )
 
@@ -217,8 +218,22 @@ def test_tracked_container_cleans_up_when_start_fails():
         with pytest.raises(RuntimeError, match="boom"):
             runner._start_tracked_container(["docker", "run"], "teich-broken-start")
 
-    mock_remove.assert_called_once_with("teich-broken-start")
+        mock_remove.assert_called_once_with("teich-broken-start")
     assert "teich-broken-start" not in runner._active_containers
+
+
+def test_copy_workspace_snapshot_ignores_dangling_symlinks(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    destination = tmp_path / "snapshot"
+    bin_dir = workspace / ".venv" / "bin"
+    bin_dir.mkdir(parents=True)
+    (workspace / "pyproject.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
+    (bin_dir / "python").symlink_to(tmp_path / "missing-python")
+
+    DockerRuntimeRunner._copy_workspace_snapshot(workspace, destination)
+
+    assert (destination / "pyproject.toml").read_text(encoding="utf-8") == "[project]\nname = 'demo'\n"
+    assert not (destination / ".venv" / "bin" / "python").exists()
 
 
 def test_tracked_container_cleanup_unregisters_after_success():
@@ -427,6 +442,62 @@ def test_docker_runners_keep_long_prompt_out_of_host_command_line(tmp_path: Path
     pi_command = mock_pi_run_process.call_args.args[0]
     assert long_prompt not in pi_command
     assert any("$(cat /workspace/.teich-prompt.txt)" in part for part in pi_command)
+
+
+def test_docker_agent_commands_run_as_runtime_container_user(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    with patch.object(CodexRunner, "_ensure_image"):
+        codex_runner = CodexRunner(Config())
+    codex_run_command, _proxy_target = codex_runner._build_codex_docker_base_command(
+        workspace,
+        tmp_path / "codex-home",
+        "teich-codex-root",
+    )
+    codex_exec_command = codex_runner._build_codex_exec_command("teich-codex-root")
+
+    with patch.object(ClaudeCodeRunner, "_ensure_image"):
+        claude_runner = ClaudeCodeRunner(Config(agent={"provider": "claude-code"}))
+    claude_run_command = claude_runner._build_external_docker_base_command(
+        workspace,
+        tmp_path / "claude-home",
+        "teich-claude-root",
+    )
+    claude_exec_command = claude_runner._build_external_exec_command("teich-claude-root")
+
+    with patch.object(HermesRunner, "_ensure_image"):
+        hermes_runner = HermesRunner(Config(agent={"provider": "hermes"}))
+    hermes_run_command = hermes_runner._build_external_docker_base_command(
+        workspace,
+        tmp_path / "hermes-home",
+        "teich-hermes-root",
+    )
+    hermes_exec_command = hermes_runner._build_external_exec_command("teich-hermes-root")
+
+    with patch.object(PiRunner, "_ensure_image"), patch.object(PiRunner, "_resolve_pi_executable", return_value="pi"):
+        pi_runner = PiRunner(Config(agent={"provider": "pi"}))
+        pi_run_command = pi_runner._build_pi_command(
+            "Inspect",
+            workspace,
+            tmp_path / "pi-agent",
+            tmp_path / "pi-sessions",
+            "teich-pi-root",
+        )
+        pi_exec_command = pi_runner._build_pi_exec_command("teich-pi-root")
+
+    for command in [
+        codex_run_command,
+        codex_exec_command,
+        claude_run_command,
+        claude_exec_command,
+        hermes_run_command,
+        hermes_exec_command,
+        pi_run_command,
+        pi_exec_command,
+    ]:
+        assert "--user" in command
+        assert command[command.index("--user") + 1] == RUNTIME_CONTAINER_USER
 
 
 def test_claude_code_runner_uses_stream_json_and_prompt_file(tmp_path: Path):
@@ -1324,6 +1395,7 @@ def test_codex_run_session_runs_follow_up_prompts_by_resuming_session():
     def record_process(command, *args, **kwargs) -> None:
         assert command[:3] == ["docker", "exec", "-i"]
         assert "--user" in command
+        assert command[command.index("--user") + 1] == RUNTIME_CONTAINER_USER
         assert "-w" in command
         assert command[command.index("-w") + 1] == "/workspace"
         assert "teich-codex-test-session" in command
@@ -1412,6 +1484,7 @@ def test_pi_run_session_runs_follow_up_prompts_by_continuing_session(tmp_path: P
         assert command[:2] == ["docker", "exec"]
         assert "-i" not in command
         assert "--user" in command
+        assert command[command.index("--user") + 1] == RUNTIME_CONTAINER_USER
         assert "-w" in command
         assert command[command.index("-w") + 1] == "/workspace"
         assert "teich-pi-pi-session" in command
@@ -3274,7 +3347,7 @@ def test_pi_runner_builds_command_and_project_settings(tmp_path: Path):
             "--name",
             "teich-pi-test-session",
             "--user",
-            "codex",
+            RUNTIME_CONTAINER_USER,
             "-e",
             "HOME=/home/codex",
             "-e",

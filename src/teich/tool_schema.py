@@ -28,7 +28,31 @@ CODEX_BUILTIN_TOOLS: list[dict[str, Any]] = [
                     "workdir": {"type": "string"},
                 },
                 "required": ["command"],
-                "additionalProperties": False,
+                "additionalProperties": True,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "exec_command",
+            "description": "Run a shell command in the workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cmd": {"type": "string"},
+                    "workdir": {"type": "string"},
+                    "yield_time_ms": {"type": "integer"},
+                    "max_output_tokens": {"type": "integer"},
+                    "shell": {"type": "string"},
+                    "login": {"type": "boolean"},
+                    "tty": {"type": "boolean"},
+                    "justification": {"type": "string"},
+                    "prefix_rule": {"type": "array"},
+                    "sandbox_permissions": {"type": "string"},
+                },
+                "required": ["cmd"],
+                "additionalProperties": True,
             },
         },
     },
@@ -43,7 +67,39 @@ CODEX_BUILTIN_TOOLS: list[dict[str, Any]] = [
                     "patch": {"type": "string"},
                 },
                 "required": ["patch"],
-                "additionalProperties": False,
+                "additionalProperties": True,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_plan",
+            "description": "Update the current task plan.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "explanation": {"type": "string"},
+                    "plan": {"type": "array"},
+                },
+                "required": ["plan"],
+                "additionalProperties": True,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "view_image",
+            "description": "Inspect a local image file.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "detail": {"type": "string"},
+                },
+                "required": ["path"],
+                "additionalProperties": True,
             },
         },
     },
@@ -59,10 +115,37 @@ PI_BUILTIN_TOOLS: list[dict[str, Any]] = [
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "command": {"type": "string"},
                     "cmd": {"type": "string"},
                     "cwd": {"type": "string"},
+                    "description": {"type": "string"},
+                    "timeout": {"type": "integer"},
                 },
-                "required": ["cmd"],
+                "anyOf": [
+                    {"required": ["command"]},
+                    {"required": ["cmd"]},
+                ],
+                "additionalProperties": True,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read",
+            "description": "Read file contents from the workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "file_path": {"type": "string"},
+                    "offset": {"type": "integer"},
+                    "limit": {"type": "integer"},
+                },
+                "anyOf": [
+                    {"required": ["path"]},
+                    {"required": ["file_path"]},
+                ],
                 "additionalProperties": True,
             },
         },
@@ -85,6 +168,27 @@ PI_BUILTIN_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "write",
+            "description": "Write file contents in the workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "file_path": {"type": "string"},
+                    "content": {"type": "string"},
+                },
+                "required": ["content"],
+                "anyOf": [
+                    {"required": ["path"]},
+                    {"required": ["file_path"]},
+                ],
+                "additionalProperties": True,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "write_file",
             "description": "Write file contents in the workspace.",
             "parameters": {
@@ -94,6 +198,27 @@ PI_BUILTIN_TOOLS: list[dict[str, Any]] = [
                     "content": {"type": "string"},
                 },
                 "required": ["path", "content"],
+                "additionalProperties": True,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "edit",
+            "description": "Edit file contents in the workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "file_path": {"type": "string"},
+                    "edits": {"type": "array"},
+                },
+                "required": ["edits"],
+                "anyOf": [
+                    {"required": ["path"]},
+                    {"required": ["file_path"]},
+                ],
                 "additionalProperties": True,
             },
         },
@@ -192,7 +317,19 @@ def _validate_argument_schema(
         errors.append(f"{path}: value {value!r} is not in enum {enum!r}")
     if not isinstance(value, dict):
         return errors
+    for combinator in ("anyOf", "oneOf"):
+        options = schema.get(combinator)
+        if not isinstance(options, list):
+            continue
+        option_errors = [
+            _validate_argument_schema(value, option, path=path)
+            for option in options
+            if isinstance(option, dict)
+        ]
+        if option_errors and not any(not branch_errors for branch_errors in option_errors):
+            errors.extend(min(option_errors, key=len))
     required = schema.get("required")
+    required_names = {name for name in required if isinstance(name, str)} if isinstance(required, list) else set()
     if isinstance(required, list):
         for required_name in required:
             if isinstance(required_name, str) and required_name not in value:
@@ -201,6 +338,8 @@ def _validate_argument_schema(
     if isinstance(properties, dict):
         for name, item in value.items():
             property_schema = properties.get(name)
+            if item is None and name not in required_names:
+                continue
             if isinstance(property_schema, dict):
                 errors.extend(_validate_argument_schema(item, property_schema, path=f"{path}.{name}"))
         if schema.get("additionalProperties", True) is False:

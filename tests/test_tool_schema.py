@@ -45,7 +45,9 @@ def test_snapshot_configured_tools_includes_codex_builtins_and_mcp_tools():
 
     names = [tool["function"]["name"] for tool in tools]
     assert "bash" in names
+    assert "exec_command" in names
     assert "apply_patch" in names
+    assert "update_plan" in names
     assert "search.lookup" in names
 
 
@@ -56,8 +58,75 @@ def test_snapshot_configured_tools_uses_pi_builtins():
 
     names = [tool["function"]["name"] for tool in tools]
     assert "bash" in names
+    assert "read" in names
     assert "read_file" in names
+    assert "write" in names
     assert "write_file" in names
+    assert "edit" in names
+
+
+def test_codex_builtin_tool_schema_matches_normalized_tool_calls():
+    config = Config(agent={"provider": "codex"})
+    row = {
+        "messages": [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {"name": "update_plan", "arguments": {"plan": []}},
+                    },
+                    {
+                        "id": "call-2",
+                        "type": "function",
+                        "function": {"name": "exec_command", "arguments": {"cmd": "pwd"}},
+                    },
+                ],
+            }
+        ],
+        "tools": snapshot_configured_tools(config),
+    }
+
+    assert validate_tool_calls(row).ok is True
+
+
+def test_pi_builtin_tool_schema_accepts_normalized_and_legacy_argument_names():
+    config = Config(agent={"provider": "pi"})
+    row = {
+        "messages": [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {"name": "bash", "arguments": {"command": "pwd"}},
+                    },
+                    {
+                        "id": "call-2",
+                        "type": "function",
+                        "function": {"name": "bash", "arguments": {"cmd": "pwd"}},
+                    },
+                    {
+                        "id": "call-3",
+                        "type": "function",
+                        "function": {"name": "write", "arguments": {"path": "demo.py", "content": "print(1)"}},
+                    },
+                    {
+                        "id": "call-4",
+                        "type": "function",
+                        "function": {"name": "edit", "arguments": {"file_path": "demo.py", "edits": []}},
+                    },
+                ],
+            }
+        ],
+        "tools": snapshot_configured_tools(config),
+    }
+
+    assert validate_tool_calls(row).ok is True
 
 
 def test_snapshot_mcp_tools_normalizes_schema_and_applies_filters():
@@ -131,6 +200,43 @@ def test_validate_tool_calls_checks_declared_names_and_required_arguments():
     assert any("missing required argument 'command'" in error for error in report.errors)
     assert any("unexpected argument 'timeout_ms'" in error for error in report.errors)
     assert any("undeclared tool 'missing_tool'" in error for error in report.errors)
+
+
+def test_validate_tool_calls_allows_null_for_optional_arguments():
+    row = {
+        "messages": [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {"name": "Bash", "arguments": {"command": "pwd", "timeout": None}},
+                    },
+                ],
+            },
+        ],
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "Bash",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "command": {"type": "string"},
+                            "timeout": {"type": "integer"},
+                        },
+                        "required": ["command"],
+                        "additionalProperties": False,
+                    },
+                },
+            }
+        ],
+    }
+
+    assert validate_tool_calls(row).ok is True
 
 
 def test_prepare_data_can_validate_tool_calls_before_rendering():

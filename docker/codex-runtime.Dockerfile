@@ -11,6 +11,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     git \
     curl \
     ca-certificates \
+    sudo \
     python3 \
     python3-dev \
     python3-minimal \
@@ -52,6 +53,11 @@ RUN useradd -m -s /bin/bash codex && \
     mkdir -p /home/codex/.codex/sessions && \
     mkdir -p /home/codex/.claude && \
     mkdir -p /home/codex/.hermes && \
+    printf 'codex ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/codex && \
+    chmod 0440 /etc/sudoers.d/codex && \
+    printf '#!/usr/bin/env bash\nexec sudo /usr/bin/apt-get "$@"\n' > /usr/local/bin/apt-get && \
+    printf '#!/usr/bin/env bash\nexec sudo /usr/bin/apt "$@"\n' > /usr/local/bin/apt && \
+    chmod +x /usr/local/bin/apt-get /usr/local/bin/apt && \
     chown -R codex:codex /home/codex /workspace ${PLAYWRIGHT_BROWSERS_PATH} ${VIRTUAL_ENV}
 
 USER codex

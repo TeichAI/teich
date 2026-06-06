@@ -38,6 +38,7 @@ from .converter import (
 
 RUNTIME_IMAGE_NAME = "teich-runtime:v3"
 RUNTIME_DOCKERFILE_NAME = "codex-runtime.Dockerfile"
+RUNTIME_CONTAINER_USER = "codex"
 CODEX_HOME_IN_CONTAINER = "/home/codex/.codex"
 CLAUDE_HOME_IN_CONTAINER = "/home/codex/.claude"
 HERMES_HOME_IN_CONTAINER = "/home/codex/.hermes"
@@ -1330,7 +1331,12 @@ class DockerRuntimeRunner:
         if destination.exists():
             shutil.rmtree(destination, ignore_errors=True)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(workspace, destination, dirs_exist_ok=False)
+        shutil.copytree(
+            workspace,
+            destination,
+            dirs_exist_ok=False,
+            ignore_dangling_symlinks=True,
+        )
 
     @staticmethod
     def _github_repo_checkout_name(github_repo: str) -> str:
@@ -2319,7 +2325,7 @@ class CodexRunner(DockerRuntimeRunner):
             "--name",
             container_name,
             "--user",
-            "codex",
+            RUNTIME_CONTAINER_USER,
             "-e",
             f"CODEX_HOME={CODEX_HOME_IN_CONTAINER}",
             "-e",
@@ -2447,7 +2453,7 @@ class CodexRunner(DockerRuntimeRunner):
             "exec",
             "-i",
             "--user",
-            "codex",
+            RUNTIME_CONTAINER_USER,
             "-w",
             WORKSPACE_IN_CONTAINER,
             container_name,
@@ -2696,7 +2702,7 @@ class ExternalCliRunner(DockerRuntimeRunner):
             "--name",
             container_name,
             "--user",
-            "codex",
+            RUNTIME_CONTAINER_USER,
             "-e",
             "HOME=/home/codex",
             "-e",
@@ -2753,7 +2759,7 @@ class ExternalCliRunner(DockerRuntimeRunner):
             "docker",
             "exec",
             "--user",
-            "codex",
+            RUNTIME_CONTAINER_USER,
             "-w",
             WORKSPACE_IN_CONTAINER,
             container_name,
@@ -4962,7 +4968,7 @@ class PiRunner(DockerRuntimeRunner):
             "--name",
             container_name,
             "--user",
-            "codex",
+            RUNTIME_CONTAINER_USER,
             "-e",
             "HOME=/home/codex",
             "-e",
@@ -5030,7 +5036,7 @@ class PiRunner(DockerRuntimeRunner):
             "--name",
             container_name,
             "--user",
-            "codex",
+            RUNTIME_CONTAINER_USER,
             "-e",
             "HOME=/home/codex",
             "-e",
@@ -5058,7 +5064,7 @@ class PiRunner(DockerRuntimeRunner):
             "docker",
             "exec",
             "--user",
-            "codex",
+            RUNTIME_CONTAINER_USER,
             "-w",
             WORKSPACE_IN_CONTAINER,
             container_name,
