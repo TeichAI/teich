@@ -4,7 +4,12 @@ __version__ = "0.1.1a80"
 
 from .audit import SFTAuditReport, audit_sft_dataset
 from .config import Config, load_config
-from .converter import TrainingExample, convert_trace_to_training_example, convert_traces_to_training_data
+from .converter import (
+    TrainingExample,
+    convert_trace_to_training_example,
+    convert_traces_to_training_data,
+    detect_trace_type,
+)
 from .formatter import PrepareReport, RowContextFit, mask_data, preview_sft_example, row_fits_context
 from .loader import load_traces, trace_is_complete
 from .prepare import prepare_data
@@ -20,6 +25,7 @@ __all__ = [
     "audit_sft_dataset",
     "convert_trace_to_training_example",
     "convert_traces_to_training_data",
+    "detect_trace_type",
     "load_traces",
     "load_config",
     "mask_data",
