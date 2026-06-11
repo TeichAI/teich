@@ -33,6 +33,7 @@ def test_detect_trace_type_returns_known_trace_type():
             ],
             "openclaw",
         ),
+        ([{"type": "external_session_meta", "payload": {"source": "hermes-agent"}}], "hermes"),
         ([{"type": "external_session_meta", "payload": {"source": "custom-agent"}}], "external_agent"),
     ]
 
@@ -377,7 +378,16 @@ def test_convert_codex_trace_keeps_system_prompt_and_tools_without_tool_calls(tm
             "type": "session_meta",
             "payload": {
                 "id": "codex-session-1",
+                "source": "exec",
+                "model_provider": "openrouter",
                 "base_instructions": {"text": "You are a careful coding agent."},
+            },
+        },
+        {
+            "type": "turn_context",
+            "payload": {
+                "turn_id": "turn-1",
+                "model": "google/gemini-3.1-flash-lite",
             },
         },
         {
@@ -423,6 +433,10 @@ def test_convert_codex_trace_keeps_system_prompt_and_tools_without_tool_calls(tm
     example = convert_trace_to_training_example(trace_file)
 
     assert example.messages[0] == {"role": "system", "content": "You are a careful coding agent."}
+    assert example.metadata["trace_type"] == "codex"
+    assert example.metadata["source"] == "exec"
+    assert example.metadata["model_provider"] == "openrouter"
+    assert example.metadata["model"] == "google/gemini-3.1-flash-lite"
     assert example.metadata["system_prompt"] == "You are a careful coding agent."
     assert example.metadata["first_message_timestamp"] == "2026-05-13T06:03:06.000Z"
     assert [tool["function"]["name"] for tool in example.tools] == ["exec_command"]
@@ -829,7 +843,7 @@ def test_convert_native_claude_code_orders_fragmented_assistant_turn_semanticall
     ]
 
 
-def test_convert_external_agent_trace(tmp_path: Path):
+def test_convert_teich_hermes_external_trace(tmp_path: Path):
     trace_file = tmp_path / "hermes.jsonl"
     events = [
         {
@@ -853,7 +867,8 @@ def test_convert_external_agent_trace(tmp_path: Path):
 
     example = convert_trace_to_training_example(trace_file)
 
-    assert example.metadata["trace_type"] == "hermes-agent"
+    assert example.metadata["trace_type"] == "hermes"
+    assert example.metadata["source"] == "hermes-agent"
     assert example.metadata["session_id"] == "hermes-session"
     assert example.metadata["first_message_timestamp"] == "2026-05-15T00:00:01.000Z"
     assert example.prompt == "Build a CLI"
@@ -863,7 +878,7 @@ def test_convert_external_agent_trace(tmp_path: Path):
     ]
 
 
-def test_convert_external_agent_trace_uses_meta_tools_without_tool_calls(tmp_path: Path):
+def test_convert_teich_hermes_external_trace_uses_meta_tools_without_tool_calls(tmp_path: Path):
     trace_file = tmp_path / "hermes-tools.jsonl"
     events = [
         {
@@ -896,13 +911,13 @@ def test_convert_external_agent_trace_uses_meta_tools_without_tool_calls(tmp_pat
 
     example = convert_trace_to_training_example(trace_file)
 
-    assert example.metadata["trace_type"] == "hermes-agent"
+    assert example.metadata["trace_type"] == "hermes"
     assert example.messages[-1] == {"role": "assistant", "content": "Done."}
     assert [tool["function"]["name"] for tool in example.tools] == ["delegate_task"]
     assert example.tools[0]["function"]["parameters"]["required"] == ["goal"]
 
 
-def test_convert_external_agent_trace_preserves_hermes_tool_calls_and_parent_metadata(tmp_path: Path):
+def test_convert_teich_hermes_external_trace_preserves_tool_calls_and_parent_metadata(tmp_path: Path):
     trace_file = tmp_path / "hermes-child.jsonl"
     events = [
         {
@@ -954,6 +969,7 @@ def test_convert_external_agent_trace_preserves_hermes_tool_calls_and_parent_met
 
     example = convert_trace_to_training_example(trace_file)
 
+    assert example.metadata["trace_type"] == "hermes"
     assert example.metadata["parent_session_id"] == "parent-session"
     assert example.metadata["tool_call_count"] == 1
     assert example.metadata["input_tokens"] == 12

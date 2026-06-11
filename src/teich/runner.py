@@ -2695,11 +2695,20 @@ class ExternalCliRunner(DockerRuntimeRunner):
         command.append(self.image_name)
         return command
 
-    def _build_shell_command(self, *, continue_session: bool = False) -> str:
+    def _build_shell_command(
+        self,
+        *,
+        continue_session: bool = False,
+        resume_session_id: str | None = None,
+    ) -> str:
         raise NotImplementedError
 
     def _wrap_external_shell_command(self, shell_command: str) -> str:
-        chmod_command = f"chmod -R a+rwX {shlex.quote(self.home_in_container)} >/dev/null 2>&1 || true"
+        chmod_targets = " ".join(
+            shlex.quote(path)
+            for path in (self.home_in_container, WORKSPACE_IN_CONTAINER)
+        )
+        chmod_command = f"chmod -R a+rwX {chmod_targets} >/dev/null 2>&1 || true"
         return f"set +e; {shell_command}; status=$?; {chmod_command}; exit $status"
 
     def _build_external_command(
@@ -2709,10 +2718,14 @@ class ExternalCliRunner(DockerRuntimeRunner):
         container_name: str,
         *,
         continue_session: bool = False,
+        resume_session_id: str | None = None,
     ) -> list[str]:
         command = self._build_external_docker_base_command(workspace, home_dir, container_name)
         shell_command = self._wrap_external_shell_command(
-            self._build_shell_command(continue_session=continue_session)
+            self._build_shell_command(
+                continue_session=continue_session,
+                resume_session_id=resume_session_id,
+            )
         )
         command.extend(["bash", "-lc", shell_command])
         return command
@@ -2727,7 +2740,13 @@ class ExternalCliRunner(DockerRuntimeRunner):
         command.extend(["sleep", "infinity"])
         return command
 
-    def _build_external_exec_command(self, container_name: str, *, continue_session: bool = False) -> list[str]:
+    def _build_external_exec_command(
+        self,
+        container_name: str,
+        *,
+        continue_session: bool = False,
+        resume_session_id: str | None = None,
+    ) -> list[str]:
         return [
             "docker",
             "exec",
@@ -2738,7 +2757,12 @@ class ExternalCliRunner(DockerRuntimeRunner):
             container_name,
             "bash",
             "-lc",
-            self._wrap_external_shell_command(self._build_shell_command(continue_session=continue_session)),
+            self._wrap_external_shell_command(
+                self._build_shell_command(
+                    continue_session=continue_session,
+                    resume_session_id=resume_session_id,
+                )
+            ),
         ]
 
     def _run_external_process(self, command: list[str], container_name: str | None) -> tuple[str, str]:
@@ -3067,7 +3091,12 @@ class ClaudeCodeRunner(ExternalCliRunner):
         )
         return f"node {shlex.quote(proxy_script)} >/tmp/claude-openrouter-proxy.log 2>&1 & {readiness_probe}"
 
-    def _build_shell_command(self, *, continue_session: bool = False) -> str:
+    def _build_shell_command(
+        self,
+        *,
+        continue_session: bool = False,
+        resume_session_id: str | None = None,
+    ) -> str:
         claude_command = [
             "claude",
             "-p",
@@ -3080,7 +3109,9 @@ class ClaudeCodeRunner(ExternalCliRunner):
         permission_mode = self._permission_mode()
         if permission_mode:
             claude_command.extend(["--permission-mode", permission_mode])
-        if continue_session:
+        if resume_session_id:
+            claude_command.extend(["--resume", resume_session_id])
+        elif continue_session:
             claude_command.append("--continue")
         return f"{shlex.join(claude_command)} < {shlex.quote(WORKSPACE_IN_CONTAINER + '/' + TEICH_PROMPT_FILE_NAME)}"
 
@@ -3091,6 +3122,7 @@ class ClaudeCodeRunner(ExternalCliRunner):
         container_name: str,
         *,
         continue_session: bool = False,
+        resume_session_id: str | None = None,
     ) -> list[str]:
         if not self._needs_openrouter_model_proxy():
             return super()._build_external_command(
@@ -3098,11 +3130,13 @@ class ClaudeCodeRunner(ExternalCliRunner):
                 home_dir,
                 container_name,
                 continue_session=continue_session,
+                resume_session_id=resume_session_id,
             )
         self._write_openrouter_proxy(home_dir)
         command = self._build_external_docker_base_command(workspace, home_dir, container_name)
         shell_command = self._wrap_external_shell_command(
-            f"{self._openrouter_proxy_shell_prefix()}{self._build_shell_command(continue_session=continue_session)}"
+            f"{self._openrouter_proxy_shell_prefix()}"
+            f"{self._build_shell_command(continue_session=continue_session, resume_session_id=resume_session_id)}"
         )
         command.extend(
             [
@@ -3125,6 +3159,17 @@ class ClaudeCodeRunner(ExternalCliRunner):
         command = self._build_external_docker_base_command(workspace, home_dir, container_name, detached=True)
         command.extend(["bash", "-lc", f"{self._openrouter_proxy_shell_prefix()}exec sleep infinity"])
         return command
+
+    @staticmethod
+    def _native_session_id_from_file(trace_path: Path) -> str | None:
+        events = _read_jsonl_dict_events(trace_path)
+        if not events:
+            return None
+        for event in events:
+            session_id = event.get("sessionId")
+            if isinstance(session_id, str) and session_id.strip():
+                return session_id.strip()
+        return None
 
     def _run_native_process_with_progress(
         self,
@@ -3258,6 +3303,7 @@ class ClaudeCodeRunner(ExternalCliRunner):
         failure_trace_saved = False
         failure_trace_checked = False
         existing_sessions: set[Path] = set()
+        native_resume_session_id: str | None = None
         try:
             workspace.mkdir(parents=True, exist_ok=True)
             existing_sessions = {path.resolve() for path in self._list_native_session_files(home_dir)}
@@ -3272,14 +3318,20 @@ class ClaudeCodeRunner(ExternalCliRunner):
                 expected_turns = turn_prompts[: turn_index + 1]
                 for attempt in range(AGENT_TURN_RETRY_LIMIT + 1):
                     continue_session = turn_index > 0 or attempt > 0
+                    resume_session_id = native_resume_session_id if continue_session else None
                     if len(turn_prompts) > 1:
-                        command = self._build_external_exec_command(container_name, continue_session=continue_session)
+                        command = self._build_external_exec_command(
+                            container_name,
+                            continue_session=continue_session,
+                            resume_session_id=resume_session_id,
+                        )
                     else:
                         command = self._build_external_command(
                             workspace,
                             home_dir,
                             container_name,
                             continue_session=continue_session,
+                            resume_session_id=resume_session_id,
                         )
                     process_error: subprocess.CalledProcessError | None = None
                     details = ""
@@ -3301,6 +3353,8 @@ class ClaudeCodeRunner(ExternalCliRunner):
                         details = stderr.strip() or stdout.strip() or str(exc)
 
                     source_trace = self._latest_native_session_file(home_dir, existing_sessions, started_at)
+                    if source_trace is not None:
+                        native_resume_session_id = self._native_session_id_from_file(source_trace) or native_resume_session_id
                     if source_trace is not None and self._trace_contains_completed_turns(source_trace, expected_turns):
                         break
                     if attempt < AGENT_TURN_RETRY_LIMIT:
@@ -3426,7 +3480,12 @@ class HermesRunner(ExternalCliRunner):
             return "custom"
         return self.config.api.provider
 
-    def _build_shell_command(self, *, continue_session: bool = False) -> str:
+    def _build_shell_command(
+        self,
+        *,
+        continue_session: bool = False,
+        resume_session_id: str | None = None,
+    ) -> str:
         prompt_path = shlex.quote(WORKSPACE_IN_CONTAINER + "/" + TEICH_PROMPT_FILE_NAME)
         hermes_command = [
             "hermes",

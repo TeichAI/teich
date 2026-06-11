@@ -620,6 +620,15 @@ def test_docker_agent_commands_run_as_runtime_container_user(tmp_path: Path):
         assert command[command.index("--user") + 1] == RUNTIME_CONTAINER_USER
 
 
+def test_external_runner_chmods_workspace_before_snapshot():
+    with patch.object(HermesRunner, "_ensure_image"):
+        runner = HermesRunner(Config(agent={"provider": "hermes"}))
+
+    command = runner._wrap_external_shell_command("echo done")
+
+    assert "chmod -R a+rwX /home/codex/.hermes /workspace" in command
+
+
 def test_claude_code_runner_uses_stream_json_and_prompt_file(tmp_path: Path):
     long_prompt = "x" * 40000
     config = Config(
@@ -1177,7 +1186,8 @@ def test_claude_code_run_session_retries_provider_error_trace_before_exporting(t
     assert result == tmp_path / "output" / "claude-retry.jsonl"
     assert mock_run.call_count == 2
     assert "--continue" not in " ".join(commands[0])
-    assert "--continue" in " ".join(commands[1])
+    assert "--resume claude-retry" in " ".join(commands[1])
+    assert "--continue" not in " ".join(commands[1])
     assert not list((tmp_path / "failures").glob("*.jsonl"))
 
 
@@ -1303,7 +1313,7 @@ def test_claude_code_extract_orders_split_reasoning_before_output(tmp_path: Path
     assert rows[3]["timestamp"] == "2026-05-13T00:00:05.000Z"
 
 
-def test_claude_code_runner_uses_continue_for_followups(tmp_path: Path):
+def test_claude_code_runner_uses_resume_for_followups(tmp_path: Path):
     config = Config(
         agent={"provider": "claude"},
         model=ModelConfig(model="claude-sonnet-4-6"),
@@ -1385,7 +1395,8 @@ def test_claude_code_runner_uses_continue_for_followups(tmp_path: Path):
     first_command = " ".join(mock_run.call_args_list[0].args[0])
     second_command = " ".join(mock_run.call_args_list[1].args[0])
     assert "--continue" not in first_command
-    assert "--continue" in second_command
+    assert "--resume native-claude-session" in second_command
+    assert "--continue" not in second_command
     mock_remove.assert_called_once_with("teich-claude-claude-followups")
     assert "teich-claude-claude-followups" not in runner._active_containers
 

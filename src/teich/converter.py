@@ -1050,6 +1050,12 @@ def _is_openclaw_session_header(event: Any) -> bool:
     return isinstance(cwd, str) and ".openclaw" in cwd
 
 
+def _external_session_source(event: dict[str, Any]) -> str:
+    payload = event.get("payload")
+    source = payload.get("source") if isinstance(payload, dict) else None
+    return source.strip().lower() if isinstance(source, str) else ""
+
+
 def _detect_trace_type(events: list[Any], default: TraceType | None = "codex") -> TraceType | None:
     first_event = next((event for event in events if isinstance(event, dict)), None)
     if _is_openclaw_session_header(first_event):
@@ -1064,10 +1070,11 @@ def _detect_trace_type(events: list[Any], default: TraceType | None = "codex") -
             return "hermes"
         event_type = event.get("type")
         if event_type == "external_session_meta":
-            payload = event.get("payload")
-            source = payload.get("source") if isinstance(payload, dict) else None
-            if isinstance(source, str) and source.strip().lower() in {"claude", "claude-code", "claude_code"}:
+            source = _external_session_source(event)
+            if source in {"claude", "claude-code", "claude_code"}:
                 return "claude_code"
+            if source in {"hermes", "hermes-agent", "hermes_agent"}:
+                return "hermes"
             return "external_agent"
         if event_type == "hermes_session_meta":
             return "hermes"
@@ -1564,11 +1571,12 @@ def _convert_hermes_trace_to_training_example(
     for event in message_events:
         if not isinstance(event, dict):
             continue
-        if event.get("type") == "hermes_session_meta":
+        if event.get("type") in {"hermes_session_meta", "external_session_meta"}:
             payload = event.get("payload")
             if isinstance(payload, dict):
                 session_meta = payload
                 _add_explicit_tools(payload.get("tools"), explicit_tools, tool_names, tool_schemas)
+                _add_explicit_tools(payload.get("available_tools"), explicit_tools, tool_names, tool_schemas)
             continue
 
         role = event.get("role")
@@ -1650,6 +1658,7 @@ def _convert_hermes_trace_to_training_example(
         "source_file": trace_file.name,
         "session_id": session_meta.get("id") or trace_file.stem,
         "trace_type": "hermes",
+        "source": session_meta.get("source"),
         "teich_export_status": session_meta.get("teich_export_status"),
         "teich_partial": session_meta.get("teich_partial"),
         "model_provider": session_meta.get("model_provider"),
@@ -1657,6 +1666,7 @@ def _convert_hermes_trace_to_training_example(
         "model": session_meta.get("model"),
         "configured_context_length": session_meta.get("configured_context_length"),
         "cwd": session_meta.get("cwd"),
+        "cli_version": session_meta.get("cli_version"),
         "parent_session_id": session_meta.get("parent_session_id"),
         "hermes_source": session_meta.get("hermes_source"),
         "message_count": session_meta.get("message_count"),
@@ -1676,6 +1686,10 @@ def _convert_hermes_trace_to_training_example(
         "billing_base_url": session_meta.get("billing_base_url"),
         "billing_mode": session_meta.get("billing_mode"),
         "system_prompt": session_meta.get("system_prompt"),
+        "started_at": session_meta.get("started_at"),
+        "ended_at": session_meta.get("ended_at"),
+        "end_reason": session_meta.get("end_reason"),
+        "api_call_count": session_meta.get("api_call_count"),
         "turn_count": sum(1 for message in messages if message.get("role") == "user"),
     }
     _add_first_message_timestamp(metadata, first_message_timestamp)
@@ -2129,8 +2143,20 @@ def _convert_codex_trace_to_training_example(
     metadata = {
         "source_file": trace_file.name,
         "session_id": session_meta.get("id") or trace_file.stem,
-        "trace_type": session_meta.get("source") or "codex",
+        "trace_type": "codex",
+        "source": session_meta.get("source"),
         "model_provider": session_meta.get("model_provider"),
+        "model": (
+            session_meta.get("model")
+            or next(
+                (
+                    context.get("model")
+                    for context in reversed(turn_contexts)
+                    if isinstance(context.get("model"), str) and context.get("model")
+                ),
+                None,
+            )
+        ),
         "cwd": session_meta.get("cwd"),
         "cli_version": session_meta.get("cli_version"),
         "system_prompt": system_prompt or session_meta.get("system_prompt"),
