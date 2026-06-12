@@ -18,6 +18,32 @@ TEICH_TRACE_CONTEXT_ITEM_TYPE = "teich_context"
 TraceType = Literal["claude_code", "codex", "droid", "external_agent", "hermes", "openclaw", "pi"]
 _TIMESTAMP_KEYS = ("timestamp", "created_at", "createdAt")
 
+
+def _object_parameters(
+    properties: dict[str, Any] | None = None,
+    required: list[str] | tuple[str, ...] = (),
+) -> dict[str, Any]:
+    schema: dict[str, Any] = {
+        "type": "object",
+        "properties": properties or {},
+        "additionalProperties": True,
+    }
+    if required:
+        schema["required"] = list(required)
+    return schema
+
+
+def _function_schema(
+    description: str,
+    properties: dict[str, Any] | None = None,
+    required: list[str] | tuple[str, ...] = (),
+) -> dict[str, Any]:
+    return {
+        "description": description,
+        "parameters": _object_parameters(properties, required),
+    }
+
+
 _CLAUDE_CODE_BUILTIN_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     "Task": {
         "description": "Launch a subagent to complete a delegated task.",
@@ -40,6 +66,7 @@ _CLAUDE_CODE_BUILTIN_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                 "command": {"type": "string"},
                 "description": {"type": "string"},
                 "timeout": {"type": "integer"},
+                "run_in_background": {"type": "boolean"},
             },
             "required": ["command"],
             "additionalProperties": True,
@@ -91,6 +118,11 @@ _CLAUDE_CODE_BUILTIN_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                 "pattern": {"type": "string"},
                 "path": {"type": "string"},
                 "include": {"type": "string"},
+                "output_mode": {"type": "string"},
+                "-A": {"type": "integer"},
+                "-B": {"type": "integer"},
+                "-C": {"type": "integer"},
+                "head_limit": {"type": "integer"},
             },
             "required": ["pattern"],
             "additionalProperties": True,
@@ -243,7 +275,445 @@ _CLAUDE_CODE_BUILTIN_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "additionalProperties": True,
         },
     },
+    "PowerShell": _function_schema(
+        "Run a PowerShell command.",
+        {
+            "command": {"type": "string"},
+            "description": {"type": "string"},
+            "timeout": {"type": "integer"},
+            "run_in_background": {"type": "boolean"},
+        },
+        ("command",),
+    ),
+    "Skill": _function_schema(
+        "Load and use a Claude Desktop skill.",
+        {
+            "skill": {"type": "string"},
+            "args": {"type": "string"},
+        },
+        ("skill",),
+    ),
+    "ToolSearch": _function_schema(
+        "Load deferred Claude Desktop or MCP tools by search query.",
+        {
+            "query": {"type": "string"},
+            "max_results": {"type": "integer"},
+        },
+        ("query",),
+    ),
+    "TaskCreate": _function_schema(
+        "Create a tracked task in the Claude Desktop task list.",
+        {
+            "subject": {"type": "string"},
+            "description": {"type": "string"},
+            "activeForm": {"type": "string"},
+        },
+        ("subject", "description", "activeForm"),
+    ),
+    "TaskGet": _function_schema(
+        "Fetch one tracked Claude Desktop task.",
+        {"taskId": {"type": "string"}},
+        ("taskId",),
+    ),
+    "TaskList": _function_schema(
+        "List tracked Claude Desktop tasks.",
+        {
+            "status": {"type": "string"},
+            "includeCompleted": {"type": "boolean"},
+        },
+    ),
+    "TaskOutput": _function_schema(
+        "Read output associated with a tracked Claude Desktop task.",
+        {
+            "taskId": {"type": "string"},
+            "lines": {"type": "integer"},
+        },
+        ("taskId",),
+    ),
+    "TaskStop": _function_schema(
+        "Stop a tracked Claude Desktop task.",
+        {"taskId": {"type": "string"}},
+        ("taskId",),
+    ),
+    "TaskUpdate": _function_schema(
+        "Update the status of a tracked Claude Desktop task.",
+        {
+            "taskId": {"type": "string"},
+            "status": {"type": "string"},
+        },
+        ("taskId", "status"),
+    ),
+    "CronCreate": _function_schema(
+        "Create a scheduled Claude Desktop task.",
+        {
+            "name": {"type": "string"},
+            "prompt": {"type": "string"},
+            "schedule": {"type": "string"},
+            "timezone": {"type": "string"},
+        },
+    ),
+    "CronDelete": _function_schema(
+        "Delete a scheduled Claude Desktop task.",
+        {
+            "cronId": {"type": "string"},
+            "name": {"type": "string"},
+        },
+    ),
+    "CronList": _function_schema("List scheduled Claude Desktop tasks."),
+    "DesignSync": _function_schema(
+        "Synchronize design context from Claude Desktop.",
+        {"target": {"type": "string"}},
+    ),
+    "EnterPlanMode": _function_schema("Enter Claude Desktop plan mode.", {"prompt": {"type": "string"}}),
+    "ExitPlanMode": _function_schema("Exit Claude Desktop plan mode.", {"plan": {"type": "string"}}),
+    "EnterWorktree": _function_schema(
+        "Enter a Claude Desktop worktree.",
+        {
+            "path": {"type": "string"},
+            "branch": {"type": "string"},
+        },
+    ),
+    "ExitWorktree": _function_schema("Exit the active Claude Desktop worktree."),
+    "Monitor": _function_schema(
+        "Monitor a long-running Claude Desktop task.",
+        {
+            "taskId": {"type": "string"},
+            "interval": {"type": "string"},
+        },
+    ),
+    "PushNotification": _function_schema(
+        "Send a Claude Desktop push notification.",
+        {
+            "title": {"type": "string"},
+            "message": {"type": "string"},
+        },
+    ),
+    "RemoteTrigger": _function_schema(
+        "Trigger a remote Claude Desktop action.",
+        {
+            "target": {"type": "string"},
+            "prompt": {"type": "string"},
+        },
+    ),
+    "mcp__Claude_Preview__preview_click": _function_schema(
+        "Click an element in a Claude Preview browser session.",
+        {
+            "serverId": {"type": "string"},
+            "selector": {"type": "string"},
+        },
+        ("serverId", "selector"),
+    ),
+    "mcp__Claude_Preview__preview_console_logs": _function_schema(
+        "Read console logs from a Claude Preview browser session.",
+        {
+            "serverId": {"type": "string"},
+            "level": {"type": "string"},
+            "lines": {"type": "integer"},
+        },
+        ("serverId",),
+    ),
+    "mcp__Claude_Preview__preview_eval": _function_schema(
+        "Evaluate JavaScript in a Claude Preview browser session.",
+        {
+            "serverId": {"type": "string"},
+            "expression": {"type": "string"},
+        },
+        ("serverId", "expression"),
+    ),
+    "mcp__Claude_Preview__preview_resize": _function_schema(
+        "Resize a Claude Preview browser session viewport.",
+        {
+            "serverId": {"type": "string"},
+            "preset": {"type": "string"},
+            "width": {"type": "integer"},
+            "height": {"type": "integer"},
+        },
+        ("serverId",),
+    ),
+    "mcp__Claude_Preview__preview_screenshot": _function_schema(
+        "Capture a screenshot from a Claude Preview browser session.",
+        {"serverId": {"type": "string"}},
+        ("serverId",),
+    ),
+    "mcp__Claude_Preview__preview_snapshot": _function_schema(
+        "Capture a structured snapshot from a Claude Preview browser session.",
+        {"serverId": {"type": "string"}},
+        ("serverId",),
+    ),
+    "mcp__Claude_Preview__preview_start": _function_schema(
+        "Start a Claude Preview browser session for an app.",
+        {"name": {"type": "string"}},
+        ("name",),
+    ),
+    "mcp__Claude_Preview__preview_stop": _function_schema(
+        "Stop a Claude Preview browser session.",
+        {"serverId": {"type": "string"}},
+        ("serverId",),
+    ),
+    "mcp__huggingface__paper_search": _function_schema(
+        "Search Hugging Face paper results.",
+        {
+            "query": {"type": "string"},
+            "results_limit": {"type": "integer"},
+            "concise_only": {"type": "boolean"},
+        },
+        ("query",),
+    ),
 }
+
+_CLAUDE_CODE_DEFAULT_TOOL_NAMES = {
+    "Task",
+    "Bash",
+    "BashOutput",
+    "Edit",
+    "Glob",
+    "Grep",
+    "KillBash",
+    "LS",
+    "MultiEdit",
+    "NotebookEdit",
+    "NotebookRead",
+    "Read",
+    "TodoWrite",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+}
+
+def _claude_deferred_tool_schema(name: str, *, include_parameters: bool = True) -> dict[str, Any]:
+    schema = deepcopy(_CLAUDE_CODE_BUILTIN_TOOL_SCHEMAS.get(name) or {})
+    if schema:
+        return schema
+    schema["description"] = _claude_deferred_tool_description(name)
+    if include_parameters:
+        schema["parameters"] = _object_parameters(_claude_deferred_tool_parameter_hints(name))
+    return schema
+
+
+def _claude_deferred_tool_description(name: str) -> str:
+    if not name.startswith("mcp__"):
+        return f"Call the Claude deferred tool {name}."
+    parts = name.split("__", 2)
+    if len(parts) != 3:
+        return f"Call the Claude MCP tool {name}."
+    _, server, tool = parts
+    server_name = server.replace("_", " ").replace("-", " ").strip()
+    tool_name = tool.replace("_", " ").replace("-", " ").strip()
+    if server_name and tool_name:
+        return f"Call the {server_name} MCP tool {tool_name}."
+    return f"Call the Claude MCP tool {name}."
+
+
+def _claude_deferred_tool_parameter_hints(name: str) -> dict[str, Any]:
+    if not name.startswith("mcp__"):
+        return {}
+    parts = name.split("__", 2)
+    if len(parts) != 3:
+        return {}
+    _, server, tool = parts
+    server_key = server.lower()
+    tool_key = tool.lower()
+
+    if server_key == "claude_preview":
+        return _claude_preview_parameter_hints(tool_key)
+    if server_key == "claude_in_chrome":
+        return _claude_chrome_parameter_hints(tool_key)
+    if server_key == "computer-use":
+        return _claude_computer_use_parameter_hints(tool_key)
+    if server_key == "context7":
+        return _claude_context7_parameter_hints(tool_key)
+    if server_key == "fetch":
+        return {"url": {"type": "string"}}
+    if server_key == "huggingface":
+        return _claude_huggingface_parameter_hints(tool_key)
+    if server_key == "mcp-registry":
+        return {
+            "query": {"type": "string"},
+            "server": {"type": "string"},
+            "connector": {"type": "string"},
+        }
+    if server_key == "scheduled-tasks":
+        return {
+            "task_id": {"type": "string"},
+            "title": {"type": "string"},
+            "prompt": {"type": "string"},
+            "schedule": {"type": "string"},
+            "timezone": {"type": "string"},
+        }
+    if server_key == "searxng":
+        return {"query": {"type": "string"}}
+    if server_key == "ccd_directory":
+        return {
+            "path": {"type": "string"},
+            "purpose": {"type": "string"},
+        }
+    if server_key == "ccd_session_mgmt":
+        return {
+            "session_id": {"type": "string"},
+            "query": {"type": "string"},
+            "message": {"type": "string"},
+        }
+    if server_key.startswith("claude_ai_"):
+        return {
+            "code": {"type": "string"},
+            "redirect_uri": {"type": "string"},
+        }
+    return {}
+
+
+def _claude_preview_parameter_hints(tool_key: str) -> dict[str, Any]:
+    common = {"serverId": {"type": "string"}}
+    if tool_key == "preview_start":
+        return {"name": {"type": "string"}, "url": {"type": "string"}}
+    if tool_key in {"preview_click", "preview_inspect"}:
+        return {**common, "selector": {"type": "string"}}
+    if tool_key == "preview_fill":
+        return {
+            **common,
+            "selector": {"type": "string"},
+            "value": {"type": "string"},
+            "text": {"type": "string"},
+        }
+    if tool_key == "preview_eval":
+        return {**common, "expression": {"type": "string"}}
+    if tool_key == "preview_resize":
+        return {
+            **common,
+            "preset": {"type": "string"},
+            "width": {"type": "integer"},
+            "height": {"type": "integer"},
+        }
+    if tool_key in {"preview_console_logs", "preview_logs"}:
+        return {
+            **common,
+            "level": {"type": "string"},
+            "lines": {"type": "integer"},
+        }
+    if tool_key == "preview_network":
+        return {
+            **common,
+            "url": {"type": "string"},
+            "method": {"type": "string"},
+            "status": {"type": "integer"},
+            "lines": {"type": "integer"},
+        }
+    if tool_key in {"preview_list", "preview_screenshot", "preview_snapshot", "preview_stop"}:
+        return common
+    return common
+
+
+def _claude_chrome_parameter_hints(tool_key: str) -> dict[str, Any]:
+    common = {
+        "browserId": {"type": "string"},
+        "tabId": {"type": "string"},
+        "selector": {"type": "string"},
+    }
+    if tool_key in {"navigate", "tabs_create_mcp"}:
+        return {**common, "url": {"type": "string"}}
+    if tool_key in {"find", "get_page_text", "read_page"}:
+        return {**common, "query": {"type": "string"}}
+    if tool_key == "form_input":
+        return {**common, "value": {"type": "string"}, "text": {"type": "string"}}
+    if tool_key == "javascript_tool":
+        return {**common, "code": {"type": "string"}, "expression": {"type": "string"}}
+    if tool_key in {"read_console_messages", "read_network_requests"}:
+        return {**common, "level": {"type": "string"}, "lines": {"type": "integer"}}
+    if tool_key == "resize_window":
+        return {**common, "width": {"type": "integer"}, "height": {"type": "integer"}}
+    if tool_key in {"file_upload", "upload_image"}:
+        return {**common, "path": {"type": "string"}, "file_path": {"type": "string"}}
+    if tool_key == "shortcuts_execute":
+        return {**common, "shortcut": {"type": "string"}, "name": {"type": "string"}}
+    if tool_key == "browser_batch":
+        return {"actions": {"type": "array", "items": {"type": "object", "additionalProperties": True}}}
+    if tool_key in {"computer", "gif_creator"}:
+        return {"action": {"type": "string"}, "input": {"type": "object", "additionalProperties": True}}
+    return common
+
+
+def _claude_computer_use_parameter_hints(tool_key: str) -> dict[str, Any]:
+    pointer = {
+        "x": {"type": "integer"},
+        "y": {"type": "integer"},
+        "application": {"type": "string"},
+        "display": {"type": "string"},
+    }
+    if tool_key in {
+        "left_click",
+        "right_click",
+        "middle_click",
+        "double_click",
+        "triple_click",
+        "mouse_move",
+        "left_mouse_down",
+        "left_mouse_up",
+    }:
+        return pointer
+    if tool_key == "left_click_drag":
+        return {
+            **pointer,
+            "start_x": {"type": "integer"},
+            "start_y": {"type": "integer"},
+            "end_x": {"type": "integer"},
+            "end_y": {"type": "integer"},
+        }
+    if tool_key in {"key", "hold_key"}:
+        return {"key": {"type": "string"}, "keys": {"type": "array", "items": {"type": "string"}}}
+    if tool_key == "type":
+        return {"text": {"type": "string"}}
+    if tool_key == "scroll":
+        return {**pointer, "direction": {"type": "string"}, "amount": {"type": "integer"}}
+    if tool_key == "open_application":
+        return {"application": {"type": "string"}}
+    if tool_key in {"request_access", "request_teach_access"}:
+        return {
+            "applications": {"type": "array", "items": {"type": "string"}},
+            "reason": {"type": "string"},
+        }
+    if tool_key in {"write_clipboard", "teach_step"}:
+        return {"text": {"type": "string"}, "content": {"type": "string"}}
+    if tool_key == "wait":
+        return {"seconds": {"type": "number"}}
+    if tool_key == "zoom":
+        return {"level": {"type": "number"}, "direction": {"type": "string"}}
+    if tool_key in {"computer_batch", "teach_batch"}:
+        return {"actions": {"type": "array", "items": {"type": "object", "additionalProperties": True}}}
+    return {
+        "application": {"type": "string"},
+        "display": {"type": "string"},
+    }
+
+
+def _claude_context7_parameter_hints(tool_key: str) -> dict[str, Any]:
+    if tool_key == "resolve-library-id":
+        return {"libraryName": {"type": "string"}}
+    return {
+        "context7CompatibleLibraryID": {"type": "string"},
+        "topic": {"type": "string"},
+        "tokens": {"type": "integer"},
+    }
+
+
+def _claude_huggingface_parameter_hints(tool_key: str) -> dict[str, Any]:
+    if tool_key == "hf_whoami":
+        return {}
+    if "generate" in tool_key:
+        return {
+            "prompt": {"type": "string"},
+            "model": {"type": "string"},
+            "parameters": {"type": "object", "additionalProperties": True},
+        }
+    if "details" in tool_key:
+        return {"repo_id": {"type": "string"}, "repo_type": {"type": "string"}}
+    if "doc_fetch" in tool_key:
+        return {"path": {"type": "string"}, "url": {"type": "string"}}
+    return {
+        "query": {"type": "string"},
+        "results_limit": {"type": "integer"},
+        "limit": {"type": "integer"},
+        "concise_only": {"type": "boolean"},
+    }
+
 
 _DROID_BUILTIN_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     "Read": {
@@ -456,14 +926,17 @@ def _is_nested_user_message(event: dict[str, Any]) -> bool:
 
 
 def _is_claude_code_user_message(event: dict[str, Any]) -> bool:
+    if _claude_queued_command_content(event) is not None:
+        return True
     if event.get("type") != "user" or not _is_nested_user_message(event):
         return False
     message = event.get("message")
     content = message.get("content") if isinstance(message, dict) else None
-    return not (
-        isinstance(content, list)
-        and any(isinstance(block, dict) and block.get("type") == "tool_result" for block in content)
-    )
+    if isinstance(content, list) and any(
+        isinstance(block, dict) and block.get("type") == "tool_result" for block in content
+    ):
+        return False
+    return _claude_training_user_content(event) is not None
 
 
 def _is_droid_user_message(event: dict[str, Any]) -> bool:
@@ -1459,21 +1932,225 @@ def _claude_tool_result_text(block: dict[str, Any]) -> str:
     return _first_text_block(content)
 
 
+def _claude_local_command_parts(text: str) -> tuple[str, str] | None:
+    stripped = text.strip()
+    name_match = re.search(r"<command-name>\s*(?P<name>.*?)\s*</command-name>", stripped, flags=re.DOTALL)
+    args_match = re.search(r"<command-args>\s*(?P<args>.*?)\s*</command-args>", stripped, flags=re.DOTALL)
+    if not name_match or not args_match:
+        return None
+    name = re.sub(r"\s+", " ", name_match.group("name")).strip()
+    args = args_match.group("args").strip()
+    return name, args
+
+
+def _is_claude_local_command_artifact(text: str) -> bool:
+    stripped = text.strip()
+    return stripped.startswith(
+        (
+            "<local-command-caveat>",
+            "<local-command-stdout>",
+            "<local-command-stderr>",
+        )
+    )
+
+
+def _claude_training_user_content(event: dict[str, Any]) -> str | None:
+    payload = event.get("message")
+    if not isinstance(payload, dict):
+        return None
+    content_blocks = payload.get("content")
+    content = _claude_text_from_content(content_blocks)
+    if not content:
+        return None
+
+    command = _claude_local_command_parts(content)
+    if command is not None:
+        command_name, command_args = command
+        if command_name == "/goal" and command_args:
+            return command_args
+        return None
+
+    if _is_claude_local_command_artifact(content):
+        return None
+    if event.get("isMeta") is True:
+        return None
+    return content
+
+
+def _is_claude_synthetic_session_limit(event: dict[str, Any], content: str) -> bool:
+    error_kind = event.get("error")
+    return (
+        event.get("isApiErrorMessage") is True
+        and isinstance(error_kind, str)
+        and error_kind.strip().lower() in {"rate_limit", "session_limit"}
+        and "session limit" in content.lower()
+    )
+
+
+def _is_claude_synthetic_no_response_requested(event: dict[str, Any], content: str) -> bool:
+    payload = event.get("message")
+    if not isinstance(payload, dict):
+        return False
+    return payload.get("model") == "<synthetic>" and content.strip() == "No response requested."
+
+
+def _is_claude_synthetic_assistant_artifact(event: dict[str, Any], content: str) -> bool:
+    return _is_claude_synthetic_session_limit(event, content) or _is_claude_synthetic_no_response_requested(event, content)
+
+
+def _claude_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+
+
+def _claude_attachment(event: dict[str, Any]) -> dict[str, Any] | None:
+    attachment = event.get("attachment")
+    return attachment if isinstance(attachment, dict) else None
+
+
+def _claude_queued_command_content(event: dict[str, Any]) -> str | None:
+    if event.get("type") != "attachment":
+        return None
+    attachment = _claude_attachment(event)
+    if not attachment or attachment.get("type") != "queued_command":
+        return None
+    if attachment.get("commandMode") not in {None, "prompt"}:
+        return None
+    prompt = attachment.get("prompt")
+    return prompt.strip() if isinstance(prompt, str) and prompt.strip() else None
+
+
+def _claude_context_from_attachment(attachment: dict[str, Any]) -> str | None:
+    attachment_type = attachment.get("type")
+    if attachment_type == "deferred_tools_delta":
+        added_names = _claude_string_list(attachment.get("addedNames"))
+        if added_names:
+            return "Claude Code deferred tools available through ToolSearch:\n" + "\n".join(
+                f"- {name}" for name in added_names
+            )
+        return None
+    if attachment_type == "mcp_instructions_delta":
+        added_names = _claude_string_list(attachment.get("addedNames"))
+        added_blocks = _claude_string_list(attachment.get("addedBlocks"))
+        parts: list[str] = []
+        if added_names:
+            parts.append("Claude MCP instructions added for: " + ", ".join(added_names))
+        parts.extend(added_blocks)
+        return "\n\n".join(parts).strip() or None
+    if attachment_type == "skill_listing":
+        content = attachment.get("content")
+        if isinstance(content, str) and content.strip():
+            return "Claude Code available skills:\n" + content.strip()
+        return None
+    if attachment_type == "command_permissions":
+        allowed_tools = _claude_string_list(attachment.get("allowedTools"))
+        if allowed_tools:
+            return "Claude Code command permissions allow: " + ", ".join(allowed_tools)
+        return "Claude Code command permissions allow no additional tools."
+    if attachment_type == "date_change":
+        new_date = attachment.get("newDate")
+        if isinstance(new_date, str) and new_date.strip():
+            return "Current date: " + new_date.strip()
+        return None
+    if attachment_type == "hook_additional_context":
+        content = _claude_string_list(attachment.get("content"))
+        if not content:
+            return None
+        hook_name = attachment.get("hookName")
+        header = "Claude Code hook context"
+        if isinstance(hook_name, str) and hook_name.strip():
+            header += f" ({hook_name.strip()})"
+        return header + ":\n" + "\n".join(content)
+    if attachment_type == "edited_text_file":
+        filename = attachment.get("filename")
+        snippet = attachment.get("snippet")
+        if not isinstance(snippet, str) or not snippet.strip():
+            return None
+        if isinstance(filename, str) and filename.strip():
+            return f"Claude Code edited file context for {filename.strip()}:\n{snippet.strip()}"
+        return "Claude Code edited file context:\n" + snippet.strip()
+    if attachment_type == "task_reminder":
+        content = _claude_string_list(attachment.get("content"))
+        if content:
+            return "Claude Code task reminder:\n" + "\n".join(content)
+        return None
+    if attachment_type == "plan_mode_exit":
+        plan_path = attachment.get("planFilePath")
+        if isinstance(plan_path, str) and plan_path.strip():
+            return "Claude Code exited plan mode. Plan file: " + plan_path.strip()
+        return "Claude Code exited plan mode."
+    return None
+
+
+def _claude_context_from_system_event(event: dict[str, Any]) -> str | None:
+    subtype = event.get("subtype")
+    if subtype in {None, "local_command", "turn_duration"}:
+        return None
+    if subtype == "stop_hook_summary":
+        content = _claude_string_list(event.get("hookAdditionalContext"))
+        if content:
+            return "Claude Code stop hook context:\n" + "\n".join(content)
+        return None
+    content = event.get("content")
+    if not isinstance(content, str) or not content.strip():
+        return None
+    if subtype == "away_summary":
+        return "Claude Code away summary:\n" + content.strip()
+    if subtype == "informational":
+        return "Claude Code notice:\n" + content.strip()
+    return f"Claude Code system event ({subtype}):\n{content.strip()}"
+
+
+def _append_claude_system_context(
+    messages: list[dict[str, Any]],
+    system_contexts: list[str],
+    seen_contexts: set[str],
+    content: str | None,
+) -> None:
+    if not content:
+        return
+    content = content.strip()
+    if not content or content in seen_contexts:
+        return
+    seen_contexts.add(content)
+    system_contexts.append(content)
+    if messages and messages[-1].get("role") == "system":
+        existing = messages[-1].get("content")
+        if isinstance(existing, str) and existing.strip():
+            messages[-1]["content"] = f"{existing.strip()}\n\n{content}"
+            messages[-1]["masked"] = True
+            return
+    messages.append({"role": "system", "content": content, "masked": True})
+
+
 def _convert_claude_code_trace_to_training_example(
     trace_file: Path,
     events: list[dict[str, Any]],
 ) -> TrainingExample:
     events = normalize_claude_code_trace_events(events)
     messages: list[dict[str, Any]] = []
-    tool_names: set[str] = set(_CLAUDE_CODE_BUILTIN_TOOL_SCHEMAS)
+    tool_names: set[str] = set(_CLAUDE_CODE_DEFAULT_TOOL_NAMES)
     tool_schemas: dict[str, dict[str, Any]] = deepcopy(_CLAUDE_CODE_BUILTIN_TOOL_SCHEMAS)
     tool_argument_samples: dict[str, list[Any]] = {}
     explicit_tools: dict[str, dict[str, Any]] = {}
     session_meta: dict[str, Any] = {}
+    system_contexts: list[str] = []
+    seen_system_contexts: set[str] = set()
+    deferred_tool_names: set[str] = set()
+    mcp_instruction_names: set[str] = set()
+    attachment_types: set[str] = set()
     session_id: str | None = None
     model: str | None = None
     usage: dict[str, Any] | None = None
     total_cost_usd: Any = None
+    entrypoint: str | None = None
+    user_type: str | None = None
+    git_branch: str | None = None
+    cwd: str | None = None
+    cli_version: str | None = None
+    mode: str | None = None
+    permission_mode: str | None = None
     prompt = ""
     first_message_timestamp = _first_message_timestamp_from_events(
         events,
@@ -1484,6 +2161,16 @@ def _convert_claude_code_trace_to_training_example(
         if not isinstance(event, dict):
             continue
         event_type = event.get("type")
+        if entrypoint is None and isinstance(event.get("entrypoint"), str):
+            entrypoint = event["entrypoint"]
+        if user_type is None and isinstance(event.get("userType"), str):
+            user_type = event["userType"]
+        if git_branch is None and isinstance(event.get("gitBranch"), str):
+            git_branch = event["gitBranch"]
+        if cwd is None and isinstance(event.get("cwd"), str):
+            cwd = event["cwd"]
+        if cli_version is None and isinstance(event.get("version"), str):
+            cli_version = event["version"]
         if event_type == "external_session_meta":
             payload = event.get("payload")
             if isinstance(payload, dict):
@@ -1506,6 +2193,48 @@ def _convert_claude_code_trace_to_training_example(
                 prompt = content.strip()
             messages.append({"role": normalized_role, "content": content})
             continue
+        if event_type == "mode":
+            value = event.get("mode")
+            if isinstance(value, str) and value.strip():
+                mode = value.strip()
+            continue
+        if event_type == "permission-mode":
+            value = event.get("permissionMode")
+            if isinstance(value, str) and value.strip():
+                permission_mode = value.strip()
+            continue
+        if event_type == "attachment":
+            if isinstance(event.get("session_id"), str):
+                session_id = event["session_id"]
+            elif isinstance(event.get("sessionId"), str):
+                session_id = event["sessionId"]
+            attachment = _claude_attachment(event)
+            if not attachment:
+                continue
+            attachment_type = attachment.get("type")
+            if isinstance(attachment_type, str) and attachment_type.strip():
+                attachment_types.add(attachment_type.strip())
+            if attachment_type == "deferred_tools_delta":
+                added_names = _claude_string_list(attachment.get("addedNames"))
+                deferred_tool_names.update(added_names)
+                for name in added_names:
+                    tool_names.add(name)
+                    tool_schemas.setdefault(name, _claude_deferred_tool_schema(name))
+            elif attachment_type == "mcp_instructions_delta":
+                mcp_instruction_names.update(_claude_string_list(attachment.get("addedNames")))
+            queued_command = _claude_queued_command_content(event)
+            if queued_command:
+                if not prompt:
+                    prompt = queued_command
+                messages.append({"role": "user", "content": queued_command})
+                continue
+            _append_claude_system_context(
+                messages,
+                system_contexts,
+                seen_system_contexts,
+                _claude_context_from_attachment(attachment),
+            )
+            continue
         if event_type == "system":
             if isinstance(event.get("session_id"), str):
                 session_id = event["session_id"]
@@ -1519,7 +2248,9 @@ def _convert_claude_code_trace_to_training_example(
                 if isinstance(tools, list):
                     for tool in tools:
                         if isinstance(tool, str) and tool.strip():
-                            tool_names.add(tool.strip())
+                            tool_name = tool.strip()
+                            tool_names.add(tool_name)
+                            tool_schemas.setdefault(tool_name, _claude_deferred_tool_schema(tool_name))
                         elif isinstance(tool, dict):
                             name = tool.get("name")
                             if isinstance(name, str) and name.strip():
@@ -1528,6 +2259,13 @@ def _convert_claude_code_trace_to_training_example(
                                 schema = _claude_code_tool_schema_from_definition(tool)
                                 if schema:
                                     tool_schemas[tool_name] = {**tool_schemas.get(tool_name, {}), **schema}
+            else:
+                _append_claude_system_context(
+                    messages,
+                    system_contexts,
+                    seen_system_contexts,
+                    _claude_context_from_system_event(event),
+                )
             continue
         if event_type in {"user", "assistant"}:
             if isinstance(event.get("session_id"), str):
@@ -1559,7 +2297,7 @@ def _convert_claude_code_trace_to_training_example(
                         }
                     )
                 continue
-            content = _claude_text_from_content(content_blocks)
+            content = _claude_training_user_content(event)
             if content and not prompt:
                 prompt = content
             if content:
@@ -1578,6 +2316,8 @@ def _convert_claude_code_trace_to_training_example(
                 usage = payload_usage
             content_blocks = payload.get("content")
             content = _claude_text_from_content(content_blocks)
+            if _is_claude_synthetic_assistant_artifact(event, content):
+                continue
             message: dict[str, Any] = {"role": "assistant", "content": content}
             reasoning_content = _claude_reasoning_from_content(content_blocks)
             if reasoning_content:
@@ -1600,6 +2340,10 @@ def _convert_claude_code_trace_to_training_example(
                         continue
                     arguments = _normalize_json_like_value(block.get("input") or {})
                     tool_names.add(tool_name)
+                    tool_schemas.setdefault(
+                        tool_name,
+                        _claude_deferred_tool_schema(tool_name, include_parameters=False),
+                    )
                     tool_argument_samples.setdefault(tool_name, []).append(arguments)
                     tool_calls.append(
                         {
@@ -1655,10 +2399,29 @@ def _convert_claude_code_trace_to_training_example(
         "trace_type": "claude-code",
         "model_provider": session_meta.get("model_provider") or "anthropic",
         "model": model or session_meta.get("model"),
-        "cwd": session_meta.get("cwd"),
-        "cli_version": session_meta.get("cli_version"),
+        "cwd": session_meta.get("cwd") or cwd,
+        "cli_version": session_meta.get("cli_version") or cli_version,
         "turn_count": sum(1 for message in messages if message.get("role") == "user"),
     }
+    if entrypoint:
+        metadata["entrypoint"] = entrypoint
+    if user_type:
+        metadata["user_type"] = user_type
+    if git_branch:
+        metadata["git_branch"] = git_branch
+    if mode:
+        metadata["mode"] = mode
+    if permission_mode:
+        metadata["permission_mode"] = permission_mode
+    if system_contexts:
+        metadata["system_prompt"] = "\n\n".join(system_contexts)
+        metadata["claude_context_count"] = len(system_contexts)
+    if attachment_types:
+        metadata["claude_attachment_types"] = sorted(attachment_types)
+    if deferred_tool_names:
+        metadata["claude_deferred_tools"] = sorted(deferred_tool_names)
+    if mcp_instruction_names:
+        metadata["claude_mcp_instruction_names"] = sorted(mcp_instruction_names)
     if usage:
         metadata["usage"] = usage
     if total_cost_usd is not None:

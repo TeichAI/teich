@@ -251,7 +251,8 @@ def build_traces_readme(
             [
                 "## Training-ready tools",
                 "",
-                "Generated agent traces carry configured tool schemas so tools remain available for training even when a session did not call them.",
+                "Generated agent traces carry configured or recovered tool schemas so tools remain available for training even when a session did not call them.",
+                "Native Claude Code imports recover schemas for Claude Code and Claude Desktop built-ins, plus conservative name-derived MCP schemas, when the raw transcript only records tool names or calls.",
                 "A complete dataset-level `tools` schema snapshot is also embedded in the collapsed section at the bottom of this README.",
                 "`load_traces` applies the dataset snapshot to each loaded example as a fallback `tools` field.",
                 "",
@@ -293,6 +294,7 @@ def build_traces_readme(
                 "Each file is newline-delimited JSON representing a single captured agent session.",
                 "The trace schema is designed for upload-first preservation so you can keep the original session history and convert it later for training.",
                 "Teich normalizes split assistant fragments during trace copy and conversion so the semantic order is reasoning first, optional assistant text second, and tool calls last.",
+                "Native Claude Code conversion also preserves runtime context such as skills, MCP instructions, hook context, permission state, date changes, and session recaps as masked `system` messages when the raw transcript provides them.",
                 "",
                 "Common top-level event groups:",
                 "",

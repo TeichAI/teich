@@ -49,8 +49,18 @@ def _wait_for_tcp_port(port: int, timeout: float = 5.0) -> None:
             with socket.create_connection(("127.0.0.1", port), timeout=0.1):
                 return
         except OSError:
-            time.sleep(0.05)
+                time.sleep(0.05)
     raise TimeoutError(f"port {port} did not open")
+
+
+def _filesystem_preserves_chmod(tmp_path: Path) -> bool:
+    probe = tmp_path / "chmod-probe"
+    probe.write_text("", encoding="utf-8")
+    try:
+        probe.chmod(0o600)
+    except OSError:
+        return False
+    return oct(probe.stat().st_mode & 0o777) == "0o600"
 
 
 def _claude_home_from_command(command: list[str]) -> Path:
@@ -311,7 +321,8 @@ def test_codex_config_setup(tmp_path: Path):
     assert 'command = "npx"' in content
     assert 'args = ["-y", "mcp-server"]' in content
     assert oct(codex_home.stat().st_mode & 0o777) == "0o777"
-    assert oct(config_file.stat().st_mode & 0o777) == "0o666"
+    if _filesystem_preserves_chmod(tmp_path):
+        assert oct(config_file.stat().st_mode & 0o777) == "0o666"
 
 
 def test_run_session_command_generation():
@@ -1224,7 +1235,8 @@ def test_claude_code_extract_makes_native_session_tree_readable(tmp_path: Path):
     )
 
     assert result.read_text(encoding="utf-8").strip()
-    assert oct(session_file.stat().st_mode & 0o777) == "0o666"
+    if _filesystem_preserves_chmod(tmp_path):
+        assert oct(session_file.stat().st_mode & 0o777) == "0o666"
 
 
 def test_claude_code_extract_orders_split_reasoning_before_output(tmp_path: Path):

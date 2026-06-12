@@ -72,7 +72,7 @@ Provider output behavior:
 - `codex`: copies the native Codex session JSONL from mounted `CODEX_HOME/sessions` and normalizes Codex event-shape edge cases so reasoning summaries are visible and split assistant turns render as thinking before text/tool use.
 - `pi`: copies the native Pi session JSONL from mounted `/home/codex/pi-sessions`, then normalizes and validates event structure.
 - `openclaw`: imported raw OpenClaw traces are recognized when the first session event has `.openclaw` in its `cwd`. OpenClaw is not a Teich runner yet, so Teich only identifies and converts the raw events with `metadata.trace_type = "openclaw"` without applying Pi runner metadata snapshots.
-- `claude-code`: copies Claude Code's native transcript JSONL from `.claude/projects/...`, then normalizes split assistant fragments so thinking appears before the text or tool use it explains. For OpenRouter non-Claude models, a local proxy gives Claude Code a Claude surrogate model while forwarding the configured model to OpenRouter.
+- `claude-code`: copies Claude Code's native transcript JSONL from `.claude/projects/...`, then normalizes split assistant fragments so thinking appears before the text or tool use it explains. During conversion, Claude Code runtime context such as skill listings, MCP instruction deltas, permission context, date changes, hook context, and away summaries becomes masked `system` messages and `metadata.system_prompt`; local slash-command artifacts such as `/model` are filtered, `/goal` contributes its actual user goal text, queued prompts become real user turns, and advertised native Claude Code / Claude Desktop tools receive schemas even when a tool is only declared through deferred-tool context. For OpenRouter non-Claude models, a local proxy gives Claude Code a Claude surrogate model while forwarding the configured model to OpenRouter.
 - `hermes`: enables Hermes built-in toolsets `safe,terminal,file,skills,memory,session_search,delegation`, reads Hermes `state.db`, and writes each Hermes session as its own Teich external trace with `external_session_meta` and `external_message` events. Hermes' internal `system_prompt` stays metadata-only instead of becoming supervised training text. Delegated subagent sessions are separate files linked to the orchestrator by `parent_session_id`.
 - `chat`: writes structured training rows directly, without Docker or raw session capture.
 
@@ -347,6 +347,8 @@ Where:
 - By default, assistant reasoning, final answers, and tool calls become supervised.
 - You can override this with `train_on_reasoning`, `train_on_final_answers`, `train_on_tools`, `train_on_user`, `train_on_system`, `train_on_developer`, and `train_on_tool_responses`.
 - For Qwen-style templates, the initial `<think>` tag is intentionally included in supervision.
+
+For native Claude Code imports, those masked context tokens can include Claude Desktop skills, MCP instructions, hook context, permission state, date changes, and session recaps recovered from the native transcript.
 
 # Compact Combined Flow
 

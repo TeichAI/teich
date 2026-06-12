@@ -994,6 +994,465 @@ def test_convert_claude_code_marks_native_api_error_message(tmp_path: Path):
     assert example.messages[1]["teich_provider_error"] == "api_error"
 
 
+def test_convert_claude_code_filters_local_commands_but_keeps_goal(tmp_path: Path):
+    trace_file = tmp_path / "claude-code-local-commands.jsonl"
+    events = [
+        {
+            "type": "user",
+            "isMeta": True,
+            "timestamp": "2026-06-09T19:39:49.192Z",
+            "message": {
+                "role": "user",
+                "content": "<local-command-caveat>Local command output follows.</local-command-caveat>",
+            },
+            "sessionId": "claude-session",
+        },
+        {
+            "type": "user",
+            "timestamp": "2026-06-09T19:39:49.192Z",
+            "message": {
+                "role": "user",
+                "content": (
+                    "<command-name>/model</command-name>\n"
+                    "<command-message>model</command-message>\n"
+                    "<command-args></command-args>"
+                ),
+            },
+            "sessionId": "claude-session",
+        },
+        {
+            "type": "user",
+            "timestamp": "2026-06-09T19:39:49.192Z",
+            "message": {
+                "role": "user",
+                "content": "<local-command-stdout>Set model to Fable 5.</local-command-stdout>",
+            },
+            "sessionId": "claude-session",
+        },
+        {
+            "type": "user",
+            "timestamp": "2026-06-09T19:40:12.388Z",
+            "message": {
+                "role": "user",
+                "content": (
+                    "<command-name>/goal</command-name>\n"
+                    "<command-message>goal</command-message>\n"
+                    "<command-args>create a realistic Boeing 747</command-args>"
+                ),
+            },
+            "sessionId": "claude-session",
+        },
+        {
+            "type": "user",
+            "timestamp": "2026-06-09T19:40:12.388Z",
+            "message": {
+                "role": "user",
+                "content": "<local-command-stdout>Goal set: create a realistic Boeing 747</local-command-stdout>",
+            },
+            "sessionId": "claude-session",
+        },
+        {
+            "type": "user",
+            "isMeta": True,
+            "timestamp": "2026-06-09T19:40:12.388Z",
+            "message": {
+                "role": "user",
+                "content": "A session-scoped Stop hook is now active.",
+            },
+            "sessionId": "claude-session",
+        },
+        {
+            "type": "assistant",
+            "timestamp": "2026-06-09T19:40:23.229Z",
+            "message": {
+                "role": "assistant",
+                "model": "claude-fable-5",
+                "content": [{"type": "text", "text": "Goal acknowledged."}],
+            },
+            "sessionId": "claude-session",
+        },
+    ]
+    trace_file.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
+
+    example = convert_trace_to_training_example(trace_file)
+
+    assert example.prompt == "create a realistic Boeing 747"
+    assert example.metadata["first_message_timestamp"] == "2026-06-09T19:40:12.388Z"
+    assert example.messages == [
+        {"role": "user", "content": "create a realistic Boeing 747"},
+        {"role": "assistant", "content": "Goal acknowledged."},
+    ]
+    serialized = json.dumps(example.messages)
+    assert "/model" not in serialized
+    assert "<command-name>" not in serialized
+    assert "<local-command-" not in serialized
+
+
+def test_convert_claude_code_drops_synthetic_session_limit_but_keeps_continuation(tmp_path: Path):
+    trace_file = tmp_path / "claude-code-session-limit.jsonl"
+    events = [
+        {
+            "type": "user",
+            "message": {"role": "user", "content": "Build app"},
+            "uuid": "user-uuid",
+            "parentUuid": None,
+            "sessionId": "claude-session",
+        },
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "model": "claude-fable-5",
+                "content": [{"type": "text", "text": "Created the initial files."}],
+            },
+            "uuid": "assistant-uuid",
+            "parentUuid": "user-uuid",
+            "sessionId": "claude-session",
+        },
+        {
+            "type": "assistant",
+            "isApiErrorMessage": True,
+            "error": "rate_limit",
+            "message": {
+                "role": "assistant",
+                "model": "<synthetic>",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "You've hit your session limit · resets 1am (America/New_York)",
+                    }
+                ],
+            },
+            "uuid": "session-limit-uuid",
+            "parentUuid": "assistant-uuid",
+            "sessionId": "claude-session",
+        },
+        {
+            "type": "user",
+            "message": {"role": "user", "content": "finish up"},
+            "uuid": "continuation-uuid",
+            "parentUuid": "session-limit-uuid",
+            "sessionId": "claude-session",
+        },
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "model": "claude-fable-5",
+                "content": [{"type": "text", "text": "Finished the remaining work."}],
+            },
+            "uuid": "final-assistant-uuid",
+            "parentUuid": "continuation-uuid",
+            "sessionId": "claude-session",
+        },
+    ]
+    trace_file.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
+
+    example = convert_trace_to_training_example(trace_file)
+
+    assert example.messages == [
+        {"role": "user", "content": "Build app"},
+        {"role": "assistant", "content": "Created the initial files."},
+        {"role": "user", "content": "finish up"},
+        {"role": "assistant", "content": "Finished the remaining work."},
+    ]
+    assert example.metadata["turn_count"] == 2
+    serialized = json.dumps(example.messages)
+    assert "session limit" not in serialized
+    assert "teich_provider_error" not in serialized
+
+
+def test_convert_claude_code_drops_synthetic_no_response_requested(tmp_path: Path):
+    trace_file = tmp_path / "claude-code-no-response-requested.jsonl"
+    events = [
+        {
+            "type": "user",
+            "message": {"role": "user", "content": "Build the studio"},
+            "uuid": "user-uuid",
+            "parentUuid": None,
+            "sessionId": "claude-session",
+        },
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "model": "claude-fable-5",
+                "content": [{"type": "text", "text": "I started the implementation."}],
+            },
+            "uuid": "assistant-uuid",
+            "parentUuid": "user-uuid",
+            "sessionId": "claude-session",
+        },
+        {
+            "type": "assistant",
+            "isApiErrorMessage": False,
+            "message": {
+                "role": "assistant",
+                "model": "<synthetic>",
+                "usage": {
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "cache_creation_input_tokens": 0,
+                    "cache_read_input_tokens": 0,
+                },
+                "content": [{"type": "text", "text": "No response requested."}],
+            },
+            "uuid": "cancel-uuid",
+            "parentUuid": "assistant-uuid",
+            "sessionId": "claude-session",
+        },
+        {
+            "type": "user",
+            "message": {"role": "user", "content": "Actually, use the native terminal view."},
+            "uuid": "continuation-uuid",
+            "parentUuid": "cancel-uuid",
+            "sessionId": "claude-session",
+        },
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "model": "claude-fable-5",
+                "content": [{"type": "text", "text": "I switched the design."}],
+            },
+            "uuid": "final-assistant-uuid",
+            "parentUuid": "continuation-uuid",
+            "sessionId": "claude-session",
+        },
+    ]
+    trace_file.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
+
+    example = convert_trace_to_training_example(trace_file)
+
+    assert example.messages == [
+        {"role": "user", "content": "Build the studio"},
+        {"role": "assistant", "content": "I started the implementation."},
+        {"role": "user", "content": "Actually, use the native terminal view."},
+        {"role": "assistant", "content": "I switched the design."},
+    ]
+    assert example.metadata["turn_count"] == 2
+    assert "No response requested" not in json.dumps(example.messages)
+
+
+def test_convert_claude_code_preserves_native_context_and_desktop_tool_schemas(tmp_path: Path):
+    trace_file = tmp_path / "claude-code-native-context.jsonl"
+    events = [
+        {
+            "type": "mode",
+            "mode": "normal",
+            "sessionId": "claude-session",
+        },
+        {
+            "type": "permission-mode",
+            "permissionMode": "bypassPermissions",
+            "sessionId": "claude-session",
+        },
+        {
+            "type": "user",
+            "message": {"role": "user", "content": "Build app"},
+            "uuid": "user-uuid",
+            "parentUuid": None,
+            "sessionId": "claude-session",
+            "entrypoint": "claude-desktop",
+            "cwd": "C:\\Users\\aranr\\project",
+            "version": "2.1.175",
+            "gitBranch": "main",
+        },
+        {
+            "type": "attachment",
+            "attachment": {
+                "type": "deferred_tools_delta",
+                "addedNames": [
+                    "TaskCreate",
+                    "mcp__Claude_Preview__preview_start",
+                    "mcp__computer-use__screenshot",
+                ],
+            },
+            "sessionId": "claude-session",
+        },
+        {
+            "type": "attachment",
+            "attachment": {
+                "type": "skill_listing",
+                "content": "- verify: Verify the app in a real preview.",
+            },
+            "sessionId": "claude-session",
+        },
+        {
+            "type": "attachment",
+            "attachment": {
+                "type": "mcp_instructions_delta",
+                "addedNames": ["Claude_Preview"],
+                "addedBlocks": ["## Claude Preview\nUse preview tools to inspect browser apps."],
+            },
+            "sessionId": "claude-session",
+        },
+        {
+            "type": "system",
+            "subtype": "informational",
+            "content": "Auto mode lets Claude handle permission prompts automatically.",
+            "sessionId": "claude-session",
+        },
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "model": "claude-fable-5",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "TaskCreate",
+                        "input": {
+                            "subject": "Build app",
+                            "description": "Create the app shell.",
+                            "activeForm": "Building app",
+                        },
+                    },
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_2",
+                        "name": "mcp__Claude_Preview__preview_start",
+                        "input": {"name": "app"},
+                    },
+                ],
+            },
+            "sessionId": "claude-session",
+        },
+        {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_1", "content": "Task created"},
+                    {"type": "tool_result", "tool_use_id": "toolu_2", "content": '{"serverId":"abc"}'},
+                ],
+            },
+            "sessionId": "claude-session",
+        },
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "model": "claude-fable-5",
+                "content": [{"type": "text", "text": "Started."}],
+            },
+            "sessionId": "claude-session",
+        },
+    ]
+    trace_file.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
+
+    example = convert_trace_to_training_example(trace_file)
+
+    assert [message["role"] for message in example.messages[:4]] == ["user", "system", "assistant", "tool"]
+    system_context = example.messages[1]["content"]
+    assert example.messages[1]["masked"] is True
+    assert "Claude Code deferred tools available through ToolSearch" in system_context
+    assert "Claude Code available skills" in system_context
+    assert "Use preview tools to inspect browser apps." in system_context
+    assert "Auto mode lets Claude handle permission prompts automatically." in system_context
+    assert example.metadata["system_prompt"] == system_context
+    assert example.metadata["entrypoint"] == "claude-desktop"
+    assert example.metadata["cwd"] == "C:\\Users\\aranr\\project"
+    assert example.metadata["cli_version"] == "2.1.175"
+    assert example.metadata["git_branch"] == "main"
+    assert example.metadata["mode"] == "normal"
+    assert example.metadata["permission_mode"] == "bypassPermissions"
+    assert example.metadata["claude_deferred_tools"] == [
+        "TaskCreate",
+        "mcp__Claude_Preview__preview_start",
+        "mcp__computer-use__screenshot",
+    ]
+    assert example.metadata["claude_mcp_instruction_names"] == ["Claude_Preview"]
+
+    tools = {tool["function"]["name"]: tool["function"] for tool in example.tools}
+    assert tools["TaskCreate"]["parameters"]["required"] == ["subject", "description", "activeForm"]
+    assert tools["mcp__Claude_Preview__preview_start"]["parameters"]["required"] == ["name"]
+    assert tools["mcp__computer-use__screenshot"]["parameters"]["properties"]["application"] == {"type": "string"}
+    assert tools["TaskCreate"]["description"].startswith("Create a tracked task")
+    assert tools["mcp__Claude_Preview__preview_start"]["description"].startswith("Start a Claude Preview")
+    assert tools["mcp__computer-use__screenshot"]["description"].startswith("Call the computer use MCP tool")
+
+
+def test_convert_claude_code_preserves_queued_command_prompt(tmp_path: Path):
+    trace_file = tmp_path / "claude-code-queued-command.jsonl"
+    events = [
+        {
+            "type": "user",
+            "message": {"role": "user", "content": "Build the animation"},
+            "uuid": "user-uuid",
+            "parentUuid": None,
+            "sessionId": "claude-session",
+        },
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": "npm test"}}],
+            },
+            "uuid": "assistant-uuid",
+            "parentUuid": "user-uuid",
+            "sessionId": "claude-session",
+        },
+        {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "tests passed"}],
+            },
+            "uuid": "tool-result-uuid",
+            "parentUuid": "assistant-uuid",
+            "sessionId": "claude-session",
+        },
+        {
+            "type": "attachment",
+            "attachment": {
+                "type": "queued_command",
+                "prompt": "dont add any button just wait 2 seconds on page load and start the animation",
+                "commandMode": "prompt",
+            },
+            "parentUuid": "tool-result-uuid",
+            "uuid": "queued-command-uuid",
+            "sessionId": "claude-session",
+        },
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "I removed the button and added the timer."}],
+            },
+            "uuid": "final-assistant-uuid",
+            "parentUuid": "queued-command-uuid",
+            "sessionId": "claude-session",
+        },
+    ]
+    trace_file.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
+
+    example = convert_trace_to_training_example(trace_file)
+
+    assert example.messages == [
+        {"role": "user", "content": "Build the animation"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "toolu_1",
+                    "type": "function",
+                    "function": {"name": "Bash", "arguments": {"command": "npm test"}},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "toolu_1", "name": "unknown_tool", "content": "tests passed"},
+        {
+            "role": "user",
+            "content": "dont add any button just wait 2 seconds on page load and start the animation",
+        },
+        {"role": "assistant", "content": "I removed the button and added the timer."},
+    ]
+    assert example.metadata["turn_count"] == 2
+
+
 def test_convert_native_claude_code_transcript_with_camel_session_id(tmp_path: Path):
     trace_file = tmp_path / "native-claude.jsonl"
     events = [
