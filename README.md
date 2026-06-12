@@ -1,7 +1,7 @@
 <div align="center">
   <img src="assets/teich.svg" alt="Teich logo" width="132">
   <h1>Teich</h1>
-  <p><strong>Build clean supervised fine-tuning datasets from messy agent traces and chat data.</strong></p>
+  <p><strong>Agent data infrastructure for generation, normalization, formatting, response masking, and training audits.</strong></p>
   <p>
     <a href="https://pepy.tech/projects/teich"><img alt="PyPI Downloads" src="https://img.shields.io/pepy/dt/teich?label=downloads&color=green"></a>
     <a href="https://pypi.org/project/teich/"><img alt="PyPI" src="https://img.shields.io/pypi/v/teich?label=pypi&color=black"></a>
