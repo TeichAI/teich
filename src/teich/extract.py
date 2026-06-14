@@ -13,8 +13,6 @@ import shutil
 import sqlite3
 from typing import Any, Literal
 
-from .converter import normalize_claude_code_trace_events, normalize_codex_trace_events
-
 ExtractProvider = Literal["claude", "codex", "hermes", "pi"]
 
 
@@ -191,16 +189,10 @@ def _copy_provider_jsonl(
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
         return True
-    raw_model_matches = trace_matches_model(events, model_filter) if model_filter else True
-    if provider == "codex":
-        normalized_events = normalize_codex_trace_events(events, normalize_custom_tools=False)
-    elif provider == "claude":
-        normalized_events = normalize_claude_code_trace_events(events)
-    else:
-        normalized_events = events
-    if model_filter and not raw_model_matches and not trace_matches_model(normalized_events, model_filter):
+    if model_filter and not trace_matches_model(events, model_filter):
         return False
-    _write_jsonl_dict_events(destination, normalized_events)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
     try:
         shutil.copystat(source, destination)
     except OSError:
@@ -229,7 +221,7 @@ def _write_jsonl_dict_events(path: Path, events: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         for event in events:
-            handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+            handle.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
 
 
 def _unique_destination(destination_dir: Path, file_name: str) -> Path:

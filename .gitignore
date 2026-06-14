@@ -18,6 +18,7 @@ test_run/
 outputs/
 qwen_lora/
 traces-test/
+projects/
 *.env
 *.env.*
 .DS_Store

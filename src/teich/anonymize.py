@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 import hashlib
-import json
 import re
 import shutil
 import string
@@ -120,14 +119,8 @@ def _anonymize_jsonl_text(source: Path, anonymizer: "TraceAnonymizer") -> str:
     try:
         with source.open("r", encoding="utf-8") as handle:
             for raw_line in handle:
-                line = raw_line.strip()
-                if not line:
-                    rows.append(raw_line)
-                    continue
-                row = json.loads(line)
-                redacted_row = anonymizer.anonymize_value(row)
-                rows.append(json.dumps(redacted_row, ensure_ascii=False) + "\n")
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                rows.append(anonymizer.anonymize_text(raw_line))
+    except (OSError, UnicodeDecodeError):
         return anonymizer.anonymize_text(source.read_text(encoding="utf-8", errors="replace"))
     return "".join(rows)
 
@@ -143,29 +136,29 @@ class TraceAnonymizer:
         re.IGNORECASE,
     )
     _encoded_home_path_pattern = re.compile(
-        r"(?<![A-Za-z0-9])(?P<prefix>-(?:home|Users)-)(?P<username>[A-Za-z0-9._]+)(?=$|[-\\/\s\"'])",
+        r"(?:(?<![A-Za-z0-9])|(?<=\\n))(?P<prefix>-(?:home|Users)-)(?P<username>[A-Za-z0-9._]+)(?=$|[-\\/\s\"'])",
         re.IGNORECASE,
     )
     _api_key_patterns = [
-        re.compile(r"(?<![A-Za-z0-9])(?P<prefix>sk-or-v1-)(?P<body>[A-Za-z0-9_-]{16,})"),
-        re.compile(r"(?<![A-Za-z0-9])(?P<prefix>sk-ant-api03-)(?P<body>[A-Za-z0-9_-]{16,})"),
-        re.compile(r"(?<![A-Za-z0-9])(?P<prefix>sk-proj-)(?P<body>[A-Za-z0-9_-]{16,})"),
-        re.compile(r"(?<![A-Za-z0-9])(?P<prefix>sk-)(?!or-v1-|ant-api03-|proj-)(?P<body>[A-Za-z0-9_-]{20,})"),
-        re.compile(r"(?<![A-Za-z0-9])(?P<prefix>hf_)(?P<body>[A-Za-z0-9]{20,})"),
-        re.compile(r"(?<![A-Za-z0-9])(?P<prefix>gsk_)(?P<body>[A-Za-z0-9]{20,})"),
-        re.compile(r"(?<![A-Za-z0-9])(?P<prefix>github_pat_)(?P<body>[A-Za-z0-9_]{20,})"),
-        re.compile(r"(?<![A-Za-z0-9])(?P<prefix>gh[pousr]_)(?P<body>[A-Za-z0-9_]{20,})"),
-        re.compile(r"(?<![A-Za-z0-9])(?P<prefix>glpat-)(?P<body>[A-Za-z0-9_-]{20,})"),
-        re.compile(r"(?<![A-Za-z0-9])(?P<prefix>xox[baprs]-)(?P<body>[A-Za-z0-9-]{20,})"),
-        re.compile(r"(?<![A-Za-z0-9])(?P<prefix>AIza)(?P<body>[A-Za-z0-9_-]{20,})"),
-        re.compile(r"(?<![A-Za-z0-9])(?P<prefix>ctx7sk-)(?P<body>[A-Za-z0-9-]{20,})"),
+        re.compile(r"(?:(?<![A-Za-z0-9])|(?<=\\n))(?P<prefix>sk-or-v1-)(?P<body>[A-Za-z0-9_-]{16,})"),
+        re.compile(r"(?:(?<![A-Za-z0-9])|(?<=\\n))(?P<prefix>sk-ant-api03-)(?P<body>[A-Za-z0-9_-]{16,})"),
+        re.compile(r"(?:(?<![A-Za-z0-9])|(?<=\\n))(?P<prefix>sk-proj-)(?P<body>[A-Za-z0-9_-]{16,})"),
+        re.compile(r"(?:(?<![A-Za-z0-9])|(?<=\\n))(?P<prefix>sk-)(?!or-v1-|ant-api03-|proj-)(?P<body>[A-Za-z0-9_-]{20,})"),
+        re.compile(r"(?:(?<![A-Za-z0-9])|(?<=\\n))(?P<prefix>hf_)(?P<body>[A-Za-z0-9]{20,})"),
+        re.compile(r"(?:(?<![A-Za-z0-9])|(?<=\\n))(?P<prefix>gsk_)(?P<body>[A-Za-z0-9]{20,})"),
+        re.compile(r"(?:(?<![A-Za-z0-9])|(?<=\\n))(?P<prefix>github_pat_)(?P<body>[A-Za-z0-9_]{20,})"),
+        re.compile(r"(?:(?<![A-Za-z0-9])|(?<=\\n))(?P<prefix>gh[pousr]_)(?P<body>[A-Za-z0-9_]{20,})"),
+        re.compile(r"(?:(?<![A-Za-z0-9])|(?<=\\n))(?P<prefix>glpat-)(?P<body>[A-Za-z0-9_-]{20,})"),
+        re.compile(r"(?:(?<![A-Za-z0-9])|(?<=\\n))(?P<prefix>xox[baprs]-)(?P<body>[A-Za-z0-9-]{20,})"),
+        re.compile(r"(?:(?<![A-Za-z0-9])|(?<=\\n))(?P<prefix>AIza)(?P<body>[A-Za-z0-9_-]{20,})"),
+        re.compile(r"(?:(?<![A-Za-z0-9])|(?<=\\n))(?P<prefix>ctx7sk-)(?P<body>[A-Za-z0-9-]{20,})"),
     ]
     _jwt_pattern = re.compile(
-        r"(?<![A-Za-z0-9_-])(eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})(?![A-Za-z0-9_-])"
+        r"(?:(?<![A-Za-z0-9_-])|(?<=\\n))(eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})(?![A-Za-z0-9_-])"
     )
     _bearer_pattern = re.compile(r"(?i)(\bBearer\s+)([A-Za-z0-9._~+/=-]{24,})")
     _generic_secret_pattern = re.compile(
-        r"(?i)(\b(?:[A-Za-z0-9]+[_-])*(?:api[_-]?key|token|secret|password)\b[\"']?[^\S\r\n]*[:=][^\S\r\n]*[\"']?)([A-Za-z0-9_~+/=-]{24,})"
+        r"(?i)(\b(?:[A-Za-z0-9]+[_-])*(?:api[_-]?key|token|secret|password)\b\\?[\"']?[^\S\r\n]*[:=][^\S\r\n]*\\?[\"']?)([A-Za-z0-9_~+/=-]{24,})"
     )
     _non_person_usernames = {
         "all users",
@@ -270,6 +263,8 @@ class TraceAnonymizer:
         return self._email_pattern.sub(replace, text)
 
     def _looks_like_non_email_reference(self, value: str, match: re.Match[str], text: str) -> bool:
+        if match.start() > 0 and text[match.start() - 1] == "\\":
+            return True
         if "`" in value:
             return True
         if "/" in value or "\\" in value:

@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
+from teich.converter import convert_traces_to_training_data
 from teich.cli import app
 
 runner = CliRunner()
@@ -231,6 +232,74 @@ def test_extract_model_filter_for_codex_claude_pi_and_hermes(tmp_path: Path):
         assert f"Extracted 1 {provider} trace with fable-5" in result.output
         assert (output_dir / expected_file).exists()
         assert len(list(output_dir.glob("*.jsonl"))) == 1
+
+
+def test_extract_claude_preserves_raw_order_and_only_anonymizes_inline(tmp_path: Path):
+    sessions_dir = tmp_path / "claude"
+    sessions_dir.mkdir()
+    source_file = sessions_dir / "session.jsonl"
+    secret_key = "sk-or-v1-abcdefghijklmnopqrstuvwxyz123456"
+    raw_lines = [
+        (
+            '{"type":"last-prompt","sessionId":"claude-session",'
+            f'"lastPrompt":"Email alice@example.com key {secret_key} path /home/alice/project"}}\n'
+        ),
+        '{ "type": "mode", "mode": "normal", "sessionId": "claude-session" }\n',
+        '{"type":"permission-mode","permissionMode":"bypassPermissions","sessionId":"claude-session"}\n',
+        '{"type":"file-history-snapshot","sessionId":"claude-session","leafUuid":"leaf-1"}\n',
+        (
+            '{"type":"user","timestamp":"2026-06-10T00:00:01.000Z","sessionId":"claude-session",'
+            '"uuid":"user-1","message":{"role":"user","content":"Build app"}}\n'
+        ),
+        (
+            '{"type":"assistant","timestamp":"2026-06-10T00:00:02.000Z","sessionId":"claude-session",'
+            '"parentUuid":"user-1","message":{"id":"msg-1","role":"assistant","model":"claude-fable-5",'
+            '"content":[{"type":"text","text":"I will build it."}]}}\n'
+        ),
+        '{"type":"mode","mode":"normal","sessionId":"claude-session"}\n',
+        '{"type":"permission-mode","permissionMode":"auto","sessionId":"claude-session"}\n',
+    ]
+    source_file.write_text("".join(raw_lines), encoding="utf-8")
+    source_examples = convert_traces_to_training_data(source_file)
+
+    output_dir = tmp_path / "output"
+    result = runner.invoke(
+        app,
+        [
+            "extract",
+            "claude",
+            "--sessions-dir",
+            str(sessions_dir),
+            "--output",
+            str(output_dir),
+            "--model",
+            "claude-fable-5",
+        ],
+        input="n\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Automatically scrambled 1 API keys, 1 email addresses, and 1 username references" in result.output
+    extracted_file = output_dir / "session.jsonl"
+    extracted_lines = extracted_file.read_text(encoding="utf-8").splitlines(keepends=True)
+    assert [json.loads(line)["type"] for line in extracted_lines] == [
+        "last-prompt",
+        "mode",
+        "permission-mode",
+        "file-history-snapshot",
+        "user",
+        "assistant",
+        "mode",
+        "permission-mode",
+    ]
+    assert extracted_lines[1:] == raw_lines[1:]
+    assert "alice@example.com" not in extracted_lines[0]
+    assert secret_key not in extracted_lines[0]
+    assert "/home/alice" not in extracted_lines[0]
+    assert "user1@example.com" in extracted_lines[0]
+    assert "sk-or-v1-" in extracted_lines[0]
+    assert "/home/user1/project" in extracted_lines[0]
+    assert convert_traces_to_training_data(extracted_file) == source_examples
 
 
 def test_extract_refreshes_flat_output_before_writing(tmp_path: Path):
