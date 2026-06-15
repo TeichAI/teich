@@ -3062,6 +3062,57 @@ def test_latest_gemma_template_trains_repeated_tool_call_protocol_not_outputs():
     assert 'response:bash{value:<|"|>hello<|"|>}' in masked_text
 
 
+def test_tool_call_with_run_in_background_true_is_not_masked_out():
+    tokenizer = GemmaLikeOffsetTokenizer()
+    tools = _real_template_tool_call_dataset()[0]["tools"]
+    messages = [
+        {"role": "user", "content": "run checks"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_bash_sync",
+                    "type": "function",
+                    "function": {
+                        "name": "bash",
+                        "arguments": {"command": "pytest tests/unit.py"},
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_bash_sync", "name": "bash", "content": "done"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_bash_bg",
+                    "type": "function",
+                    "function": {
+                        "name": "bash",
+                        "arguments": {"command": "pytest tests/long.py", "run_in_background": True},
+                    },
+                }
+            ],
+        },
+    ]
+    prepared = prepare_and_mask_for_test(
+        Dataset.from_list([{"messages": messages, "tools": tools}]),
+        tokenizer,
+        chat_template_kwargs={"enable_thinking": True, "preserve_thinking": True},
+    )
+    row = prepared[0]
+    supervised_text = tokenizer.decode([token for token in row["labels"] if token != -100])
+    masked_text = tokenizer.decode([token_id for token_id, label in zip(row["input_ids"], row["labels"]) if label == -100])
+
+    assert "<|tool_call>call:bash" in supervised_text
+    assert '<|tool_call>call:bash{command:"pytest tests/unit.py"}' in supervised_text
+    assert '<|tool_call>call:bash{command:"pytest tests/long.py",run_in_background:"True"}' in supervised_text
+    assert 'run_in_background:"True"' in supervised_text
+    assert "<|tool_call>call:bash" not in masked_text
+
+
 def test_new_gemma4_template_strict_markers_tolerate_trimmed_embedded_thinking():
     jinja2 = pytest.importorskip("jinja2")
     template_path = Path("new_gemma_4_template.jinja")

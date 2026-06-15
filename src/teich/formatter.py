@@ -623,6 +623,33 @@ def _wrap_with_markers(value: Any, start_marker: str, end_marker: str) -> tuple[
     return updated_value, True
 
 
+def _mark_tool_call_arguments_for_supervision(
+    arguments: Any,
+    mark_value: Any,
+    *,
+    kind: str,
+    role: str,
+) -> tuple[Any, bool]:
+    if not isinstance(arguments, dict):
+        return mark_value(arguments, kind=kind, role=role)
+
+    preferred_keys = ("command", "tool_input", "content", "description", "path", "query", "input", "name")
+    candidate_keys: list[Any] = [key for key in preferred_keys if key in arguments]
+    candidate_keys.extend(key for key in arguments.keys() if key not in candidate_keys)
+
+    for key in candidate_keys:
+        value = arguments[key]
+        if isinstance(value, str) and value:
+            updated_arguments = dict(arguments)
+            updated_value, changed = mark_value(value, kind=kind, role=role)
+            if changed:
+                updated_arguments[key] = updated_value
+                return updated_arguments, True
+
+    # Fall back to existing recursive behavior for uncommon argument layouts.
+    return mark_value(arguments, kind=kind, role=role)
+
+
 def _mark_supervised_messages(
     messages: list[dict[str, Any]],
     *,
@@ -654,7 +681,7 @@ def _mark_supervised_messages(
             continue
         role = str(message.get("role") or "")
         if _is_assistant_message(message):
-            reasoning = message.get("reasoning_content")
+            reasoning = message.get("reasoning_content") if message.get("reasoning_content") is not None else message.get("reasoning")
             updated_reasoning, changed = mark_value(reasoning, kind=_SPAN_KIND_REASONING, role=role)
             if changed:
                 message["reasoning_content"] = updated_reasoning
@@ -668,7 +695,12 @@ def _mark_supervised_messages(
                 if changed:
                     function["name"] = updated_name
                 arguments = function.get("arguments")
-                updated_arguments, changed = mark_value(arguments, kind=_SPAN_KIND_TOOL_CALL, role=role)
+                updated_arguments, changed = _mark_tool_call_arguments_for_supervision(
+                    arguments,
+                    mark_value,
+                    kind=_SPAN_KIND_TOOL_CALL,
+                    role=role,
+                )
                 if changed:
                     function["arguments"] = updated_arguments
             content = message.get("content")
