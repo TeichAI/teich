@@ -51,6 +51,169 @@ function formatTime(epochSeconds) {
   return new Date(epochSeconds * 1000).toLocaleString();
 }
 
+function displayText(value) {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch (e) {
+    return String(value);
+  }
+}
+
+function escapeHtml(value) {
+  return displayText(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function safeMarkdownUrl(value) {
+  const url = displayText(value).trim();
+  if (/^(https?:|mailto:|#|\/)/i.test(url)) return url;
+  return "#";
+}
+
+function inlineMarkdown(value) {
+  let text = escapeHtml(value);
+  const tokens = [];
+  const stash = (html) => {
+    const token = `\u0000md${tokens.length}\u0000`;
+    tokens.push(html);
+    return token;
+  };
+
+  text = text.replace(/`([^`]+)`/g, (_match, code) => stash(`<code>${code}</code>`));
+  text = text.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_match, label, url) => {
+    const safeUrl = escapeHtml(safeMarkdownUrl(url.replace(/&amp;/g, "&")));
+    return stash(`<a href="${safeUrl}" target="_blank" rel="noreferrer">${label}</a>`);
+  });
+  text = text
+    .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/__([^_\n]+)__/g, "<strong>$1</strong>")
+    .replace(/~~([^~\n]+)~~/g, "<del>$1</del>")
+    .replace(/(^|[^\*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+    .replace(/(^|[^_])_([^_\n]+)_/g, "$1<em>$2</em>");
+
+  tokens.forEach((html, index) => {
+    text = text.replaceAll(`\u0000md${index}\u0000`, html);
+  });
+  return text;
+}
+
+function markdownToHtml(value) {
+  const lines = displayText(value).replace(/\r\n?/g, "\n").split("\n");
+  const output = [];
+  let paragraph = [];
+  let listType = null;
+  let inFence = false;
+  let fenceLines = [];
+  let fenceLang = "";
+
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    output.push(`<p>${paragraph.map(inlineMarkdown).join("<br>")}</p>`);
+    paragraph = [];
+  };
+  const closeList = () => {
+    if (!listType) return;
+    output.push(`</${listType}>`);
+    listType = null;
+  };
+  const openList = (type) => {
+    if (listType === type) return;
+    closeList();
+    listType = type;
+    output.push(`<${type}>`);
+  };
+  const flushCode = () => {
+    const language = fenceLang ? ` class="language-${escapeHtml(fenceLang)}"` : "";
+    output.push(`<pre><code${language}>${escapeHtml(fenceLines.join("\n"))}</code></pre>`);
+    fenceLines = [];
+    fenceLang = "";
+  };
+
+  for (const rawLine of lines) {
+    const fence = rawLine.match(/^\s*```([A-Za-z0-9_-]*)\s*$/);
+    if (fence) {
+      if (inFence) {
+        flushCode();
+        inFence = false;
+      } else {
+        flushParagraph();
+        closeList();
+        inFence = true;
+        fenceLang = fence[1] || "";
+      }
+      continue;
+    }
+    if (inFence) {
+      fenceLines.push(rawLine);
+      continue;
+    }
+
+    if (!rawLine.trim()) {
+      flushParagraph();
+      closeList();
+      continue;
+    }
+
+    const heading = rawLine.match(/^(#{1,4})\s+(.+)$/);
+    if (heading) {
+      flushParagraph();
+      closeList();
+      const level = Math.min(heading[1].length + 2, 6);
+      output.push(`<h${level}>${inlineMarkdown(heading[2])}</h${level}>`);
+      continue;
+    }
+
+    const unordered = rawLine.match(/^\s*[-*+]\s+(.+)$/);
+    if (unordered) {
+      flushParagraph();
+      openList("ul");
+      output.push(`<li>${inlineMarkdown(unordered[1])}</li>`);
+      continue;
+    }
+
+    const ordered = rawLine.match(/^\s*\d+[.)]\s+(.+)$/);
+    if (ordered) {
+      flushParagraph();
+      openList("ol");
+      output.push(`<li>${inlineMarkdown(ordered[1])}</li>`);
+      continue;
+    }
+
+    const quote = rawLine.match(/^\s*>\s?(.+)$/);
+    if (quote) {
+      flushParagraph();
+      closeList();
+      output.push(`<blockquote>${inlineMarkdown(quote[1])}</blockquote>`);
+      continue;
+    }
+
+    closeList();
+    paragraph.push(rawLine.trimEnd());
+  }
+
+  if (inFence) flushCode();
+  flushParagraph();
+  closeList();
+  return output.join("");
+}
+
+function markdownNode(className, value) {
+  const node = el("div", `${className} markdown-body`);
+  node.innerHTML = markdownToHtml(value);
+  return node;
+}
+
+function truncateText(value, max = 120) {
+  const text = displayText(value);
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
 function get(obj, path, fallback) {
   let current = obj;
   for (const key of path.split(".")) {
@@ -99,6 +262,8 @@ const state = {
   extractEvents: [],
   traces: [],
   selectedTrace: null,
+  datasetPreview: null,
+  selectedDatasetRow: null,
 };
 
 // ---------------------------------------------------------------------------
@@ -111,6 +276,7 @@ function showView(name) {
   if (name === "output") loadTracesQuiet();
   if (name === "generate") refreshRunSummary();
   if (name === "extract") loadCurrentExtraction();
+  if (name === "dataset") loadDatasetPreview();
   if (name === "interactive" && state.term) requestAnimationFrame(fitTerminal);
 }
 
@@ -224,6 +390,7 @@ function fillConfigForm() {
   $("#cfg-timeout").value = get(c, "timeout_seconds", 600);
   $("#cfg-traces-dir").value = get(c, "output.traces_dir", "./output");
   $("#extract-output").value = get(c, "output.traces_dir", "./output") || "./output";
+  $("#dataset-path").value = get(c, "output.traces_dir", "./output") || "./output";
   $("#cfg-pretty-name").value = get(c, "output.pretty_name", "");
   $("#cfg-dev-instructions").value = get(c, "developer_instructions", "") || "";
   $("#cfg-repo-id").value = get(c, "publish.repo_id", "") || "";
@@ -942,9 +1109,11 @@ function scrollChat() {
 
 function renderDisplayEvent(data) {
   const kind = data.kind;
+  const text = displayText(data.text);
+  const name = displayText(data.name);
   if (kind === "user" || kind === "assistant") {
     const msg = el("div", `msg ${kind}`);
-    msg.appendChild(el("div", "msg-body", data.text));
+    msg.appendChild(markdownNode("msg-body", text));
     return msg;
   }
   if (kind === "thinking" || kind === "tool_call" || kind === "tool_result") {
@@ -955,15 +1124,15 @@ function renderDisplayEvent(data) {
       summary.appendChild(el("span", null, "💭 thinking"));
     } else if (kind === "tool_call") {
       summary.appendChild(el("span", null, "⚒"));
-      summary.appendChild(el("span", "tool-name", data.name || "tool"));
+      summary.appendChild(el("span", "tool-name", name || "tool"));
     } else {
       summary.appendChild(el("span", null, "↳ result"));
-      if (data.name) summary.appendChild(el("span", "tool-name", data.name));
+      if (name) summary.appendChild(el("span", "tool-name", name));
     }
-    const previewText = (data.text || "").replace(/\s+/g, " ").slice(0, 90);
+    const previewText = text.replace(/\s+/g, " ").slice(0, 90);
     summary.appendChild(el("span", "muted", previewText));
     details.appendChild(summary);
-    details.appendChild(el("div", "block-body", data.text || ""));
+    details.appendChild(markdownNode("block-body", text));
     msg.appendChild(details);
     return msg;
   }
@@ -973,13 +1142,13 @@ function renderDisplayEvent(data) {
     const summary = el("summary");
     summary.appendChild(el("span", null, "system prompt"));
     details.appendChild(summary);
-    details.appendChild(el("div", "block-body", data.text || ""));
+    details.appendChild(markdownNode("block-body", text));
     msg.appendChild(details);
     return msg;
   }
-  if (kind === "status" || kind === "log") return el("div", "msg status-line", data.text || "");
-  if (kind === "error") return el("div", "msg error-line", data.text || "");
-  if (kind === "session_saved") return el("div", "msg saved-line", `Trace saved: ${data.text}`);
+  if (kind === "status" || kind === "log") return el("div", "msg status-line", text);
+  if (kind === "error") return el("div", "msg error-line", text);
+  if (kind === "session_saved") return el("div", "msg saved-line", `Trace saved: ${text}`);
   return null;
 }
 
@@ -1095,6 +1264,206 @@ async function previewTrace(name) {
     preview.appendChild(el("div", "msg error-line", err.message));
   }
 }
+
+// ---------------------------------------------------------------------------
+// Dataset preview
+// ---------------------------------------------------------------------------
+
+function featureColumns(preview) {
+  const names = (preview.dataset.features || []).map((feature) => feature.name);
+  const preferred = ["prompt", "response", "model", "messages", "tools", "metadata"];
+  const columns = preferred.filter((name) => names.includes(name));
+  for (const name of names) {
+    if (!columns.includes(name) && columns.length < 7) columns.push(name);
+  }
+  return columns;
+}
+
+function summarizeDatasetCell(value, column) {
+  if (column === "messages" && Array.isArray(value)) return `${value.length} messages`;
+  if (column === "tools" && Array.isArray(value)) return `${value.length} tools`;
+  if (Array.isArray(value)) return `${value.length} items`;
+  if (value && typeof value === "object") return truncateText(Object.keys(value).join(", "), 80);
+  return truncateText(value == null ? "" : value, 110);
+}
+
+function renderDatasetSummary(preview) {
+  const summary = $("#dataset-summary");
+  summary.innerHTML = "";
+  const dataset = preview.dataset || {};
+  const stats = [
+    [String(dataset.num_rows || 0), "Rows"],
+    [String(preview.files.length || 0), "JSONL files"],
+    [String((dataset.features || []).length), "Columns"],
+    [String(dataset.complete_rows || 0), "Complete"],
+  ];
+  for (const [value, label] of stats) {
+    const stat = el("div", "stat");
+    stat.appendChild(el("b", null, value));
+    stat.appendChild(el("span", null, label));
+    summary.appendChild(stat);
+  }
+  const root = el("div", "dataset-root");
+  root.appendChild(el("span", "muted", preview.root));
+  if (preview.notes && preview.notes.length) root.appendChild(el("p", null, preview.notes[0]));
+  summary.appendChild(root);
+
+  const embedCard = $("#hf-embed-card");
+  if (preview.hf_embed_url) {
+    embedCard.hidden = false;
+    $("#hf-embed-link").href = preview.hf_embed_url;
+    $("#hf-embed-link").textContent = preview.hf_embed_url;
+    $("#hf-embed-frame").src = preview.hf_embed_url;
+  } else {
+    embedCard.hidden = true;
+    $("#hf-embed-frame").removeAttribute("src");
+  }
+}
+
+function renderDatasetTable(preview) {
+  const container = $("#dataset-table");
+  container.innerHTML = "";
+  const rows = preview.dataset.rows || [];
+  if (!rows.length) {
+    const empty = el("div", "empty-state small");
+    empty.appendChild(el("div", "empty-icon", "▦"));
+    empty.appendChild(el("p", null, preview.errors && preview.errors.length ? preview.errors[0] : "No preview rows found."));
+    container.appendChild(empty);
+    return;
+  }
+  const columns = featureColumns(preview);
+  const table = el("table", "dataset-table");
+  const thead = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  headRow.appendChild(el("th", null, "#"));
+  for (const column of columns) headRow.appendChild(el("th", null, column));
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  for (const rowInfo of rows) {
+    const tr = document.createElement("tr");
+    tr.className = rowInfo.row_idx === state.selectedDatasetRow ? "selected" : "";
+    tr.appendChild(el("td", "mono", String(rowInfo.row_idx)));
+    for (const column of columns) {
+      tr.appendChild(el("td", null, summarizeDatasetCell(rowInfo.row[column], column)));
+    }
+    tr.addEventListener("click", () => {
+      state.selectedDatasetRow = rowInfo.row_idx;
+      renderDatasetTable(preview);
+      renderDatasetDetail(rowInfo);
+    });
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  container.appendChild(table);
+  if (state.selectedDatasetRow == null && rows.length) {
+    state.selectedDatasetRow = rows[0].row_idx;
+    renderDatasetDetail(rows[0]);
+  }
+}
+
+function renderTrainingMessages(row) {
+  const messages = Array.isArray(row.messages) ? row.messages : [];
+  const wrap = el("div", "dataset-message-list");
+  for (const message of messages) {
+    if (!message || typeof message !== "object") continue;
+    if (message.thinking) {
+      const thinking = renderDisplayEvent({ kind: "thinking", text: message.thinking });
+      if (thinking) wrap.appendChild(thinking);
+    }
+    const role = message.role || "assistant";
+    const content = typeof message.content === "string" ? message.content : JSON.stringify(message.content || "", null, 2);
+    const kind = role === "tool" ? "tool_result" : role;
+    const node = renderDisplayEvent({ kind, text: content, name: message.name || message.tool_call_id || "" });
+    if (node) wrap.appendChild(node);
+    if (Array.isArray(message.tool_calls)) {
+      for (const toolCall of message.tool_calls) {
+        const fn = toolCall && (toolCall.function || toolCall);
+        const toolNode = renderDisplayEvent({
+          kind: "tool_call",
+          name: fn && fn.name ? fn.name : "tool",
+          text: fn && fn.arguments ? fn.arguments : JSON.stringify(toolCall, null, 2),
+        });
+        if (toolNode) wrap.appendChild(toolNode);
+      }
+    }
+  }
+  return wrap;
+}
+
+function renderDatasetDetail(rowInfo) {
+  const detail = $("#dataset-detail");
+  detail.innerHTML = "";
+  const head = el("div", "preview-head");
+  head.appendChild(el("span", "badge", `row ${rowInfo.row_idx}`));
+  const preview = rowInfo.preview || {};
+  if (preview.trace_type) head.appendChild(el("span", "muted", preview.trace_type));
+  if (preview.model) head.appendChild(el("span", "muted", preview.model));
+  detail.appendChild(head);
+  detail.appendChild(renderTrainingMessages(rowInfo.row));
+
+  const raw = el("details", "json-details");
+  const summary = el("summary", null, "Row JSON");
+  raw.appendChild(summary);
+  raw.appendChild(el("pre", null, JSON.stringify(rowInfo.row, null, 2)));
+  detail.appendChild(raw);
+}
+
+function renderDatasetTraces(preview) {
+  const wrap = $("#dataset-traces");
+  wrap.innerHTML = "";
+  const head = el("div", "preview-head");
+  head.appendChild(el("span", "badge", "Trace previews"));
+  head.appendChild(el("span", "muted", `${preview.trace_previews.length} shown`));
+  wrap.appendChild(head);
+  if (!preview.trace_previews.length) {
+    wrap.appendChild(el("div", "msg status-line", "No trace previews available."));
+    return;
+  }
+  for (const trace of preview.trace_previews) {
+    const details = el("details", "trace-preview-block");
+    const summary = el("summary");
+    summary.appendChild(el("span", "mono", trace.name));
+    summary.appendChild(el("span", "badge", trace.provider));
+    summary.appendChild(el("span", "muted", `${trace.event_count} events`));
+    details.appendChild(summary);
+    const body = el("div", "trace-preview-body");
+    for (const eventData of trace.display || []) {
+      const node = renderDisplayEvent(eventData);
+      if (node) body.appendChild(node);
+    }
+    if (trace.truncated) body.appendChild(el("div", "msg status-line", "… preview truncated"));
+    details.appendChild(body);
+    wrap.appendChild(details);
+  }
+}
+
+async function loadDatasetPreview() {
+  const path = $("#dataset-path").value.trim();
+  const search = $("#dataset-search").value.trim();
+  const query = new URLSearchParams();
+  if (path) query.set("path", path);
+  if (search) query.set("search", search);
+  try {
+    const preview = await api("GET", `/api/dataset-preview?${query.toString()}`);
+    state.datasetPreview = preview;
+    state.selectedDatasetRow = null;
+    renderDatasetSummary(preview);
+    renderDatasetTable(preview);
+    renderDatasetTraces(preview);
+  } catch (err) {
+    toast(err.message, "error");
+    $("#dataset-table").innerHTML = "";
+    $("#dataset-detail").innerHTML = "";
+    $("#dataset-traces").innerHTML = "";
+  }
+}
+
+$("#btn-load-dataset").addEventListener("click", loadDatasetPreview);
+$("#dataset-search").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") loadDatasetPreview();
+});
 
 // ---------------------------------------------------------------------------
 // Init

@@ -177,6 +177,7 @@ h1, h2, h3 { font-weight: 650; letter-spacing: -0.01em; }
 .view { display: none; max-width: 880px; margin: 0 auto; animation: viewIn 0.22s ease; }
 .view.active { display: block; }
 #view-interactive.active { display: flex; flex-direction: column; max-width: 1040px; min-height: calc(100vh - 130px); }
+#view-dataset.active { max-width: 1180px; }
 
 @keyframes viewIn {
   from { opacity: 0; transform: translateY(6px); }
@@ -337,6 +338,7 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
 
 .toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
 .toolbar-spacer { flex: 1; }
+.toolbar-input { max-width: 300px; }
 .muted { color: var(--text-faint); font-size: 12px; }
 
 .prompts-list { display: flex; flex-direction: column; gap: 10px; }
@@ -543,6 +545,68 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
   white-space: pre-wrap; word-break: break-word;
   color: var(--text-dim); max-height: 320px; overflow-y: auto;
 }
+.msg .msg-body.markdown-body,
+.msg.block .block-body.markdown-body {
+  white-space: normal;
+}
+.msg.block .block-body.markdown-body {
+  font-family: inherit;
+}
+.msg.block.tool_call .block-body.markdown-body {
+  font-family: var(--mono);
+}
+.markdown-body p { margin: 0 0 0.72em; }
+.markdown-body p:last-child,
+.markdown-body ul:last-child,
+.markdown-body ol:last-child,
+.markdown-body blockquote:last-child,
+.markdown-body pre:last-child { margin-bottom: 0; }
+.markdown-body h3,
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  margin: 0.8em 0 0.45em;
+  font-size: 1em;
+  line-height: 1.35;
+}
+.markdown-body h3:first-child,
+.markdown-body h4:first-child,
+.markdown-body h5:first-child,
+.markdown-body h6:first-child { margin-top: 0; }
+.markdown-body ul,
+.markdown-body ol {
+  margin: 0.3em 0 0.75em 1.35em;
+  padding: 0;
+}
+.markdown-body li { margin: 0.22em 0; }
+.markdown-body blockquote {
+  margin: 0.45em 0 0.75em;
+  padding: 0.2em 0 0.2em 0.85em;
+  border-left: 2px solid var(--border-strong);
+  color: var(--text-dim);
+}
+.markdown-body pre {
+  margin: 0.55em 0 0.75em;
+  padding: 10px 12px;
+  max-width: 100%;
+  overflow-x: auto;
+  background: var(--bg-input);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+}
+.markdown-body pre code {
+  display: block;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  white-space: pre;
+}
+.markdown-body code {
+  font-family: var(--mono);
+  font-size: 0.92em;
+}
+.markdown-body a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
 .msg.thinking summary { color: var(--text-faint); font-style: italic; }
 
 .msg.status-line { align-self: center; color: var(--text-faint); font-size: 12px; text-align: center; }
@@ -594,12 +658,73 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
 .preview-head .badge { text-transform: capitalize; border-color: var(--accent-glow); color: var(--accent-text); }
 .preview-head .muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 11.5px; }
 
+/* ----------------------------- Dataset preview ----------------------------- */
+
+.dataset-summary { display: flex; gap: 26px; flex-wrap: wrap; align-items: flex-start; }
+.dataset-summary .stat { display: flex; flex-direction: column; gap: 3px; min-width: 74px; }
+.dataset-summary .stat b { font-size: 16px; }
+.dataset-summary .stat span { font-size: 10.5px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.7px; font-weight: 600; }
+.dataset-root { flex: 1 1 360px; min-width: 0; }
+.dataset-root .muted { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); }
+.dataset-root p { margin: 5px 0 0; color: var(--text-faint); font-size: 12px; }
+.hf-embed iframe {
+  width: 100%; height: 560px; border: 1px solid var(--border-soft);
+  border-radius: 10px; margin-top: 12px; background: #fff;
+}
+.dataset-layout { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(360px, 0.85fr); gap: 14px; align-items: start; }
+.dataset-table-wrap { overflow-x: auto; max-height: 62vh; }
+.dataset-table { width: 100%; border-collapse: collapse; min-width: 680px; }
+.dataset-table th, .dataset-table td {
+  text-align: left; border-bottom: 1px solid var(--border-soft);
+  padding: 8px 10px; font-size: 12px; vertical-align: top;
+}
+.dataset-table th {
+  position: sticky; top: 0; z-index: 1;
+  background: var(--bg-raised); color: var(--text-faint);
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.6px;
+}
+.dataset-table tr { cursor: pointer; transition: background var(--speed); }
+.dataset-table tbody tr:hover, .dataset-table tbody tr.selected { background: var(--accent-soft); }
+.dataset-detail { max-height: 62vh; overflow-y: auto; }
+.dataset-message-list {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 12px 0;
+}
+.json-details {
+  margin-top: 12px; border-top: 1px solid var(--border-soft); padding-top: 10px;
+}
+.json-details summary {
+  cursor: pointer; color: var(--text-dim); font-size: 12px; margin-bottom: 8px;
+}
+.json-details pre {
+  margin: 0; max-height: 420px; overflow: auto;
+  background: var(--bg-input); border: 1px solid var(--border-soft);
+  border-radius: 9px; padding: 12px; color: var(--text-dim);
+  font-family: var(--mono); font-size: 11.5px;
+}
+.dataset-traces { display: flex; flex-direction: column; gap: 10px; }
+.trace-preview-block {
+  border: 1px solid var(--border-soft);
+  border-radius: 10px; overflow: hidden;
+}
+.trace-preview-block summary {
+  cursor: pointer; padding: 9px 12px; display: flex; align-items: center; gap: 8px;
+  list-style: none; user-select: none;
+}
+.trace-preview-block summary::-webkit-details-marker { display: none; }
+.trace-preview-body {
+  border-top: 1px solid var(--border-soft);
+  padding: 12px; display: flex; flex-direction: column; gap: 10px;
+}
+
 @media (max-width: 860px) {
   .main { padding: 22px 18px 80px; }
   .form-grid { grid-template-columns: 1fr; }
   .field.span-2 { grid-column: span 1; }
   .output-layout { grid-template-columns: 1fr; }
   .trace-list { max-height: 32vh; }
+  .dataset-layout { grid-template-columns: 1fr; }
+  .toolbar-input { max-width: none; }
 }
 
 /* ----------------------------- Toast ----------------------------- */

@@ -374,6 +374,34 @@ def test_trace_listing_and_preview(client):
     assert escape.status_code in {400, 404}
 
 
+def test_dataset_preview_endpoint_returns_rows_features_and_trace_previews(client):
+    output_dir = client.project_dir / "output"
+    output_dir.mkdir()
+    trace = output_dir / "hermes-agent-test.jsonl"
+    events = [
+        {"type": "external_session_meta", "payload": {"id": "x", "model": "test/model"}},
+        {"type": "external_message", "role": "user", "content": "build a preview"},
+        {"type": "external_message", "role": "assistant", "content": "preview built"},
+    ]
+    trace.write_text("\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")
+    (output_dir / "README.md").write_text("---\nconfigs: []\n---\n# Demo\n", encoding="utf-8")
+    client.put("/api/config", json={"config": {"publish": {"repo_id": "TeichAI/demo-dataset"}}})
+
+    response = client.get("/api/dataset-preview")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["hf_embed_url"] == "https://huggingface.co/datasets/TeichAI/demo-dataset/embed/viewer"
+    assert payload["dataset"]["num_rows"] == 1
+    assert {feature["name"] for feature in payload["dataset"]["features"]} >= {"messages", "metadata"}
+    assert payload["dataset"]["rows"][0]["preview"]["prompt"] == "build a preview"
+    assert payload["trace_previews"][0]["provider"] == "hermes"
+    assert payload["readme"].startswith("---")
+
+    filtered = client.get("/api/dataset-preview", params={"search": "missing"}).json()
+    assert filtered["dataset"]["num_rows"] == 0
+
+
 def _wait_for_extract_job(client) -> dict:
     delay = threading.Event()
     for _ in range(200):

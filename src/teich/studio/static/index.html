@@ -46,6 +46,10 @@
           <span class="nav-label">Output</span>
           <span class="nav-badge" id="nav-traces-count" hidden></span>
         </button>
+        <button class="nav-item" data-view="dataset" title="Dataset">
+          <svg viewBox="0 0 24 24"><path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h16"/><path d="M7 4v16"/><path d="M17 4v16"/></svg>
+          <span class="nav-label">Dataset</span>
+        </button>
       </nav>
 
       <div class="sidebar-footer">
@@ -330,6 +334,43 @@
             </div>
           </div>
         </div>
+      </section>
+
+      <!-- ============================== DATASET ============================== -->
+      <section class="view" id="view-dataset">
+        <header class="view-header">
+          <h1>Dataset Preview</h1>
+          <p>Preview the output folder as a Hugging Face-style dataset before upload.</p>
+        </header>
+
+        <div class="toolbar">
+          <input type="text" id="dataset-path" class="toolbar-input" placeholder="./output" />
+          <input type="text" id="dataset-search" class="toolbar-input" placeholder="Search rows" />
+          <button class="btn primary" id="btn-load-dataset">Reload</button>
+        </div>
+
+        <div class="card dataset-summary" id="dataset-summary"></div>
+        <div class="card hf-embed" id="hf-embed-card" hidden>
+          <div class="preview-head">
+            <span class="badge">Hugging Face embed</span>
+            <a id="hf-embed-link" target="_blank" rel="noreferrer"></a>
+          </div>
+          <iframe id="hf-embed-frame" title="Hugging Face Dataset Viewer"></iframe>
+        </div>
+
+        <div class="dataset-layout">
+          <div class="card dataset-table-wrap">
+            <div id="dataset-table"></div>
+          </div>
+          <div class="card dataset-detail" id="dataset-detail">
+            <div class="empty-state small">
+              <div class="empty-icon">▦</div>
+              <p>Select a row to inspect it.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="card dataset-traces" id="dataset-traces"></div>
       </section>
     </main>
   </div>

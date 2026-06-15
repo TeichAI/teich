@@ -99,6 +99,25 @@ Use it to stage existing local sessions from `claude`, `codex`, `pi`, or `hermes
 
 Studio can fill in detected default paths for the selected provider. Extraction writes into the configured output folder, generates a dataset `README.md`, and anonymizes staged traces by default. Check **Skip anonymization** only when you are intentionally keeping raw local values.
 
+## Dataset Preview
+
+The Dataset Preview tab lets you inspect the configured output folder before upload. It shows:
+
+- JSONL files and row counts
+- Hugging Face-style features for the converted training rows
+- searchable row previews
+- row JSON details
+- local session/trace previews with messages, reasoning, tool calls, and tool results
+- the generated dataset card preview when `README.md` is present
+
+If `publish.repo_id` is set in `config.yaml`, Studio also exposes the official Hugging Face embedded Dataset Viewer URL:
+
+```text
+https://huggingface.co/datasets/<owner>/<dataset>/embed/viewer
+```
+
+That official embed works for datasets already available on the Hub. For unpublished local output, Studio uses Teich's local converter to approximate the parts of the viewer that matter before upload. The full Hugging Face viewer backend is hosted by Hugging Face and adds Parquet-backed row serving, search, filtering, SQL, and statistics after the dataset is uploaded and processed.
+
 ## Requirements
 
 For agent providers:

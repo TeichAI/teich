@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from ..extract import ExtractProvider, default_session_sources
+from .dataset_preview import build_dataset_preview
 from .events import summarize_chat_row, summarize_trace_events
 from .extraction import ExtractionManager
 from .generation import GenerationManager
@@ -620,6 +621,36 @@ def create_app(project_dir: Path) -> FastAPI:
             "display": display[:limit],
             "truncated": len(display) > limit,
         }
+
+    # ------------------------------------------------------------------
+    # Dataset preview
+    # ------------------------------------------------------------------
+
+    @app.get("/api/dataset-preview")
+    def dataset_preview(
+        path: str | None = None,
+        offset: int = 0,
+        limit: int = 100,
+        search: str | None = None,
+    ) -> dict[str, Any]:
+        data = state.read_config_data()
+        output = data.get("output") if isinstance(data.get("output"), dict) else {}
+        publish = data.get("publish") if isinstance(data.get("publish"), dict) else {}
+        root_value = (path or "").strip() or str(output.get("traces_dir") or "./output")
+        root = state.resolve_path(Path(root_value).expanduser())
+        repo_id = publish.get("repo_id") if isinstance(publish.get("repo_id"), str) else None
+        try:
+            return build_dataset_preview(
+                root,
+                repo_id=repo_id,
+                offset=offset,
+                limit=limit,
+                search=search,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
     # ------------------------------------------------------------------
     # Static UI
