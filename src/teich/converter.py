@@ -3628,7 +3628,7 @@ def _convert_jsonl_file_to_training_rows(jsonl_file: Path) -> list[dict[str, Any
 
 
 def convert_traces_to_training_data(traces_dir: Path | str) -> list[dict[str, Any]]:
-    source = Path(traces_dir)
+    source = traces_dir if not isinstance(traces_dir, Path) else Path(traces_dir)
     trace_files = _jsonl_files(source)
     rows: list[dict[str, Any]] = []
     for path in trace_files:
