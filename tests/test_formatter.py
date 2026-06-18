@@ -215,6 +215,7 @@ class SpecialTokenWrappingTokenizer(TrainerStyleTokenizer):
 
     def __init__(self):
         super().__init__()
+        self.add_special_tokens_calls: list[bool] = []
         self._vocab[self.bos_token] = 10_001
         self._vocab[self.eos_token] = 10_002
         self._reverse_vocab[10_001] = self.bos_token
@@ -228,6 +229,7 @@ class SpecialTokenWrappingTokenizer(TrainerStyleTokenizer):
         return_offsets_mapping=False,
         **kwargs,
     ):
+        self.add_special_tokens_calls.append(add_special_tokens)
         output = super().__call__(
             text,
             add_special_tokens=False,
@@ -1700,6 +1702,64 @@ def test_mask_data_aligns_trainer_added_special_tokens_to_teich_spans():
     assert "<eos>" in masked_text
 
 
+def test_preview_escapes_embedded_ansi_without_breaking_mask_colors():
+    tokenizer = FakeTokenizer()
+    text = "<user>\x1b[31;1mRED\x1b[0m</user><assistant>OK</assistant>"
+    input_ids = tokenizer(text)["input_ids"]
+    assistant_start = text.index("<assistant>")
+    labels = [-100 if index < assistant_start else token_id for index, token_id in enumerate(input_ids)]
+    dataset = Dataset.from_list([{"input_ids": input_ids, "labels": labels}])
+
+    preview = preview_sft_example(dataset, tokenizer)
+
+    assert preview == "\x1b[31m<user>\\x1b[31;1mRED\\x1b[0m</user>\x1b[0m<assistant>OK</assistant>"
+    assert preview.count("\x1b[0m") == 1
+    assert "\x1b[31;1m" not in preview
+
+
+def test_teich_tokenization_does_not_add_special_tokens_and_masks_trainer_specials():
+    tokenizer = SpecialTokenWrappingTokenizer()
+    dataset = Dataset.from_list(
+        [
+            {
+                "messages": [
+                    {"role": "user", "content": "hello"},
+                    {"role": "assistant", "content": "world", "reasoning_content": "think"},
+                ],
+                "tools": [],
+            }
+        ]
+    )
+
+    prepare_data(dataset, tokenizer, tokenize=True, verbose=False)
+    assert tokenizer.add_special_tokens_calls
+    assert all(call is False for call in tokenizer.add_special_tokens_calls)
+
+    tokenizer.add_special_tokens_calls.clear()
+    prepared = prepare_data(dataset, tokenizer, verbose=False)
+    trainer_dataset = prepared.map(lambda row: {"input_ids": tokenizer(text=row["text"])["input_ids"]})
+    assert any(call is True for call in tokenizer.add_special_tokens_calls)
+
+    tokenizer.add_special_tokens_calls.clear()
+    trainer = SimpleNamespace(
+        train_dataset=trainer_dataset,
+        eval_dataset=None,
+        processing_class=tokenizer,
+        args=SimpleNamespace(dataset_text_field="text", packing=False),
+    )
+
+    trainer = mask_data(trainer, audit=True, verbose=False)
+
+    row = trainer.train_dataset[0]
+    assert all(call is False for call in tokenizer.add_special_tokens_calls)
+    assert row["input_ids"][0] == tokenizer._vocab[tokenizer.bos_token]
+    assert row["input_ids"][-1] == tokenizer._vocab[tokenizer.eos_token]
+    assert row["labels"][0] == -100
+    assert row["labels"][-1] == -100
+    supervised_text = tokenizer.decode([token for token in row["labels"] if token != -100])
+    assert supervised_text == "<think>think</think>world</assistant>"
+
+
 def test_mask_data_tokenizes_prepared_text_when_trainer_has_not_tokenized():
     tokenizer = TrainerStyleTokenizer()
     dataset = Dataset.from_list(
@@ -2257,6 +2317,80 @@ def test_prepare_and_mask_masks_qwen_assistant_header_but_supervises_reasoning_s
     assert "<think>\n" not in masked_text
     assert "first request" in masked_text
     assert tokenizer.render_count == 4
+
+
+def test_prepare_and_mask_masks_empty_qwen_thinking_after_tool_response():
+    tokenizer = QwenLikeOffsetTokenizer()
+    dataset = Dataset.from_list(
+        [
+            {
+                "messages": [
+                    {"role": "user", "content": "make screenshot"},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "reasoning_content": "first call",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {"name": "PowerShell", "arguments": {"command": "make png"}},
+                            }
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "call_1",
+                        "name": "PowerShell",
+                        "content": (
+                            "Exit code 1\n"
+                            "Get-Item: Cannot find path "
+                            "'C:\\Users\\user1\\AppData\\Local\\Temp\\earth_test.png' "
+                            "because it does not exist."
+                        ),
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "reasoning_content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_2",
+                                "type": "function",
+                                "function": {"name": "PowerShell", "arguments": {"command": "retry"}},
+                            }
+                        ],
+                    },
+                ],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "PowerShell",
+                            "parameters": {"type": "object", "properties": {"command": {"type": "string"}}},
+                        },
+                    }
+                ],
+            }
+        ]
+    )
+
+    training_data = prepare_and_mask_for_test(dataset, tokenizer, chat_template_kwargs={"enable_thinking": True})
+
+    row = training_data[0]
+    supervised_text = tokenizer.decode([token for token in row["labels"] if token != -100])
+    masked_text = tokenizer.decode(
+        [token_id for token_id, label in zip(row["input_ids"], row["labels"]) if label == -100]
+    )
+    masked_section = (
+        "</tool_response><|im_end|>\n"
+        "<|im_start|>assistant\n"
+        "<think>\n\n</think>"
+    )
+    assert masked_section in masked_text
+    assert masked_section not in supervised_text
+    assert "<tool_call>\n<function=PowerShell>\n<parameter=command>\nretry" in supervised_text
+    assert "<think>\n\n</think>" not in supervised_text
 
 
 def test_prepare_and_mask_uses_gemma_structured_mask_path():

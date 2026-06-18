@@ -549,6 +549,27 @@ def _expand_span_to_containing_span(
     return min(containing_spans, key=lambda item: item[1] - item[0])
 
 
+def _extend_span_to_following_assistant_end(text: str, span: tuple[int, int]) -> tuple[int, int]:
+    start, end = span
+    candidates: list[tuple[int, str]] = []
+    for end_token in _ASSISTANT_BLOCK_END_TOKENS:
+        end_start = text.find(end_token, end)
+        if end_start >= 0:
+            candidates.append((end_start, end_token))
+    if not candidates:
+        return span
+    end_start, end_token = min(candidates, key=lambda item: item[0])
+    if text[end:end_start].strip():
+        return span
+    block = _assistant_block_bounds(text, start, end)
+    if block is None or end_start >= block[1]:
+        return span
+    span_end = end_start + len(end_token)
+    while span_end < len(text) and text[span_end] in "\r\n":
+        span_end += 1
+    return start, span_end
+
+
 def _marker_dict_keys(value: dict[Any, Any]) -> list[Any]:
     preferred_keys = [key for key in _MARKER_PREFERRED_DICT_KEYS if key in value]
     fallback_keys = [key for key in value if key not in preferred_keys and key not in _MARKER_STRUCTURAL_DICT_KEYS]
@@ -1075,7 +1096,7 @@ def _expand_typed_spans(
         end = span["end"]
         kind = span.get("kind")
         expanded_start, expanded_end = start, end
-        if kind in {_SPAN_KIND_REASONING, _SPAN_KIND_FINAL_ANSWER, _SPAN_KIND_TOOL_CALL}:
+        if kind in {_SPAN_KIND_REASONING, _SPAN_KIND_FINAL_ANSWER}:
             expanded = _expand_supervised_spans(
                 text,
                 [(start, end)],
@@ -1090,11 +1111,15 @@ def _expand_typed_spans(
                         (start, end),
                         _reasoning_spans(text),
                     )
-                elif kind == _SPAN_KIND_TOOL_CALL:
-                    expanded_start, expanded_end = _expand_span_to_containing_span(
-                        (start, end),
-                        _tool_call_spans(text),
-                    )
+        elif kind == _SPAN_KIND_TOOL_CALL:
+            expanded_start, expanded_end = _expand_span_to_containing_span(
+                (start, end),
+                _tool_call_spans(text),
+            )
+            expanded_start, expanded_end = _extend_span_to_following_assistant_end(
+                text,
+                (expanded_start, expanded_end),
+            )
         elif kind == _SPAN_KIND_TOOL_RESPONSE:
             expanded_start, expanded_end = _expand_span_to_containing_span((start, end), _tool_response_spans(text))
         updated = dict(span)
@@ -2306,10 +2331,25 @@ def _build_preview(text_tokenizer: Any, input_ids: list[int], labels: list[int])
         elif not is_masked and masked:
             parts.append("\033[0m")
             masked = False
-        parts.append(_decode_token(text_tokenizer, token_id))
+        parts.append(_escape_preview_control_sequences(_decode_token(text_tokenizer, token_id)))
     if masked:
         parts.append("\033[0m")
     return "".join(parts)
+
+
+def _escape_preview_control_sequences(text: str) -> str:
+    escaped: list[str] = []
+    for character in text:
+        codepoint = ord(character)
+        if character in {"\n", "\t"}:
+            escaped.append(character)
+        elif character == "\x1b":
+            escaped.append("\\x1b")
+        elif codepoint < 32 or codepoint == 127 or 0x80 <= codepoint <= 0x9F:
+            escaped.append(f"\\x{codepoint:02x}")
+        else:
+            escaped.append(character)
+    return "".join(escaped)
 
 
 def _attach_preview(training_data: Dataset, text_tokenizer: Any) -> Dataset:
