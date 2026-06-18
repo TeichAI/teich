@@ -67,7 +67,7 @@ def _dataset_tools(trace_files: Iterable[Path]) -> list[dict[str, Any]]:
     merged_by_name: dict[str, dict[str, Any]] = {}
     for trace_file in trace_files:
         try:
-            examples = convert_traces_to_training_data(trace_file)
+            examples = convert_traces_to_training_data(trace_file, skip_invalid_lines=True)
         except (OSError, json.JSONDecodeError, ValueError):
             continue
         for example in examples:

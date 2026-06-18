@@ -746,21 +746,6 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
   border-radius: 9px; padding: 12px; color: var(--text-dim);
   font-family: var(--mono); font-size: 11.5px;
 }
-.dataset-traces { display: flex; flex-direction: column; gap: 10px; }
-.trace-preview-block {
-  border: 1px solid var(--border-soft);
-  border-radius: 10px; overflow: hidden;
-}
-.trace-preview-block summary {
-  cursor: pointer; padding: 9px 12px; display: flex; align-items: center; gap: 8px;
-  list-style: none; user-select: none;
-}
-.trace-preview-block summary::-webkit-details-marker { display: none; }
-.trace-preview-body {
-  border-top: 1px solid var(--border-soft);
-  padding: 12px; display: flex; flex-direction: column; gap: 10px;
-}
-
 .modal-backdrop {
   position: fixed;
   inset: 0;

@@ -9,6 +9,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
+from .tool_schema import (
+    CODEX_BUILTIN_TOOLS,
+    CURSOR_BUILTIN_TOOLS,
+    HERMES_BUILTIN_TOOLS,
+    OPENCLAW_BUILTIN_TOOLS,
+    PI_BUILTIN_TOOLS,
+)
 
 _INLINE_THINKING_BLOCK_PATTERN = re.compile(r"<(think|thinking)>(.*?)</\1>", re.DOTALL)
 FIRST_MESSAGE_TIMESTAMP_METADATA_KEY = "first_message_timestamp"
@@ -1567,6 +1574,13 @@ def _build_tool_entry(name: str, schema: dict[str, Any] | None = None) -> dict[s
     return {"type": "function", "function": function}
 
 
+def _tool_entries_from_schema_map(
+    schemas: dict[str, dict[str, Any]],
+    names: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    return [_build_tool_entry(name, deepcopy(schemas.get(name) or {})) for name in sorted(names or set(schemas))]
+
+
 def _tool_entry_name(tool: dict[str, Any]) -> str | None:
     function = tool.get("function") if isinstance(tool, dict) else None
     name = function.get("name") if isinstance(function, dict) else None
@@ -1624,6 +1638,57 @@ def _add_explicit_tools(
             tool_schemas[name] = {**tool_schemas.get(name, {}), **schema}
 
 
+def _normalize_trace_type_name(trace_type: Any) -> str:
+    return trace_type.strip().lower().replace("-", "_") if isinstance(trace_type, str) else ""
+
+
+def _builtin_tools_for_trace_type(trace_type: Any) -> list[dict[str, Any]]:
+    normalized = _normalize_trace_type_name(trace_type)
+    if normalized == "codex":
+        return CODEX_BUILTIN_TOOLS
+    if normalized == "cursor":
+        return CURSOR_BUILTIN_TOOLS
+    if normalized == "droid":
+        return _tool_entries_from_schema_map(_DROID_BUILTIN_TOOL_SCHEMAS)
+    if normalized == "claude_code":
+        return _tool_entries_from_schema_map(_CLAUDE_CODE_BUILTIN_TOOL_SCHEMAS, _CLAUDE_CODE_DEFAULT_TOOL_NAMES)
+    if normalized in {"hermes", "hermes_agent"}:
+        return HERMES_BUILTIN_TOOLS
+    if normalized == "pi":
+        return PI_BUILTIN_TOOLS
+    if normalized == "openclaw":
+        return OPENCLAW_BUILTIN_TOOLS
+    return []
+
+
+def _add_builtin_tools_for_trace_type(
+    trace_type: Any,
+    _explicit_tools: dict[str, dict[str, Any]],
+    tool_names: set[str],
+    tool_schemas: dict[str, dict[str, Any]],
+) -> None:
+    for tool in _builtin_tools_for_trace_type(trace_type):
+        name = _tool_entry_name(tool)
+        if name is None:
+            continue
+        tool_names.add(name)
+        schema = _tool_entry_schema(tool)
+        if schema:
+            tool_schemas[name] = {**schema, **tool_schemas.get(name, {})}
+
+
+def _merge_tools_with_builtin_trace_tools(raw_tools: Any, trace_type: Any) -> list[dict[str, Any]]:
+    row_tools = raw_tools if isinstance(raw_tools, list) else []
+    if not _builtin_tools_for_trace_type(trace_type):
+        return row_tools
+    explicit_tools: dict[str, dict[str, Any]] = {}
+    tool_names: set[str] = set()
+    tool_schemas: dict[str, dict[str, Any]] = {}
+    _add_builtin_tools_for_trace_type(trace_type, explicit_tools, tool_names, tool_schemas)
+    _add_explicit_tools(row_tools, explicit_tools, tool_names, tool_schemas)
+    return _build_tools_from_snapshots_and_calls(tool_names, tool_schemas, {}, explicit_tools)
+
+
 def _build_tools_from_snapshots_and_calls(
     tool_names: set[str],
     tool_schemas: dict[str, dict[str, Any]],
@@ -1635,12 +1700,10 @@ def _build_tools_from_snapshots_and_calls(
     explicit_tools = explicit_tools or {}
     tool_descriptions = tool_descriptions or {}
     for name in sorted(tool_names):
-        schema = (
-            _tool_entry_schema(explicit_tools[name])
-            if name in explicit_tools
-            else deepcopy(tool_schemas.get(name) or {})
-        )
-        if name in tool_descriptions and "description" not in schema:
+        fallback_schema = deepcopy(tool_schemas.get(name) or {})
+        explicit_schema = _tool_entry_schema(explicit_tools[name]) if name in explicit_tools else {}
+        schema = {**fallback_schema, **explicit_schema}
+        if name in tool_descriptions and "description" not in explicit_schema:
             schema["description"] = tool_descriptions[name]
         if "parameters" not in schema:
             schema["parameters"] = _infer_tool_parameters_schema(tool_argument_samples.get(name, []))
@@ -1703,12 +1766,16 @@ def _detect_trace_type(events: list[Any], default: TraceType | None = "codex") -
     first_event = next((event for event in events if isinstance(event, dict)), None)
     if _is_openclaw_session_header(first_event):
         return "openclaw"
+    if any(_is_openclaw_session_header(event) for event in events):
+        return "openclaw"
 
     for event in events:
         if _is_hermes_conversation(event):
             return "hermes"
         if not isinstance(event, dict):
             continue
+        if _is_openclaw_session_header(event):
+            return "openclaw"
         if _is_hermes_trace_row(event):
             return "hermes"
         if _is_cursor_trace_row(event):
@@ -2640,6 +2707,7 @@ def _convert_hermes_trace_to_training_example(
     session_meta: dict[str, Any] = {}
     prompt = ""
     message_events = events
+    _add_builtin_tools_for_trace_type("hermes", explicit_tools, tool_names, tool_schemas)
     sidecar_meta = _load_hermes_metadata_sidecar(trace_file)
     if sidecar_meta:
         session_meta = sidecar_meta
@@ -3048,14 +3116,24 @@ def _convert_external_agent_trace_to_training_example(
     )
 
 
-def load_trace_file(trace_file: Path) -> list[dict[str, Any]]:
-    events: list[dict[str, Any]] = []
+def load_trace_file(trace_file: Path) -> list[Any]:
+    return _load_trace_file(trace_file)
+
+
+def _load_trace_file(trace_file: Path, *, skip_invalid_lines: bool = False) -> list[Any]:
+    events: list[Any] = []
     with trace_file.open("r", encoding="utf-8") as handle:
         for raw_line in handle:
             line = raw_line.strip()
             if not line:
                 continue
-            events.append(json.loads(line))
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                if skip_invalid_lines:
+                    continue
+                raise
+            events.append(value)
     return events
 
 
@@ -3077,6 +3155,7 @@ def _convert_codex_trace_to_training_example(
     turn_contexts: list[dict[str, Any]] = []
     system_prompt: str | None = None
     prompt = ""
+    _add_builtin_tools_for_trace_type("codex", explicit_tools, tool_names, tool_schemas)
 
     for event in events:
         if not isinstance(event, dict):
@@ -3292,6 +3371,7 @@ def _convert_pi_trace_to_training_example(
     prompt = ""
     invalid_tool_call_ids: set[str] = set()
     include_teich_pi_metadata = trace_type == "pi"
+    _add_builtin_tools_for_trace_type(trace_type, explicit_tools, tool_names, tool_schemas)
     first_message_timestamp = _first_message_timestamp_from_events(
         events,
         lambda event: event.get("type") == "message" and _is_nested_user_message(event),
@@ -3333,10 +3413,10 @@ def _convert_pi_trace_to_training_example(
         if event_type == "custom":
             if include_teich_pi_metadata:
                 teich_system_prompt = teich_system_prompt or _pi_teich_system_prompt_from_event(event)
-                if event.get("customType") == TEICH_AVAILABLE_TOOLS_CUSTOM_TYPE:
-                    data = event.get("data")
-                    if isinstance(data, dict):
-                        _add_explicit_tools(data.get("tools"), explicit_tools, tool_names, tool_schemas)
+            if event.get("customType") == TEICH_AVAILABLE_TOOLS_CUSTOM_TYPE:
+                data = event.get("data")
+                if isinstance(data, dict):
+                    _add_explicit_tools(data.get("tools"), explicit_tools, tool_names, tool_schemas)
             continue
         if event_type != "message":
             continue
@@ -3563,7 +3643,7 @@ def _structured_training_example_from_row(
             assistant_message["reasoning_content"] = thinking.strip()
         if assistant_message["content"] or "reasoning_content" in assistant_message:
             messages.append(assistant_message)
-    tools = row.get("tools") if isinstance(row.get("tools"), list) else []
+    raw_tools = row.get("tools") if isinstance(row.get("tools"), list) else []
     prompt = row.get("prompt") if isinstance(row.get("prompt"), str) else _prompt_from_messages(messages)
     metadata = dict(row.get("metadata")) if isinstance(row.get("metadata"), dict) else {}
     if isinstance(row.get("model"), str) and row.get("model"):
@@ -3574,8 +3654,9 @@ def _structured_training_example_from_row(
     metadata.setdefault("source_line", row_index)
     metadata.setdefault(
         "trace_type",
-        "chat" if any(key in row for key in ("system", "thinking", "response", "model")) and not tools else "structured",
+        "chat" if any(key in row for key in ("system", "thinking", "response", "model")) and not raw_tools else "structured",
     )
+    tools = _merge_tools_with_builtin_trace_tools(raw_tools, metadata.get("trace_type"))
     if first_message_timestamp:
         metadata.setdefault(FIRST_MESSAGE_TIMESTAMP_METADATA_KEY, first_message_timestamp)
     return TrainingExample(
@@ -3621,8 +3702,8 @@ def _jsonl_files(source: Path) -> list[Path]:
     )
 
 
-def _convert_jsonl_file_to_training_rows(jsonl_file: Path) -> list[dict[str, Any]]:
-    rows = load_trace_file(jsonl_file)
+def _convert_jsonl_file_to_training_rows(jsonl_file: Path, *, skip_invalid_lines: bool = False) -> list[dict[str, Any]]:
+    rows = _load_trace_file(jsonl_file, skip_invalid_lines=skip_invalid_lines)
     if not rows:
         return []
     if all(_is_structured_training_row(row) for row in rows):
@@ -3656,10 +3737,10 @@ def _convert_jsonl_file_to_training_rows(jsonl_file: Path) -> list[dict[str, Any
     return [_convert_codex_trace_to_training_example(jsonl_file, rows).to_dict()]
 
 
-def convert_traces_to_training_data(traces_dir: Path | str) -> list[dict[str, Any]]:
+def convert_traces_to_training_data(traces_dir: Path | str, *, skip_invalid_lines: bool = False) -> list[dict[str, Any]]:
     source = Path(traces_dir) if not isinstance(traces_dir, Path) else traces_dir
     trace_files = _jsonl_files(source)
     rows: list[dict[str, Any]] = []
     for path in trace_files:
-        rows.extend(_convert_jsonl_file_to_training_rows(path))
+        rows.extend(_convert_jsonl_file_to_training_rows(path, skip_invalid_lines=skip_invalid_lines))
     return rows

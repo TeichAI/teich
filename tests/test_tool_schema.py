@@ -65,6 +65,23 @@ def test_snapshot_configured_tools_uses_pi_builtins():
     assert "edit" in names
 
 
+def test_snapshot_configured_tools_uses_openclaw_builtins():
+    config = Config(agent={"provider": "openclaw"})
+
+    tools = snapshot_configured_tools(config)
+
+    names = [tool["function"]["name"] for tool in tools]
+    assert "bash" not in names
+    assert "read" in names
+    assert "write" in names
+    assert "edit" in names
+    assert "exec" in names
+    assert "process" in names
+    assert "message" in names
+    assert "sessions_spawn" in names
+    assert "web_search" in names
+
+
 def test_snapshot_configured_tools_uses_cursor_builtins():
     config = Config(agent={"provider": "cursor"})
 

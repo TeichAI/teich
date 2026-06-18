@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 from typer.testing import CliRunner
 
 from teich.converter import convert_traces_to_training_data
+from teich.extract import default_session_sources
 from teich.cli import app
 
 runner = CliRunner()
@@ -318,6 +319,33 @@ def test_extract_help_covers_providers_options_defaults_and_examples():
         assert ".pi" in output
         assert ".hermes" in output
         assert "Cursor" in output
+
+
+def test_cursor_default_sources_follow_current_runtime_not_windows_env(tmp_path: Path, monkeypatch):
+    home = tmp_path / "home"
+    linux_db = home / ".config" / "Cursor" / "User" / "globalStorage" / "state.vscdb"
+    linux_db.parent.mkdir(parents=True)
+    linux_db.write_text("", encoding="utf-8")
+
+    windows_profile = tmp_path / "WindowsUser"
+    windows_roaming = windows_profile / "AppData" / "Roaming"
+    windows_db = windows_roaming / "Cursor" / "User" / "globalStorage" / "state.vscdb"
+    windows_db.parent.mkdir(parents=True)
+    windows_db.write_text("", encoding="utf-8")
+    monkeypatch.setenv("APPDATA", str(windows_roaming))
+    monkeypatch.setenv("USERPROFILE", str(windows_profile))
+
+    with patch("teich.extract._running_in_wsl", return_value=True):
+        wsl_sources = default_session_sources("cursor", home=home)
+
+    assert linux_db in wsl_sources
+    assert windows_db not in wsl_sources
+
+    with patch("teich.extract._running_in_wsl", return_value=False):
+        native_sources = default_session_sources("cursor", home=home)
+
+    assert linux_db in native_sources
+    assert windows_db in native_sources
 
 
 def test_extract_codex_from_explicit_sessions_dir(tmp_path: Path):
@@ -1061,6 +1089,28 @@ def test_anonymize_replaces_emails_keys_and_home_usernames_consistently(tmp_path
     assert "email=2" in result.output
     assert "username=7" in result.output
     assert "api_key=1" in result.output
+
+
+def test_anonymize_jsonl_preserves_valid_json_after_escaped_path_replacements(tmp_path: Path):
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    original_key = "sk-abcdefghijklmnopqrstuvwxyz1234567890"
+    row = {
+        "path": r"C:\Users\alice\Documents\repo",
+        "message": f"Email alice@example.com and use {original_key}",
+    }
+    (input_dir / "trace.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
+    output_dir = tmp_path / "anonymized"
+
+    result = runner.invoke(app, ["anonymize", str(input_dir), "--output", str(output_dir)])
+
+    assert result.exit_code == 0
+    text = (output_dir / "trace.jsonl").read_text(encoding="utf-8")
+    parsed = json.loads(text)
+    assert "alice" not in text
+    assert parsed["path"].startswith(r"C:\Users\user")
+    assert "example.com" in parsed["message"]
+    assert original_key not in parsed["message"]
 
 
 def test_anonymize_generalizes_to_synthetic_secret_and_reference_matrix(tmp_path: Path):

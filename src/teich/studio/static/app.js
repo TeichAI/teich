@@ -1217,9 +1217,9 @@ function featureColumns(preview) {
   return columns;
 }
 
-function summarizeDatasetCell(value, column) {
-  if (column === "messages" && Array.isArray(value)) return `${value.length} messages`;
-  if (column === "tools" && Array.isArray(value)) return `${value.length} tools`;
+function summarizeDatasetCell(value, column, preview = {}) {
+  if (column === "messages" && Array.isArray(value)) return `${preview.message_count || 0} messages`;
+  if (column === "tools" && Array.isArray(value)) return `${preview.tool_count || 0} tools`;
   if (Array.isArray(value)) return `${value.length} items`;
   if (value && typeof value === "object") return truncateText(Object.keys(value).join(", "), 80);
   return truncateText(value == null ? "" : value, 110);
@@ -1305,7 +1305,7 @@ function renderDatasetTable(preview) {
     tr.appendChild(el("td", "mono idx-col", String(rowInfo.row_idx)));
     for (const column of columns) {
       const cell = el("td");
-      cell.appendChild(el("span", "dataset-cell", summarizeDatasetCell(rowInfo.row[column], column)));
+      cell.appendChild(el("span", "dataset-cell", summarizeDatasetCell(rowInfo.row[column], column, rowInfo.preview || {})));
       tr.appendChild(cell);
     }
     const actions = el("td", "dataset-row-actions");
@@ -1965,35 +1965,6 @@ function openHfUploadModal() {
   repoInput.focus();
 }
 
-function renderDatasetTraces(preview) {
-  const wrap = $("#dataset-traces");
-  wrap.innerHTML = "";
-  const head = el("div", "preview-head");
-  head.appendChild(el("span", "badge", "Trace previews"));
-  head.appendChild(el("span", "muted", `${preview.trace_previews.length} shown`));
-  wrap.appendChild(head);
-  if (!preview.trace_previews.length) {
-    wrap.appendChild(el("div", "msg status-line", "No trace previews available."));
-    return;
-  }
-  for (const trace of preview.trace_previews) {
-    const details = el("details", "trace-preview-block");
-    const summary = el("summary");
-    summary.appendChild(el("span", "mono", trace.name));
-    summary.appendChild(el("span", "badge", trace.provider));
-    summary.appendChild(el("span", "muted", `${trace.event_count} events`));
-    details.appendChild(summary);
-    const body = el("div", "trace-preview-body");
-    for (const eventData of trace.display || []) {
-      const node = renderDisplayEvent(eventData);
-      if (node) body.appendChild(node);
-    }
-    if (trace.truncated) body.appendChild(el("div", "msg status-line", "… preview truncated"));
-    details.appendChild(body);
-    wrap.appendChild(details);
-  }
-}
-
 async function loadDatasetPreview(options = {}) {
   const path = $("#dataset-path").value.trim();
   const search = $("#dataset-search").value.trim();
@@ -2006,12 +1977,10 @@ async function loadDatasetPreview(options = {}) {
     state.selectedDatasetRow = options.selectRow ?? null;
     renderDatasetSummary(preview);
     renderDatasetTable(preview);
-    renderDatasetTraces(preview);
   } catch (err) {
     toast(err.message, "error");
     $("#dataset-table").innerHTML = "";
     $("#dataset-detail").innerHTML = "";
-    $("#dataset-traces").innerHTML = "";
   }
 }
 

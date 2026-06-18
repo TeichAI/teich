@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 import hashlib
+import json
 import re
 import shutil
 import string
@@ -119,7 +120,22 @@ def _anonymize_jsonl_text(source: Path, anonymizer: "TraceAnonymizer") -> str:
     try:
         with source.open("r", encoding="utf-8") as handle:
             for raw_line in handle:
-                rows.append(anonymizer.anonymize_text(raw_line))
+                stripped = raw_line.strip()
+                if not stripped:
+                    rows.append(raw_line)
+                    continue
+                try:
+                    value = json.loads(raw_line)
+                except json.JSONDecodeError:
+                    rows.append(anonymizer.anonymize_text(raw_line))
+                    continue
+                anonymized = anonymizer.anonymize_value(value)
+                if anonymized == value:
+                    rows.append(raw_line)
+                    continue
+                line = json.dumps(anonymized, ensure_ascii=False, separators=(",", ":"))
+                line = line.replace("\u0085", "\\u0085").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
+                rows.append(line + "\n")
     except (OSError, UnicodeDecodeError):
         return anonymizer.anonymize_text(source.read_text(encoding="utf-8", errors="replace"))
     return "".join(rows)

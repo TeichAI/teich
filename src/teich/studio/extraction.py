@@ -59,6 +59,7 @@ class ExtractionJob:
         self.started_at = datetime.now(timezone.utc)
         self.finished_at: datetime | None = None
         self.result_files: list[str] = []
+        self.result_rows = 0
         self.detected_sources: list[str] = []
         self.anonymize_totals: dict[str, int] | None = None
         self._lock = threading.RLock()
@@ -74,6 +75,7 @@ class ExtractionJob:
                 event["text"] = message
             if status in {"completed", "failed"}:
                 event["result_files"] = self.result_files
+                event["result_rows"] = self.result_rows
                 event["sources"] = self.detected_sources
                 event["anonymize_totals"] = self.anonymize_totals
                 if self.error:
@@ -92,6 +94,7 @@ class ExtractionJob:
             )
             self.detected_sources = [str(path) for path in result.source_paths]
             self.result_files = [path.name for path in result.copied_files]
+            self.result_rows = _jsonl_row_count(result.copied_files)
             if not result.source_paths:
                 raise RuntimeError(
                     f"No local {self.provider} session folders found. "
@@ -106,8 +109,9 @@ class ExtractionJob:
             self.events.append(
                 {
                     "kind": "extract_files",
-                    "text": f"Copied {result.count} trace file(s).",
+                    "text": f"Copied {result.count} trace file(s) containing {self.result_rows} row(s).",
                     "files": self.result_files,
+                    "rows": self.result_rows,
                     "sources": self.detected_sources,
                 }
             )
@@ -135,7 +139,10 @@ class ExtractionJob:
                     }
                 )
             self._write_readme()
-            self._emit_status("completed", f"Extracted {len(self.result_files)} trace file(s).")
+            self._emit_status(
+                "completed",
+                f"Extracted {self.result_rows} trace row(s) across {len(self.result_files)} file(s).",
+            )
         except Exception as exc:
             self.error = str(exc)
             self._emit_status("failed", self.error)
@@ -168,6 +175,7 @@ class ExtractionJob:
                 "started_at": self.started_at.isoformat(),
                 "finished_at": self.finished_at.isoformat() if self.finished_at else None,
                 "result_files": self.result_files,
+                "result_rows": self.result_rows,
                 "anonymize_totals": self.anonymize_totals,
             }
 
@@ -217,3 +225,14 @@ class ExtractionManager:
 
     def shutdown(self) -> None:
         pass
+
+
+def _jsonl_row_count(paths: list[Path]) -> int:
+    count = 0
+    for path in paths:
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                count += sum(1 for line in handle if line.strip())
+        except OSError:
+            continue
+    return count

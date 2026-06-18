@@ -8,12 +8,9 @@ from typing import Any
 
 from ..converter import convert_traces_to_training_data
 from ..loader import trace_is_complete
-from .events import summarize_chat_row, summarize_trace_events
 
 MAX_README_CHARS = 24_000
-MAX_TRACE_FILES = 8
 MAX_TRACE_EVENTS = 5_000
-MAX_TRACE_DISPLAY = 80
 
 
 def _write_jsonl_rows(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -84,17 +81,31 @@ def _stringify_for_search(row: dict[str, Any]) -> str:
 
 def _row_preview(row: dict[str, Any]) -> dict[str, Any]:
     messages = row.get("messages") if isinstance(row.get("messages"), list) else []
-    tools = row.get("tools") if isinstance(row.get("tools"), list) else []
     metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
     return {
         "prompt": row.get("prompt") or _first_message_text(messages, "user"),
         "response": row.get("response") or _last_message_text(messages, "assistant"),
         "model": row.get("model") or metadata.get("model"),
-        "message_count": len(messages),
-        "tool_count": len(tools),
+        "message_count": _user_message_count(messages),
+        "tool_count": _tool_call_count(messages),
         "trace_type": metadata.get("trace_type"),
         "complete": trace_is_complete(row),
     }
+
+
+def _user_message_count(messages: list[Any]) -> int:
+    return sum(1 for message in messages if isinstance(message, dict) and message.get("role") == "user")
+
+
+def _tool_call_count(messages: list[Any]) -> int:
+    count = 0
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") not in {"assistant", "model"}:
+            continue
+        tool_calls = message.get("tool_calls")
+        if isinstance(tool_calls, list):
+            count += sum(1 for tool_call in tool_calls if isinstance(tool_call, dict))
+    return count
 
 
 def _first_message_text(messages: list[Any], role: str) -> str | None:
@@ -136,47 +147,19 @@ def _column_statistics(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return stats
 
 
-def _detect_trace_provider(events: list[dict[str, Any]]) -> str:
-    for event in events[:5]:
-        event_type = event.get("type")
-        if event_type == "session_meta":
-            return "codex"
-        if event_type == "session":
-            return "pi"
-        if event_type == "external_session_meta":
-            return "hermes"
-        if event_type in {"response_item", "event_msg"}:
-            return "codex"
-        if event_type == "message" and isinstance(event.get("message"), dict):
-            return "pi"
-        if "sessionId" in event or event_type == "queue-operation":
-            return "claude-code"
-        metadata = event.get("metadata")
-        if isinstance(metadata, dict) and isinstance(metadata.get("trace_type"), str):
-            return metadata["trace_type"]
-        if (
-            isinstance(event.get("messages"), list)
-            and event.get("source") == "cli"
-            and ("hermes_source" in event or "parent_session_id" in event or "started_at" in event)
-        ):
-            return "hermes"
-        if isinstance(event.get("messages"), list):
-            return "chat"
-    return "unknown"
-
-
 def _read_trace_events(path: Path) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     try:
         with path.open("r", encoding="utf-8-sig") as handle:
-            for line in handle:
+            for line_number, line in enumerate(handle, start=1):
                 line = line.strip()
                 if not line:
                     continue
                 try:
                     event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
+                except json.JSONDecodeError as exc:
+                    message = f"Cannot edit malformed JSONL file {path.name} at line {line_number}: {exc}"
+                    raise ValueError(message) from exc
                 if isinstance(event, dict):
                     events.append(event)
                 if len(events) >= MAX_TRACE_EVENTS:
@@ -259,7 +242,7 @@ def _dataset_rows(root: Path) -> tuple[Path, list[dict[str, Any]]]:
     root = root.expanduser().resolve()
     if not root.exists():
         raise FileNotFoundError(f"Dataset output path not found: {root}")
-    return root, convert_traces_to_training_data(root)
+    return root, convert_traces_to_training_data(root, skip_invalid_lines=True)
 
 
 def dataset_row_context(root: Path, row_idx: int) -> dict[str, Any]:
@@ -351,28 +334,6 @@ def delete_dataset_row(root: Path, row_idx: int) -> dict[str, Any]:
     return {"row_idx": row_idx, "source_file": source_file, "mode": mode}
 
 
-def _trace_preview(root: Path, path: Path) -> dict[str, Any]:
-    events = _read_trace_events(path)
-    provider = _detect_trace_provider(events)
-    if provider == "chat":
-        display: list[dict[str, Any]] = []
-        for row in events:
-            display.extend(summarize_chat_row(row))
-    else:
-        display = summarize_trace_events(provider, events)
-    try:
-        name = path.relative_to(root).as_posix()
-    except ValueError:
-        name = path.name
-    return {
-        "name": name,
-        "provider": provider,
-        "event_count": len(events),
-        "display": display[:MAX_TRACE_DISPLAY],
-        "truncated": len(display) > MAX_TRACE_DISPLAY,
-    }
-
-
 def _readme_text(root: Path) -> str | None:
     readme = root / "README.md" if root.is_dir() else root.parent / "README.md"
     if not readme.exists():
@@ -410,7 +371,7 @@ def build_dataset_preview(
 
     errors: list[str] = []
     try:
-        rows = convert_traces_to_training_data(root)
+        rows = convert_traces_to_training_data(root, skip_invalid_lines=True)
     except Exception as exc:
         rows = []
         errors.append(str(exc))
@@ -448,7 +409,6 @@ def build_dataset_preview(
             "incomplete_rows": max(len(selected_rows) - complete_rows, 0),
         },
         "statistics": _column_statistics(selected_rows),
-        "trace_previews": [_trace_preview(root, path) for path in trace_files[:MAX_TRACE_FILES]],
         "errors": errors,
         "notes": [
             "Local preview uses Teich conversion directly. Hugging Face's hosted viewer adds Parquet-backed search, filtering, and SQL after upload."

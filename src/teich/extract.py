@@ -180,6 +180,16 @@ def _jsonl_files(source: Path) -> list[Path]:
     return sorted(path for path in source.rglob("*.jsonl") if path.is_file())
 
 
+def _running_in_wsl() -> bool:
+    if os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP"):
+        return True
+    try:
+        kernel_release = Path("/proc/sys/kernel/osrelease").read_text(encoding="utf-8").casefold()
+    except OSError:
+        return False
+    return "microsoft" in kernel_release or "wsl" in kernel_release
+
+
 def _cursor_default_sources(home: Path) -> list[Path | None]:
     sources: list[Path | None] = [
         _env_path("CURSOR_GLOBAL_STORAGE_DB"),
@@ -197,37 +207,21 @@ def _cursor_default_sources(home: Path) -> list[Path | None]:
         )
     )
     sources.extend(_cursor_recent_workspace_state_dbs(home / ".cursor-server" / "data" / "User" / "workspaceStorage"))
-    appdata = os.environ.get("APPDATA")
-    if appdata:
-        roaming = Path(appdata).expanduser()
-        cursor_user_dir = roaming / "Cursor" / "User"
-        sources.extend(
-            [
-                cursor_user_dir / "globalStorage" / "state.vscdb",
-                *_cursor_recent_workspace_state_dbs(cursor_user_dir / "workspaceStorage"),
-            ]
-        )
-    userprofile = os.environ.get("USERPROFILE")
-    if userprofile:
-        roaming = Path(userprofile).expanduser() / "AppData" / "Roaming"
-        cursor_user_dir = roaming / "Cursor" / "User"
-        sources.extend(
-            [
-                cursor_user_dir / "globalStorage" / "state.vscdb",
-                *_cursor_recent_workspace_state_dbs(cursor_user_dir / "workspaceStorage"),
-            ]
-        )
-    if Path("/mnt/c/Users").is_dir():
-        windows_users_dir = Path("/mnt/c/Users")
-        home_cursor_user_dir = windows_users_dir / home.name / "AppData" / "Roaming" / "Cursor" / "User"
-        sources.extend(
-            [
-                home_cursor_user_dir / "globalStorage" / "state.vscdb",
-                *_cursor_recent_workspace_state_dbs(home_cursor_user_dir / "workspaceStorage"),
-            ]
-        )
-        for user_dir in sorted(path for path in windows_users_dir.iterdir() if path.is_dir()):
-            cursor_user_dir = user_dir / "AppData" / "Roaming" / "Cursor" / "User"
+    if not _running_in_wsl():
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            roaming = Path(appdata).expanduser()
+            cursor_user_dir = roaming / "Cursor" / "User"
+            sources.extend(
+                [
+                    cursor_user_dir / "globalStorage" / "state.vscdb",
+                    *_cursor_recent_workspace_state_dbs(cursor_user_dir / "workspaceStorage"),
+                ]
+            )
+        userprofile = os.environ.get("USERPROFILE")
+        if userprofile:
+            roaming = Path(userprofile).expanduser() / "AppData" / "Roaming"
+            cursor_user_dir = roaming / "Cursor" / "User"
             sources.extend(
                 [
                     cursor_user_dir / "globalStorage" / "state.vscdb",

@@ -54,7 +54,9 @@ def test_load_traces_from_local_split_directory(tmp_path: Path):
     assert row["prompt"] == "List files"
     assert row["messages"][0]["role"] == "system"
     assert row["messages"][1]["role"] == "user"
-    assert row["tools"][0]["function"]["name"] == "bash"
+    tools_by_name = {tool["function"]["name"]: tool for tool in row["tools"]}
+    assert "bash" in tools_by_name
+    assert tools_by_name["bash"]["function"]["description"] == "Execute shell commands"
 
 
 def test_load_traces_reads_nested_jsonl_files_and_skips_non_data_dirs(tmp_path: Path):

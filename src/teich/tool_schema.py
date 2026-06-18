@@ -14,6 +14,34 @@ from .config import Config, MCPConfig
 MCP_PROTOCOL_VERSION = "2025-06-18"
 
 
+def _function_tool(
+    name: str,
+    description: str,
+    properties: dict[str, Any] | None = None,
+    *,
+    required: list[str] | None = None,
+    any_of: list[dict[str, Any]] | None = None,
+    additional_properties: bool = True,
+) -> dict[str, Any]:
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "properties": properties or {},
+        "additionalProperties": additional_properties,
+    }
+    if required:
+        parameters["required"] = required
+    if any_of:
+        parameters["anyOf"] = any_of
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": parameters,
+        },
+    }
+
+
 CODEX_BUILTIN_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
@@ -223,6 +251,333 @@ PI_BUILTIN_TOOLS: list[dict[str, Any]] = [
             },
         },
     },
+]
+
+
+OPENCLAW_BUILTIN_TOOLS: list[dict[str, Any]] = [
+    _function_tool(
+        "read",
+        "Read file contents from the workspace.",
+        {
+            "path": {"type": "string"},
+            "file_path": {"type": "string"},
+            "offset": {"type": "integer"},
+            "limit": {"type": "integer"},
+            "image_quality": {"type": "string"},
+        },
+        any_of=[{"required": ["path"]}, {"required": ["file_path"]}],
+    ),
+    _function_tool(
+        "write",
+        "Create or overwrite files in the workspace.",
+        {
+            "path": {"type": "string"},
+            "file_path": {"type": "string"},
+            "content": {"type": "string"},
+        },
+        required=["content"],
+        any_of=[{"required": ["path"]}, {"required": ["file_path"]}],
+    ),
+    _function_tool(
+        "edit",
+        "Make precise edits to files in the workspace.",
+        {
+            "path": {"type": "string"},
+            "file_path": {"type": "string"},
+            "old_string": {"type": "string"},
+            "new_string": {"type": "string"},
+            "oldText": {"type": "string"},
+            "newText": {"type": "string"},
+            "edits": {"type": "array"},
+            "replace_all": {"type": "boolean"},
+        },
+    ),
+    _function_tool(
+        "grep",
+        "Search file contents for patterns.",
+        {
+            "pattern": {"type": "string"},
+            "query": {"type": "string"},
+            "path": {"type": "string"},
+            "include": {"type": "string"},
+            "glob": {"type": "string"},
+            "case_sensitive": {"type": "boolean"},
+            "context": {"type": "integer"},
+            "head_limit": {"type": "integer"},
+            "output_mode": {"type": "string"},
+        },
+        any_of=[{"required": ["pattern"]}, {"required": ["query"]}],
+    ),
+    _function_tool(
+        "find",
+        "Find files by glob pattern.",
+        {
+            "pattern": {"type": "string"},
+            "glob": {"type": "string"},
+            "path": {"type": "string"},
+            "limit": {"type": "integer"},
+        },
+        any_of=[{"required": ["pattern"]}, {"required": ["glob"]}],
+    ),
+    _function_tool(
+        "ls",
+        "List directory contents.",
+        {
+            "path": {"type": "string"},
+            "limit": {"type": "integer"},
+        },
+    ),
+    _function_tool(
+        "apply_patch",
+        "Apply a patch to one or more files using the OpenClaw apply_patch format.",
+        {"input": {"type": "string"}, "patch": {"type": "string"}},
+        any_of=[{"required": ["input"]}, {"required": ["patch"]}],
+    ),
+    _function_tool(
+        "exec",
+        "Run shell commands in the OpenClaw environment.",
+        {
+            "command": {"type": "string"},
+            "cmd": {"type": "string"},
+            "cwd": {"type": "string"},
+            "workdir": {"type": "string"},
+            "env": {"type": "object"},
+            "yieldMs": {"type": "integer"},
+            "timeout": {"type": "integer"},
+            "timeoutSec": {"type": "integer"},
+            "background": {"type": "boolean"},
+            "pty": {"type": "boolean"},
+            "host": {"type": "string"},
+            "node": {"type": "string"},
+            "security": {"type": "string"},
+            "ask": {"type": "string"},
+        },
+        any_of=[{"required": ["command"]}, {"required": ["cmd"]}],
+    ),
+    _function_tool(
+        "process",
+        "Manage background exec sessions.",
+        {
+            "action": {"type": "string"},
+            "sessionId": {"type": "string"},
+            "session_id": {"type": "string"},
+            "data": {"type": "string"},
+            "keys": {"type": "array", "items": {"type": "string"}},
+            "text": {"type": "string"},
+            "offset": {"type": "integer"},
+            "limit": {"type": "integer"},
+            "timeout": {"type": "integer"},
+            "eof": {"type": "boolean"},
+        },
+        required=["action"],
+    ),
+    _function_tool(
+        "browser",
+        "Control a web browser.",
+        {
+            "action": {"type": "string"},
+            "url": {"type": "string"},
+            "selector": {"type": "string"},
+            "text": {"type": "string"},
+            "target": {"type": "string"},
+            "profile": {"type": "string"},
+            "timeoutMs": {"type": "integer"},
+            "node": {"type": "string"},
+        },
+        required=["action"],
+    ),
+    _function_tool(
+        "canvas",
+        "Present, evaluate, or snapshot the OpenClaw Canvas.",
+        {
+            "action": {"type": "string"},
+            "url": {"type": "string"},
+            "javaScript": {"type": "string"},
+            "jsonl": {"type": "string"},
+            "jsonlPath": {"type": "string"},
+            "outputFormat": {"type": "string"},
+            "timeoutMs": {"type": "integer"},
+            "delayMs": {"type": "integer"},
+            "quality": {"type": "number"},
+            "maxWidth": {"type": "integer"},
+            "node": {"type": "string"},
+            "target": {"type": "string"},
+        },
+        required=["action"],
+    ),
+    _function_tool(
+        "nodes",
+        "List, describe, notify, capture, or run commands on paired nodes.",
+        {
+            "action": {"type": "string"},
+            "node": {"type": "string"},
+            "requestId": {"type": "string"},
+            "title": {"type": "string"},
+            "body": {"type": "string"},
+            "priority": {"type": "string"},
+            "delivery": {"type": "string"},
+            "facing": {"type": "string"},
+            "deviceId": {"type": "string"},
+            "duration": {"type": "number"},
+            "durationMs": {"type": "integer"},
+            "includeAudio": {"type": "boolean"},
+            "fps": {"type": "number"},
+            "screenIndex": {"type": "integer"},
+            "outPath": {"type": "string"},
+            "command": {"type": "string"},
+            "cwd": {"type": "string"},
+            "env": {"type": "object"},
+            "timeoutMs": {"type": "integer"},
+        },
+        required=["action"],
+    ),
+    _function_tool(
+        "cron",
+        "Manage cron jobs and wake events.",
+        {
+            "action": {"type": "string"},
+            "includeDisabled": {"type": "boolean"},
+            "job": {"type": "object"},
+            "jobId": {"type": "string"},
+            "patch": {"type": "object"},
+            "text": {"type": "string"},
+            "mode": {"type": "string"},
+        },
+        required=["action"],
+    ),
+    _function_tool(
+        "message",
+        "Send messages and channel actions.",
+        {
+            "action": {"type": "string"},
+            "to": {"type": "string"},
+            "target": {"type": "string"},
+            "message": {"type": "string"},
+            "content": {"type": "string"},
+            "text": {"type": "string"},
+            "channel": {"type": "string"},
+            "thread": {"type": "string"},
+            "attachments": {"type": "array"},
+            "buttons": {"type": "array"},
+        },
+    ),
+    _function_tool(
+        "gateway",
+        "Restart, apply config, or run updates on the OpenClaw gateway.",
+        {
+            "action": {"type": "string"},
+            "config": {"type": "object"},
+            "patch": {"type": "object"},
+            "command": {"type": "string"},
+            "timeoutMs": {"type": "integer"},
+        },
+        required=["action"],
+    ),
+    _function_tool("agents_list", "List agent ids allowed for subagent spawning."),
+    _function_tool(
+        "sessions_list",
+        "List other sessions.",
+        {
+            "kind": {"type": "string"},
+            "kinds": {"type": "array", "items": {"type": "string"}},
+            "limit": {"type": "integer"},
+            "activeMinutes": {"type": "integer"},
+            "messageLimit": {"type": "integer"},
+        },
+    ),
+    _function_tool(
+        "sessions_history",
+        "Fetch history for another session or sub-agent.",
+        {
+            "sessionKey": {"type": "string"},
+            "sessionId": {"type": "string"},
+            "limit": {"type": "integer"},
+            "includeTools": {"type": "boolean"},
+        },
+        any_of=[{"required": ["sessionKey"]}, {"required": ["sessionId"]}],
+    ),
+    _function_tool(
+        "sessions_send",
+        "Send a message to another session or sub-agent.",
+        {
+            "sessionKey": {"type": "string"},
+            "sessionId": {"type": "string"},
+            "agentId": {"type": "string"},
+            "label": {"type": "string"},
+            "message": {"type": "string"},
+            "timeoutSeconds": {"type": "number"},
+        },
+        required=["message"],
+    ),
+    _function_tool(
+        "sessions_spawn",
+        "Spawn a sub-agent session.",
+        {
+            "task": {"type": "string"},
+            "label": {"type": "string"},
+            "agentId": {"type": "string"},
+            "model": {"type": "string"},
+            "thinking": {"type": "string"},
+            "runTimeoutSeconds": {"type": "number"},
+            "timeoutSeconds": {"type": "number"},
+            "cleanup": {"type": "boolean"},
+        },
+        required=["task"],
+    ),
+    _function_tool(
+        "session_status",
+        "Show a status card for a session.",
+        {
+            "sessionKey": {"type": "string"},
+            "sessionId": {"type": "string"},
+            "model": {"type": "string"},
+        },
+    ),
+    _function_tool(
+        "web_search",
+        "Search the web.",
+        {
+            "query": {"type": "string"},
+            "count": {"type": "integer"},
+            "country": {"type": "string"},
+            "search_lang": {"type": "string"},
+            "ui_lang": {"type": "string"},
+            "freshness": {"type": "string"},
+        },
+        required=["query"],
+    ),
+    _function_tool(
+        "web_fetch",
+        "Fetch and extract readable content from a URL.",
+        {
+            "url": {"type": "string"},
+            "extractMode": {"type": "string"},
+            "maxChars": {"type": "integer"},
+        },
+        required=["url"],
+    ),
+    _function_tool(
+        "image",
+        "Analyze an image with the configured image model.",
+        {
+            "image": {"type": "string"},
+            "image_url": {"type": "string"},
+            "prompt": {"type": "string"},
+            "model": {"type": "string"},
+            "maxBytesMb": {"type": "number"},
+        },
+        any_of=[{"required": ["image"]}, {"required": ["image_url"]}],
+    ),
+    _function_tool(
+        "tts",
+        "Speak text through a configured text-to-speech channel.",
+        {
+            "text": {"type": "string"},
+            "channel": {"type": "string"},
+            "voice": {"type": "string"},
+        },
+        required=["text"],
+    ),
 ]
 
 
@@ -1252,6 +1607,8 @@ def snapshot_configured_tools(config: Config) -> list[dict[str, Any]]:
         tools.extend(CODEX_BUILTIN_TOOLS)
     elif provider == "pi":
         tools.extend(PI_BUILTIN_TOOLS)
+    elif provider == "openclaw":
+        tools.extend(OPENCLAW_BUILTIN_TOOLS)
     elif provider == "cursor":
         tools.extend(CURSOR_BUILTIN_TOOLS)
     elif provider in {"hermes", "hermes-agent", "hermes_agent"}:

@@ -392,7 +392,7 @@ def test_trace_listing_and_preview(client):
     assert escape.status_code in {400, 404}
 
 
-def test_dataset_preview_endpoint_returns_rows_features_and_trace_previews(client):
+def test_dataset_preview_endpoint_returns_rows_features(client):
     output_dir = client.project_dir / "output"
     output_dir.mkdir()
     trace = output_dir / "hermes-agent-test.jsonl"
@@ -413,20 +413,89 @@ def test_dataset_preview_endpoint_returns_rows_features_and_trace_previews(clien
     assert payload["dataset"]["num_rows"] == 1
     assert {feature["name"] for feature in payload["dataset"]["features"]} >= {"messages", "metadata"}
     assert payload["dataset"]["rows"][0]["preview"]["prompt"] == "build a preview"
-    assert payload["trace_previews"][0]["provider"] == "hermes"
+    assert "trace_previews" not in payload
     assert payload["readme"].startswith("---")
 
     filtered = client.get("/api/dataset-preview", params={"search": "missing"}).json()
     assert filtered["dataset"]["num_rows"] == 0
 
 
+def test_dataset_preview_tolerates_malformed_jsonl_and_counts_user_turns_and_tool_calls(client):
+    output_dir = client.project_dir / "output"
+    output_dir.mkdir()
+    valid_trace = output_dir / "codex-good.jsonl"
+    events = [
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "list files"}],
+            },
+        },
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "bash",
+                "call_id": "call-1",
+                "arguments": {"command": "ls"},
+            },
+        },
+        {
+            "type": "response_item",
+            "payload": {"type": "function_call_output", "call_id": "call-1", "output": "README.md"},
+        },
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "done"}],
+            },
+        },
+    ]
+    valid_trace.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
+    (output_dir / "bad.jsonl").write_text("not json\n", encoding="utf-8")
+
+    response = client.get("/api/dataset-preview")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["errors"] == []
+    assert payload["dataset"]["num_rows"] == 1
+    preview = payload["dataset"]["rows"][0]["preview"]
+    assert preview["message_count"] == 1
+    assert preview["tool_count"] == 1
+
+
 def test_dataset_upload_endpoint_generates_readme_and_uploads_with_env_token(client, monkeypatch):
     output_dir = client.project_dir / "output"
     output_dir.mkdir()
-    (output_dir / "chat.jsonl").write_text(
-        '{"messages":[{"role":"user","content":"hello"},{"role":"assistant","content":"hi"}],"prompt":"hello","response":"hi","model":"gpt-test"}\n',
-        encoding="utf-8",
-    )
+    row = {
+        "messages": [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ],
+        "prompt": "hello",
+        "response": "hi",
+        "model": "gpt-test",
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "dataset_tool",
+                    "description": "Tool recovered from the dataset row",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"value": {"type": "string"}},
+                        "required": ["value"],
+                    },
+                },
+            }
+        ],
+    }
+    (output_dir / "chat.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
     monkeypatch.setenv("HF_TOKEN", "hf-env-token")
 
     with patch("teich.studio.server.HfApi") as mock_api_cls:
@@ -444,6 +513,8 @@ def test_dataset_upload_endpoint_generates_readme_and_uploads_with_env_token(cli
     assert payload["repo_id"] == "armand0e/studio-dataset"
     readme = (output_dir / "README.md").read_text(encoding="utf-8")
     assert "dataset = load_traces('armand0e/studio-dataset')" in readme
+    assert '"name": "dataset_tool"' in readme
+    assert '"description": "Tool recovered from the dataset row"' in readme
     mock_api_cls.assert_called_once_with(token="hf-env-token")
     mock_api.create_repo.assert_called_once_with(
         repo_id="armand0e/studio-dataset",
@@ -556,6 +627,43 @@ def test_dataset_row_update_replaces_structured_jsonl_line(client):
     assert rows[1] == updated
 
 
+def test_dataset_row_edit_and_delete_refuse_malformed_backing_jsonl(client):
+    output_dir = client.project_dir / "output"
+    output_dir.mkdir()
+    trace = output_dir / "rows.jsonl"
+    original_row = {
+        "messages": [
+            {"role": "user", "content": "keep me"},
+            {"role": "assistant", "content": "kept"},
+        ],
+        "tools": [],
+    }
+    original_text = json.dumps(original_row) + "\nnot json\n"
+    trace.write_text(original_text, encoding="utf-8")
+    updated = {
+        "messages": [
+            {"role": "user", "content": "changed"},
+            {"role": "assistant", "content": "changed"},
+        ],
+        "tools": [],
+        "metadata": {"source_file": "rows.jsonl", "source_line": 1},
+    }
+
+    preview = client.get("/api/dataset-preview")
+
+    assert preview.status_code == 200
+    assert preview.json()["dataset"]["num_rows"] == 1
+
+    update_response = client.put("/api/dataset-preview/rows/0", json={"row": updated})
+    delete_response = client.delete("/api/dataset-preview/rows/0")
+
+    assert update_response.status_code == 400
+    assert "Cannot edit malformed JSONL file rows.jsonl at line 2" in update_response.json()["detail"]
+    assert delete_response.status_code == 400
+    assert "Cannot edit malformed JSONL file rows.jsonl at line 2" in delete_response.json()["detail"]
+    assert trace.read_text(encoding="utf-8") == original_text
+
+
 def _wait_for_extract_job(client) -> dict:
     delay = threading.Event()
     for _ in range(200):
@@ -598,6 +706,7 @@ def test_extract_endpoint_accepts_provider_home_and_anonymizes(client):
     job = _wait_for_extract_job(client)
     assert job["status"] == "completed"
     assert job["result_files"] == ["trace.jsonl"]
+    assert job["result_rows"] == 2
     output_trace = client.project_dir / "staged" / "trace.jsonl"
     assert output_trace.exists()
     text = output_trace.read_text(encoding="utf-8")

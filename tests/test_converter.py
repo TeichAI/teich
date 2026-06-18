@@ -86,6 +86,21 @@ def test_detect_trace_type_does_not_confuse_generic_chat_tools_for_cursor():
     assert detect_trace_type(events) is None
 
 
+def test_detect_trace_type_finds_openclaw_session_header_after_earlier_event():
+    events = [
+        {"type": "custom", "customType": "teich-system-prompt", "data": {"systemPrompt": "OpenClaw prompt"}},
+        {
+            "type": "session",
+            "version": 3,
+            "id": "openclaw-session",
+            "cwd": "/Users/calebfahlgren/.openclaw/workspace",
+        },
+        {"type": "message", "message": {"role": "user", "content": [{"type": "text", "text": "hello"}]}},
+    ]
+
+    assert detect_trace_type(events) == "openclaw"
+
+
 def test_convert_structured_cursor_rows_preserves_messages_tools_and_trace_type(tmp_path: Path):
     trace_file = tmp_path / "cursor-sessions.jsonl"
     row = {
@@ -133,7 +148,61 @@ def test_convert_structured_cursor_rows_preserves_messages_tools_and_trace_type(
     assert examples[0]["metadata"]["trace_type"] == "cursor"
     assert examples[0]["metadata"]["model"] == "claude-fable-5"
     assert examples[0]["messages"] == row["messages"]
-    assert examples[0]["tools"] == row["tools"]
+    tools_by_name = {tool["function"]["name"]: tool for tool in examples[0]["tools"]}
+    assert {"read_file", "run_terminal_cmd", "edit_file", "codebase_search"}.issubset(tools_by_name)
+    assert tools_by_name["read_file"]["function"]["parameters"]["required"] == ["path"]
+    assert tools_by_name["read_file"]["function"]["description"] == "Read file contents from the workspace."
+
+
+def test_convert_structured_provider_rows_seed_provider_builtin_tools(tmp_path: Path):
+    trace_file = tmp_path / "provider-rows.jsonl"
+    expectations = {
+        "codex": {"exec_command", "update_plan"},
+        "cursor": {"read_file", "run_terminal_cmd"},
+        "claude-code": {"Bash", "Read", "Edit"},
+        "droid": {"Read", "Execute", "TodoWrite"},
+        "hermes": {"terminal", "read_file"},
+        "pi": {"bash", "read", "write", "edit"},
+        "openclaw": {"exec", "process", "message", "sessions_spawn"},
+    }
+    rows = [
+        {
+            "messages": [
+                {"role": "user", "content": f"Run {trace_type}"},
+                {"role": "assistant", "content": "Done"},
+            ],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": f"{trace_type.replace('-', '_')}_extra",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+            "metadata": {"trace_type": trace_type},
+        }
+        for trace_type in expectations
+    ]
+    rows.append(
+        {
+            "messages": [
+                {"role": "user", "content": "Plain chat"},
+                {"role": "assistant", "content": "Done"},
+            ],
+            "metadata": {"trace_type": "chat"},
+        }
+    )
+    trace_file.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+    examples = convert_traces_to_training_data(trace_file)
+
+    examples_by_type = {example["metadata"]["trace_type"]: example for example in examples}
+    for trace_type, required_names in expectations.items():
+        names = {tool["function"]["name"] for tool in examples_by_type[trace_type]["tools"]}
+        assert required_names.issubset(names)
+        assert f"{trace_type.replace('-', '_')}_extra" in names
+    assert examples_by_type["chat"]["tools"] == []
 
 
 def test_convert_openclaw_trace_uses_distinct_type_with_shared_event_envelope(tmp_path: Path):
@@ -172,7 +241,7 @@ def test_convert_openclaw_trace_uses_distinct_type_with_shared_event_envelope(tm
                     {
                         "type": "function",
                         "function": {
-                            "name": "pi_only_tool",
+                            "name": "openclaw_extra_tool",
                             "parameters": {"type": "object", "properties": {}},
                         },
                     }
@@ -215,7 +284,9 @@ def test_convert_openclaw_trace_uses_distinct_type_with_shared_event_envelope(tm
     assert example.metadata["first_message_timestamp"] == "2026-02-16T23:40:43.795000Z"
     assert "system_prompt" not in example.metadata
     assert example.prompt == "Hi"
-    assert example.tools == []
+    tool_names = {tool["function"]["name"] for tool in example.tools}
+    assert {"read", "write", "edit", "exec", "process", "message", "sessions_spawn"}.issubset(tool_names)
+    assert "openclaw_extra_tool" in tool_names
     assert example.messages == [
         {"role": "user", "content": "Hi"},
         {
@@ -298,19 +369,8 @@ def test_convert_pi_trace_ignores_malformed_tool_calls(tmp_path: Path):
 
     example = convert_trace_to_training_example(trace_file)
 
-    assert example.tools == [
-        {
-            "type": "function",
-            "function": {
-                "name": "write",
-                "parameters": {
-                    "type": "object",
-                    "properties": {},
-                    "additionalProperties": True,
-                },
-            },
-        }
-    ]
+    tool_names = {tool["function"]["name"] for tool in example.tools}
+    assert {"bash", "read", "write", "edit"}.issubset(tool_names)
     assert all(message.get("name") != "content" for message in example.messages if message.get("role") == "tool")
     assert all(message.get("name") != "path" for message in example.messages if message.get("role") == "tool")
 
@@ -349,23 +409,10 @@ def test_convert_codex_trace_uses_tool_descriptions_from_base_instructions(tmp_p
 
     example = convert_trace_to_training_example(trace_file)
 
-    assert example.tools == [
-        {
-            "type": "function",
-            "function": {
-                "name": "bash",
-                "description": "Execute shell commands",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "command": {"type": "string"},
-                    },
-                    "required": ["command"],
-                    "additionalProperties": True,
-                },
-            },
-        }
-    ]
+    tools_by_name = {tool["function"]["name"]: tool for tool in example.tools}
+    assert {"bash", "exec_command", "apply_patch", "update_plan", "view_image"}.issubset(tools_by_name)
+    assert tools_by_name["bash"]["function"]["description"] == "Execute shell commands"
+    assert tools_by_name["bash"]["function"]["parameters"]["required"] == ["command"]
 
 
 def test_convert_pi_trace_uses_teich_eof_system_prompt_metadata(tmp_path: Path):
@@ -446,20 +493,10 @@ def test_convert_pi_trace_uses_teich_available_tools_without_tool_calls(tmp_path
     example = convert_trace_to_training_example(trace_file)
 
     assert example.messages[-1] == {"role": "assistant", "content": "Hi."}
-    assert example.tools == [
-        {
-            "type": "function",
-            "function": {
-                "name": "bash",
-                "description": "Run shell commands.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"command": {"type": "string"}},
-                    "required": ["command"],
-                },
-            },
-        }
-    ]
+    tools_by_name = {tool["function"]["name"]: tool for tool in example.tools}
+    assert {"bash", "read", "write", "edit"}.issubset(tools_by_name)
+    assert tools_by_name["bash"]["function"]["description"] == "Run shell commands."
+    assert tools_by_name["bash"]["function"]["parameters"]["required"] == ["command"]
 
 
 def test_convert_codex_trace_keeps_system_prompt_and_tools_without_tool_calls(tmp_path: Path):
@@ -530,8 +567,9 @@ def test_convert_codex_trace_keeps_system_prompt_and_tools_without_tool_calls(tm
     assert example.metadata["model"] == "google/gemini-3.1-flash-lite"
     assert example.metadata["system_prompt"] == "You are a careful coding agent."
     assert example.metadata["first_message_timestamp"] == "2026-05-13T06:03:06.000Z"
-    assert [tool["function"]["name"] for tool in example.tools] == ["exec_command"]
-    assert example.tools[0]["function"]["parameters"]["required"] == ["cmd"]
+    tools_by_name = {tool["function"]["name"]: tool for tool in example.tools}
+    assert {"bash", "exec_command", "apply_patch", "update_plan", "view_image"}.issubset(tools_by_name)
+    assert tools_by_name["exec_command"]["function"]["parameters"]["required"] == ["cmd"]
 
 
 def test_convert_codex_trace_normalizes_custom_tool_calls(tmp_path: Path):
@@ -592,20 +630,9 @@ def test_convert_codex_trace_normalizes_custom_tool_calls(tmp_path: Path):
         "name": "apply_patch",
         "content": "Success. Updated the following files:\nA app.py\n",
     }
-    assert example.tools == [
-        {
-            "type": "function",
-            "function": {
-                "name": "apply_patch",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"patch": {"type": "string"}},
-                    "required": ["patch"],
-                    "additionalProperties": True,
-                },
-            },
-        }
-    ]
+    tools_by_name = {tool["function"]["name"]: tool for tool in example.tools}
+    assert {"bash", "exec_command", "apply_patch", "update_plan", "view_image"}.issubset(tools_by_name)
+    assert tools_by_name["apply_patch"]["function"]["parameters"]["required"] == ["patch"]
 
 
 def test_convert_claude_code_stream_json_trace(tmp_path: Path):
@@ -1694,6 +1721,8 @@ def test_convert_teich_hermes_external_trace(tmp_path: Path):
     assert example.metadata["trace_type"] == "hermes"
     assert example.metadata["source"] == "hermes-agent"
     assert example.metadata["session_id"] == "hermes-session"
+    tool_names = {tool["function"]["name"] for tool in example.tools}
+    assert {"read_file", "write_file", "terminal", "patch"}.issubset(tool_names)
     assert example.metadata["first_message_timestamp"] == "2026-05-15T00:00:01.000Z"
     assert example.prompt == "Build a CLI"
     assert example.messages == [
@@ -1737,8 +1766,9 @@ def test_convert_teich_hermes_external_trace_uses_meta_tools_without_tool_calls(
 
     assert example.metadata["trace_type"] == "hermes"
     assert example.messages[-1] == {"role": "assistant", "content": "Done."}
-    assert [tool["function"]["name"] for tool in example.tools] == ["delegate_task"]
-    assert example.tools[0]["function"]["parameters"]["required"] == ["goal"]
+    tools_by_name = {tool["function"]["name"]: tool for tool in example.tools}
+    assert {"delegate_task", "read_file", "write_file", "terminal", "patch"}.issubset(tools_by_name)
+    assert tools_by_name["delegate_task"]["function"]["parameters"]["required"] == ["goal"]
 
 
 def test_convert_teich_hermes_external_trace_preserves_tool_calls_and_parent_metadata(tmp_path: Path):
@@ -1815,7 +1845,8 @@ def test_convert_teich_hermes_external_trace_preserves_tool_calls_and_parent_met
         "name": "delegate_task",
     }
     assert example.messages[3]["reasoning_content"] == "Checked output."
-    assert [tool["function"]["name"] for tool in example.tools] == ["delegate_task"]
+    tool_names = {tool["function"]["name"] for tool in example.tools}
+    assert {"delegate_task", "read_file", "write_file", "terminal", "patch"}.issubset(tool_names)
 
 
 def test_convert_hermes_native_trace_preserves_raw_messages_and_metadata(tmp_path: Path):
@@ -1902,8 +1933,9 @@ def test_convert_hermes_native_trace_preserves_raw_messages_and_metadata(tmp_pat
         "name": "delegate_task",
     }
     assert example.messages[4]["reasoning_content"] == "Checked output."
-    assert example.tools[0]["function"]["name"] == "delegate_task"
-    assert [tool["function"]["name"] for tool in example.tools] == ["delegate_task"]
+    tools_by_name = {tool["function"]["name"]: tool for tool in example.tools}
+    assert {"delegate_task", "read_file", "write_file", "terminal", "patch"}.issubset(tools_by_name)
+    assert tools_by_name["delegate_task"]["function"]["parameters"]["required"] == ["prompt"]
 
 
 def test_convert_hermes_aggregate_jsonl_returns_one_training_row_per_trace(tmp_path: Path):
@@ -2728,20 +2760,7 @@ def test_convert_pi_trace_uses_thinking_blocks_and_tool_results(tmp_path: Path):
         "name": "bash",
         "content": "README.md\nsrc",
     }
-    assert example.tools == [
-        {
-            "type": "function",
-            "function": {
-                "name": "bash",
-                "description": "Execute shell commands",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "command": {"type": "string"},
-                    },
-                    "required": ["command"],
-                    "additionalProperties": True,
-                },
-            },
-        }
-    ]
+    tool_names = {tool["function"]["name"] for tool in example.tools}
+    assert {"bash", "read", "write", "edit"}.issubset(tool_names)
+    bash_tool = next(tool for tool in example.tools if tool["function"]["name"] == "bash")
+    assert bash_tool["function"]["parameters"]["properties"]["command"] == {"type": "string"}

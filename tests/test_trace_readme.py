@@ -91,6 +91,27 @@ def test_write_traces_readme_embeds_tools_snapshot_in_readme(tmp_path: Path):
     assert '"additionalProperties": false' in readme
 
 
+def test_write_traces_readme_collects_tools_around_malformed_rows(tmp_path: Path):
+    trace_file = tmp_path / "trace.jsonl"
+    trace_file.write_text(
+        '{"type":"session_meta","payload":{"id":"session1"}}\n'
+        '{not json\n'
+        '{"type":"response_item","payload":{"type":"tool_schema","name":"bash","schema":{"description":"Run shell commands","parameters":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}}}}\n',
+        encoding="utf-8",
+    )
+
+    readme_path = write_traces_readme(
+        tmp_path,
+        pretty_name="Agentic Training Traces",
+        tags=["agent-traces"],
+        model_id="test-model",
+    )
+
+    readme = readme_path.read_text(encoding="utf-8")
+    assert "## Training-ready tools" in readme
+    assert '"name": "bash"' in readme
+
+
 def test_write_traces_readme_skips_configured_failures_dir(tmp_path: Path):
     failed_dir = tmp_path / "failed-traces"
     failed_dir.mkdir()

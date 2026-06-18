@@ -21,7 +21,6 @@ from pydantic import BaseModel, Field
 from ..config import PublishConfig
 from ..extract import ExtractProvider, default_session_sources
 from ..trace_readme import write_traces_readme
-from ..tool_schema import snapshot_configured_tools
 from .dataset_preview import build_dataset_preview, dataset_row_context, delete_dataset_row, update_dataset_row
 from .events import summarize_chat_row, summarize_trace_events
 from .extraction import ExtractionManager
@@ -829,7 +828,6 @@ def create_app(project_dir: Path) -> FastAPI:
                 tags=cfg.get_dataset_tags(),
                 model_id=cfg.model.model,
                 repo_id=publish.repo_id,
-                tools=snapshot_configured_tools(cfg),
                 excluded_dirs=[cfg.output.failures_dir],
             )
             repo_url = _upload_dataset_folder(
