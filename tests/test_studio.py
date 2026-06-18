@@ -746,11 +746,13 @@ def test_extract_endpoint_warns_cursor_may_take_a_while(client):
     source = client.project_dir / "state.vscdb"
     source.write_text("", encoding="utf-8")
 
-    def fake_extract(provider, *, output_dir, sources=None, model_filter=None, clear_destination=False):
+    def fake_extract(provider, *, output_dir, sources=None, model_filter=None, clear_destination=False, progress=None):
         assert provider == "cursor"
         assert sources == [source]
         assert model_filter is None
         assert clear_destination is True
+        assert progress is not None
+        progress({"kind": "extract_progress", "text": "Scanning Cursor database..."})
         output_dir.mkdir(parents=True, exist_ok=True)
         trace = output_dir / "cursor-sessions.jsonl"
         trace.write_text(
@@ -785,6 +787,10 @@ def test_extract_endpoint_warns_cursor_may_take_a_while(client):
     events = client.app.state.extraction.current().events.snapshot()
     assert any(
         event.get("kind") == "extract_warning" and event.get("text") == CURSOR_EXTRACTION_NOTICE
+        for event in events
+    )
+    assert any(
+        event.get("kind") == "extract_progress" and event.get("text") == "Scanning Cursor database..."
         for event in events
     )
 

@@ -14,7 +14,16 @@ async function api(method, url, body) {
     options.headers["Content-Type"] = "application/json";
     options.body = JSON.stringify(body);
   }
-  const response = await fetch(url, options);
+  let response;
+  try {
+    response = await fetch(url, options);
+  } catch (err) {
+    const target = new URL(url, window.location.href);
+    throw new Error(
+      `Cannot reach the Teich Studio backend at ${target.origin}. ` +
+      "Make sure the teich studio command is still running, then refresh this page."
+    );
+  }
   let payload = null;
   try { payload = await response.json(); } catch (e) { /* empty body */ }
   if (!response.ok) {

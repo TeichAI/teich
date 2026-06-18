@@ -9,6 +9,7 @@ import json
 import re
 import shutil
 import string
+from tempfile import NamedTemporaryFile
 from typing import Any
 
 
@@ -97,7 +98,7 @@ def _anonymize_file(source: Path, destination: Path) -> AnonymizeFileReport:
 
     anonymizer = TraceAnonymizer()
     if source.suffix.lower() == ".jsonl":
-        text = _anonymize_jsonl_text(source, anonymizer)
+        _anonymize_jsonl_file(source, destination, anonymizer)
     else:
         try:
             original = source.read_text(encoding="utf-8")
@@ -106,8 +107,8 @@ def _anonymize_file(source: Path, destination: Path) -> AnonymizeFileReport:
                 shutil.copy2(source, destination)
             return AnonymizeFileReport(path=source, output_path=destination)
         text = anonymizer.anonymize_text(original)
+        destination.write_text(text, encoding="utf-8")
 
-    destination.write_text(text, encoding="utf-8")
     return AnonymizeFileReport(
         path=source,
         output_path=destination,
@@ -115,30 +116,52 @@ def _anonymize_file(source: Path, destination: Path) -> AnonymizeFileReport:
     )
 
 
-def _anonymize_jsonl_text(source: Path, anonymizer: "TraceAnonymizer") -> str:
-    rows: list[str] = []
+def _anonymize_jsonl_file(source: Path, destination: Path, anonymizer: "TraceAnonymizer") -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: Path | None = None
     try:
-        with source.open("r", encoding="utf-8") as handle:
+        with (
+            source.open("r", encoding="utf-8") as handle,
+            NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=destination.parent,
+                prefix=f".{destination.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as temp_handle,
+        ):
+            temp_path = Path(temp_handle.name)
             for raw_line in handle:
                 stripped = raw_line.strip()
                 if not stripped:
-                    rows.append(raw_line)
+                    temp_handle.write(raw_line)
                     continue
                 try:
                     value = json.loads(raw_line)
                 except json.JSONDecodeError:
-                    rows.append(anonymizer.anonymize_text(raw_line))
+                    temp_handle.write(anonymizer.anonymize_text(raw_line))
                     continue
                 anonymized = anonymizer.anonymize_value(value)
                 if anonymized == value:
-                    rows.append(raw_line)
+                    temp_handle.write(raw_line)
                     continue
                 line = json.dumps(anonymized, ensure_ascii=False, separators=(",", ":"))
                 line = line.replace("\u0085", "\\u0085").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
-                rows.append(line + "\n")
+                temp_handle.write(line + "\n")
     except (OSError, UnicodeDecodeError):
-        return anonymizer.anonymize_text(source.read_text(encoding="utf-8", errors="replace"))
-    return "".join(rows)
+        if temp_path is not None:
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+        destination.write_text(
+            anonymizer.anonymize_text(source.read_text(encoding="utf-8", errors="replace")),
+            encoding="utf-8",
+        )
+        return
+    if temp_path is not None:
+        temp_path.replace(destination)
 
 
 class TraceAnonymizer:

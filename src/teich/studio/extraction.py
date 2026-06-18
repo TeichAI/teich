@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -87,12 +88,23 @@ class ExtractionJob:
             self._emit_status("running", f"Extracting local {self.provider} sessions...")
             if self.provider == "cursor":
                 self.events.append({"kind": "extract_warning", "text": CURSOR_EXTRACTION_NOTICE})
+            last_progress_at = 0.0
+
+            def emit_progress(event: dict[str, Any]) -> None:
+                nonlocal last_progress_at
+                now = time.monotonic()
+                if now - last_progress_at < 2.0:
+                    return
+                last_progress_at = now
+                self.events.append(event)
+
             result = extract_local_sessions(
                 self.provider,
                 output_dir=self.output_dir,
                 sources=self.source_paths or None,
                 model_filter=self.model_filter,
                 clear_destination=True,
+                progress=emit_progress,
             )
             self.detected_sources = [str(path) for path in result.source_paths]
             self.result_files = [path.name for path in result.copied_files]

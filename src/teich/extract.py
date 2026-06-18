@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -29,6 +29,8 @@ CURSOR_RECORD_TERMS = (
     "composer",
     "conversation",
 )
+CURSOR_SQLITE_TIMEOUT_SECONDS = 2.0
+ProgressCallback = Callable[[dict[str, Any]], None]
 
 
 @dataclass(frozen=True)
@@ -91,6 +93,7 @@ def extract_local_sessions(
     home: Path | None = None,
     model_filter: str | None = None,
     clear_destination: bool = False,
+    progress: ProgressCallback | None = None,
 ) -> ExtractResult:
     """Extract local sessions for provider into output_dir."""
     source_candidates = list(sources) if sources is not None else default_session_sources(provider, home)
@@ -102,7 +105,12 @@ def extract_local_sessions(
     if provider == "hermes":
         copied_files = _extract_hermes_state_dbs(resolved_sources, destination_dir, model_filter=model_filter)
     elif provider == "cursor":
-        copied_files = _extract_cursor_databases(resolved_sources, destination_dir, model_filter=model_filter)
+        copied_files = _extract_cursor_databases(
+            resolved_sources,
+            destination_dir,
+            model_filter=model_filter,
+            progress=progress,
+        )
     else:
         copied_files = _extract_jsonl_session_files(
             provider,
@@ -234,14 +242,14 @@ def _cursor_default_sources(home: Path) -> list[Path | None]:
     return sources
 
 
-def _cursor_recent_workspace_state_dbs(workspace_storage_dir: Path, *, limit: int = 10) -> list[Path]:
+def _cursor_recent_workspace_state_dbs(workspace_storage_dir: Path) -> list[Path]:
     try:
         if not workspace_storage_dir.is_dir():
             return []
         state_dbs = [path for path in workspace_storage_dir.glob("*/state.vscdb") if path.is_file()]
     except OSError:
         return []
-    return sorted(state_dbs, key=_safe_path_mtime, reverse=True)[:limit]
+    return sorted(state_dbs, key=_safe_path_mtime, reverse=True)
 
 
 def _safe_path_mtime(path: Path) -> float:
@@ -256,9 +264,16 @@ def _cursor_state_dbs(source: Path) -> list[Path]:
         return [source]
     if not source.is_dir():
         return []
-    candidates = [path for path in source.rglob("state.vscdb") if path.is_file()]
-    candidates.extend(path for path in source.rglob("*.vscdb") if path.is_file() and path not in candidates)
-    return sorted(candidates)
+    try:
+        candidates = [path for path in source.rglob("state.vscdb") if path.is_file()]
+        seen = set(candidates)
+        for path in source.rglob("*.vscdb"):
+            if path.is_file() and path not in seen:
+                seen.add(path)
+                candidates.append(path)
+    except OSError:
+        return []
+    return sorted(candidates, key=_safe_path_mtime, reverse=True)
 
 
 def _extract_cursor_databases(
@@ -266,11 +281,21 @@ def _extract_cursor_databases(
     destination_dir: Path,
     *,
     model_filter: str | None = None,
+    progress: ProgressCallback | None = None,
 ) -> list[Path]:
-    rows: list[dict[str, Any]] = []
+    indexed_rows: list[tuple[int, dict[str, Any]]] = []
+    row_index = 0
     seen: set[Path] = set()
     for source in sources:
-        for state_db in _cursor_state_dbs(source):
+        state_dbs = _cursor_state_dbs(source)
+        _emit_progress(
+            progress,
+            "extract_progress",
+            f"Found {len(state_dbs)} Cursor database(s) under {source}.",
+            source=str(source),
+            databases=len(state_dbs),
+        )
+        for state_db in state_dbs:
             try:
                 key = state_db.resolve()
             except OSError:
@@ -278,8 +303,21 @@ def _extract_cursor_databases(
             if key in seen:
                 continue
             seen.add(key)
-            rows.extend(_cursor_database_rows(state_db))
-    rows = _sanitize_cursor_rows(rows)
+            _emit_progress(progress, "extract_progress", f"Scanning Cursor database {state_db}...", source=str(state_db))
+            db_rows = _cursor_database_rows(state_db, progress=progress)
+            for row in db_rows:
+                clean_row = _sanitize_cursor_row(row)
+                if clean_row is not None:
+                    indexed_rows.append((row_index, clean_row))
+                row_index += 1
+            _emit_progress(
+                progress,
+                "extract_progress",
+                f"Scanned Cursor database {state_db}: {len(db_rows)} candidate row(s).",
+                source=str(state_db),
+                rows=len(db_rows),
+            )
+    rows = _dedupe_cursor_rows(indexed_rows)
     if model_filter:
         rows = [row for row in rows if trace_matches_model([row], model_filter)]
     if not rows:
@@ -287,6 +325,17 @@ def _extract_cursor_databases(
     destination = destination_dir / "cursor-sessions.jsonl"
     _write_jsonl_dict_events(destination, rows)
     return [destination]
+
+
+def _emit_progress(
+    progress: ProgressCallback | None,
+    kind: str,
+    text: str,
+    **fields: Any,
+) -> None:
+    if progress is None:
+        return
+    progress({"kind": kind, "text": text, **fields})
 
 
 def _extract_jsonl_session_files(
@@ -356,13 +405,13 @@ def _write_jsonl_dict_events(path: Path, events: list[dict[str, Any]]) -> None:
             handle.write(line + "\n")
 
 
-def _cursor_database_rows(state_db: Path) -> list[dict[str, Any]]:
+def _cursor_database_rows(state_db: Path, *, progress: ProgressCallback | None = None) -> list[dict[str, Any]]:
     try:
         with TemporaryDirectory(prefix="teich-cursor-") as temp_dir:
             snapshot_db = _snapshot_sqlite_db(state_db, Path(temp_dir))
-            return _cursor_database_rows_from_snapshot(snapshot_db, state_db)
+            return _cursor_database_rows_from_snapshot(snapshot_db, state_db, progress=progress)
     except OSError:
-        return _cursor_database_rows_from_snapshot(state_db, state_db)
+        return _cursor_database_rows_from_snapshot(state_db, state_db, progress=progress)
 
 
 def _snapshot_sqlite_db(state_db: Path, temp_dir: Path) -> Path:
@@ -375,13 +424,27 @@ def _snapshot_sqlite_db(state_db: Path, temp_dir: Path) -> Path:
     return snapshot_db
 
 
-def _cursor_database_rows_from_snapshot(snapshot_db: Path, source_db: Path) -> list[dict[str, Any]]:
+def _cursor_database_rows_from_snapshot(
+    snapshot_db: Path,
+    source_db: Path,
+    *,
+    progress: ProgressCallback | None = None,
+) -> list[dict[str, Any]]:
     try:
-        connection = sqlite3.connect(f"file:{snapshot_db}?mode=ro", uri=True)
+        connection = sqlite3.connect(
+            f"file:{snapshot_db}?mode=ro",
+            uri=True,
+            timeout=CURSOR_SQLITE_TIMEOUT_SECONDS,
+        )
     except sqlite3.Error:
         return []
     connection.row_factory = sqlite3.Row
     try:
+        try:
+            connection.execute("PRAGMA query_only = ON")
+            connection.execute(f"PRAGMA busy_timeout = {int(CURSOR_SQLITE_TIMEOUT_SECONDS * 1000)}")
+        except sqlite3.Error:
+            pass
         table_names = [
             str(row["name"])
             for row in connection.execute(
@@ -390,9 +453,18 @@ def _cursor_database_rows_from_snapshot(snapshot_db: Path, source_db: Path) -> l
             if isinstance(row["name"], str) and not str(row["name"]).startswith("sqlite_")
         ]
         rows: list[dict[str, Any]] = []
-        for table_name in table_names:
-            rows.extend(_cursor_table_rows(connection, source_db, table_name))
-            rows.extend(_cursor_composer_data_rows(connection, source_db, table_name))
+        for table_index, table_name in enumerate(table_names, start=1):
+            _emit_progress(
+                progress,
+                "extract_progress",
+                f"Scanning Cursor table {table_index}/{len(table_names)} in {source_db.name}: {table_name}",
+                source=str(source_db),
+                table=table_name,
+                table_index=table_index,
+                table_count=len(table_names),
+            )
+            rows.extend(_cursor_table_rows(connection, source_db, table_name, progress=progress))
+            rows.extend(_cursor_composer_data_rows(connection, source_db, table_name, progress=progress))
         return rows
     except sqlite3.Error:
         return []
@@ -404,6 +476,8 @@ def _cursor_table_rows(
     connection: sqlite3.Connection,
     state_db: Path,
     table_name: str,
+    *,
+    progress: ProgressCallback | None = None,
 ) -> list[dict[str, Any]]:
     try:
         columns = [
@@ -430,12 +504,21 @@ def _cursor_table_rows(
         query += f" WHERE {where_clause}"
         query_params = params
     try:
-        raw_rows = connection.execute(query, query_params).fetchall()
+        raw_rows = connection.execute(query, query_params)
     except sqlite3.Error:
         return []
 
     rows: list[dict[str, Any]] = []
     for row_index, raw_row in enumerate(raw_rows, start=1):
+        if row_index % 10000 == 0:
+            _emit_progress(
+                progress,
+                "extract_progress",
+                f"Scanned {row_index} row(s) in Cursor table {table_name}...",
+                source=str(state_db),
+                table=table_name,
+                scanned_rows=row_index,
+            )
         row_data = {
             column: _decode_cursor_sqlite_value(raw_row[column])
             for column in columns
@@ -476,15 +559,6 @@ def _cursor_table_rows(
             }
         )
     return rows
-
-
-def _sanitize_cursor_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    sanitized: list[tuple[int, dict[str, Any]]] = []
-    for index, row in enumerate(rows):
-        clean_row = _sanitize_cursor_row(row)
-        if clean_row is not None:
-            sanitized.append((index, clean_row))
-    return _dedupe_cursor_rows(sanitized)
 
 
 def _sanitize_cursor_row(row: dict[str, Any]) -> dict[str, Any] | None:
@@ -628,26 +702,38 @@ def _cursor_trim_messages_to_trainable_conversation(messages: list[dict[str, Any
 
 
 def _dedupe_cursor_rows(indexed_rows: list[tuple[int, dict[str, Any]]]) -> list[dict[str, Any]]:
-    kept: list[tuple[int, dict[str, Any], str, int]] = []
+    kept: list[tuple[int, dict[str, Any], tuple[str, ...], int]] = []
+    exact_sequences: set[tuple[str, ...]] = set()
+    kept_by_signature: dict[str, list[tuple[str, ...]]] = {}
     for original_index, row in sorted(indexed_rows, key=lambda item: len(item[1].get("messages") or []), reverse=True):
-        sequence = _cursor_row_sequence_signature(row)
+        sequence = _cursor_row_sequence_tuple(row)
         if not sequence:
             continue
-        if any(_cursor_sequence_contains(kept_sequence, sequence) for _, _, kept_sequence, _ in kept):
+        if sequence in exact_sequences:
             continue
+        candidates = kept_by_signature.get(sequence[0], [])
+        if any(_cursor_sequence_tuple_contains(kept_sequence, sequence) for kept_sequence in candidates):
+            continue
+        exact_sequences.add(sequence)
+        for signature in set(sequence):
+            kept_by_signature.setdefault(signature, []).append(sequence)
         kept.append((original_index, row, sequence, len(row.get("messages") or [])))
     return [row for _, row, _, _ in sorted(kept, key=lambda item: item[0])]
 
 
-def _cursor_row_sequence_signature(row: dict[str, Any]) -> str:
-    signatures = [_cursor_message_signature(message) for message in row.get("messages") or []]
-    return "|".join(signatures)
+def _cursor_row_sequence_tuple(row: dict[str, Any]) -> tuple[str, ...]:
+    return tuple(_cursor_message_signature(message) for message in row.get("messages") or [])
 
 
-def _cursor_sequence_contains(haystack: str, needle: str) -> bool:
+def _cursor_sequence_tuple_contains(haystack: tuple[str, ...], needle: tuple[str, ...]) -> bool:
     if not haystack or not needle:
         return False
-    return f"|{needle}|" in f"|{haystack}|"
+    if len(needle) > len(haystack):
+        return False
+    if haystack == needle:
+        return True
+    last_start = len(haystack) - len(needle)
+    return any(haystack[start:start + len(needle)] == needle for start in range(last_start + 1))
 
 
 def _cursor_message_signature(message: dict[str, Any]) -> str:
@@ -734,6 +820,8 @@ def _cursor_composer_data_rows(
     connection: sqlite3.Connection,
     state_db: Path,
     table_name: str,
+    *,
+    progress: ProgressCallback | None = None,
 ) -> list[dict[str, Any]]:
     key_column, value_column = _cursor_key_value_columns(connection, table_name)
     if key_column is None or value_column is None:
@@ -746,26 +834,20 @@ def _cursor_composer_data_rows(
                 f"WHERE {_sqlite_identifier(key_column)} LIKE 'composerData:%' "
                 f"ORDER BY {_sqlite_identifier(key_column)}"
             )
-        ).fetchall()
-        bubble_rows = connection.execute(
-            (
-                f"SELECT {_sqlite_identifier(key_column)}, {_sqlite_identifier(value_column)} "
-                f"FROM {_sqlite_identifier(table_name)} "
-                f"WHERE {_sqlite_identifier(key_column)} LIKE 'bubbleId:%'"
-            )
-        ).fetchall()
+        )
     except sqlite3.Error:
         return []
-    if not composer_rows:
-        return []
-    bubble_map = {
-        str(row[0]): _decode_cursor_sqlite_value(row[1])
-        for row in bubble_rows
-        if isinstance(row[0], str)
-    }
-
     rows: list[dict[str, Any]] = []
     for row_index, composer_row in enumerate(composer_rows, start=1):
+        if row_index % 1000 == 0:
+            _emit_progress(
+                progress,
+                "extract_progress",
+                f"Reconstructed {row_index} Cursor composer row(s) from {table_name}...",
+                source=str(state_db),
+                table=table_name,
+                composer_rows=row_index,
+            )
         key = str(composer_row[0])
         composer_data = _decode_cursor_sqlite_value(composer_row[1])
         if not isinstance(composer_data, dict):
@@ -774,6 +856,26 @@ def _cursor_composer_data_rows(
         headers = composer_data.get("fullConversationHeadersOnly")
         if not isinstance(headers, list) or not headers:
             continue
+        bubble_keys: list[str] = []
+        seen_bubble_keys: set[str] = set()
+        for header in headers:
+            if not isinstance(header, dict):
+                continue
+            bubble_id = header.get("bubbleId")
+            if not isinstance(bubble_id, str) or not bubble_id:
+                continue
+            bubble_key = f"bubbleId:{composer_id}:{bubble_id}"
+            if bubble_key in seen_bubble_keys:
+                continue
+            seen_bubble_keys.add(bubble_key)
+            bubble_keys.append(bubble_key)
+        bubble_map = _cursor_fetch_keyed_rows(
+            connection,
+            table_name,
+            key_column,
+            value_column,
+            bubble_keys,
+        )
         messages, used_bubbles = _cursor_messages_from_composer_headers(composer_id, headers, bubble_map)
         if not messages:
             continue
@@ -817,6 +919,36 @@ def _cursor_composer_data_rows(
                 },
             }
         )
+    return rows
+
+
+def _cursor_fetch_keyed_rows(
+    connection: sqlite3.Connection,
+    table_name: str,
+    key_column: str,
+    value_column: str,
+    keys: list[str],
+) -> dict[str, Any]:
+    if not keys:
+        return {}
+    rows: dict[str, Any] = {}
+    chunk_size = 250
+    for start in range(0, len(keys), chunk_size):
+        chunk = keys[start:start + chunk_size]
+        placeholders = ", ".join("?" for _ in chunk)
+        query = (
+            f"SELECT {_sqlite_identifier(key_column)}, {_sqlite_identifier(value_column)} "
+            f"FROM {_sqlite_identifier(table_name)} "
+            f"WHERE {_sqlite_identifier(key_column)} IN ({placeholders})"
+        )
+        try:
+            fetched = connection.execute(query, chunk).fetchall()
+        except sqlite3.Error:
+            continue
+        for row in fetched:
+            key = row[0]
+            if isinstance(key, str):
+                rows[key] = _decode_cursor_sqlite_value(row[1])
     return rows
 
 
@@ -1147,7 +1279,7 @@ def _cursor_candidate_row_filter(columns: list[str]) -> tuple[str | None, list[s
 
 def _cursor_text_column_can_identify_record(column: str) -> bool:
     normalized = re.sub(r"[^a-z0-9]+", "", column.casefold())
-    return normalized in {"key", "itemkey", "name"} or normalized.endswith("key")
+    return normalized in {"id", "key", "itemkey", "name"} or normalized.endswith("key")
 
 
 def _decode_cursor_sqlite_value(value: Any) -> Any:

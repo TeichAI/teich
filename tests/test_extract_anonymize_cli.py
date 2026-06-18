@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 from pathlib import Path
 import re
@@ -7,6 +8,7 @@ from unittest.mock import MagicMock, patch
 from typer.testing import CliRunner
 
 from teich.converter import convert_traces_to_training_data
+from teich import extract as extract_module
 from teich.extract import CURSOR_EXTRACTION_NOTICE, default_session_sources
 from teich.cli import app
 
@@ -242,6 +244,59 @@ def _write_archived_cursor_state_db(state_db: Path) -> None:
                 ),
             ),
         )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def _write_id_keyed_cursor_state_db(state_db: Path) -> None:
+    state_db.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(state_db)
+    try:
+        connection.execute("CREATE TABLE cursorState (id TEXT PRIMARY KEY, data TEXT, largeBlob TEXT)")
+        composer_id = "id-keyed-composer"
+        rows = [
+            (
+                f"composerData:{composer_id}",
+                {
+                    "composerId": composer_id,
+                    "fullConversationHeadersOnly": [
+                        {"bubbleId": "user", "type": 1},
+                        {"bubbleId": "assistant", "type": 2},
+                    ],
+                    "selectedModel": "cursor-fable-5",
+                },
+            ),
+            (
+                f"bubbleId:{composer_id}:user",
+                {
+                    "bubbleId": "user",
+                    "type": 1,
+                    "richText": _cursor_rich_text("id-keyed prompt"),
+                },
+            ),
+            (
+                f"bubbleId:{composer_id}:assistant",
+                {
+                    "bubbleId": "assistant",
+                    "type": 2,
+                    "text": "id-keyed answer",
+                },
+            ),
+            (
+                f"bubbleId:{composer_id}:unused",
+                {
+                    "bubbleId": "unused",
+                    "type": 2,
+                    "text": "unused answer",
+                },
+            ),
+        ]
+        for key, value in rows:
+            connection.execute(
+                "INSERT INTO cursorState (id, data, largeBlob) VALUES (?, ?, ?)",
+                (key, json.dumps(value), "x" * 10000),
+            )
         connection.commit()
     finally:
         connection.close()
@@ -542,6 +597,64 @@ def test_extract_cursor_reconstructs_archived_composer_data(tmp_path: Path):
         message.get("role") == "assistant" and message.get("content") == "final response"
         for message in converted[0]["messages"]
     )
+
+
+def test_extract_cursor_reconstructs_id_keyed_composer_tables(tmp_path: Path):
+    state_db = tmp_path / "workspaceStorage" / "workspace-id" / "state.vscdb"
+    _write_id_keyed_cursor_state_db(state_db)
+
+    output_dir = tmp_path / "output"
+    result = runner.invoke(
+        app,
+        [
+            "extract",
+            "cursor",
+            "--sessions-dir",
+            str(state_db),
+            "--output",
+            str(output_dir),
+            "--no-anon",
+        ],
+        input="n\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    rows = [
+        json.loads(line)
+        for line in (output_dir / "cursor-sessions.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["metadata"]["cursor_storage_kind"] == "composerData"
+    assert row["metadata"]["cursor_workspace_id"] == "workspace-id"
+    assert row["prompt"] == "id-keyed prompt"
+    assert row["response"] == "id-keyed answer"
+    assert [message["content"] for message in row["messages"]] == ["id-keyed prompt", "id-keyed answer"]
+    assert row["model"] == "cursor-fable-5"
+    assert row["raw_cursor"]["bubble_ids"] == ["user", "assistant"]
+    assert "largeBlob" not in json.dumps(row["raw_cursor"])
+    assert "unused answer" not in json.dumps(row)
+
+
+def test_cursor_state_db_directory_scan_returns_all_dbs_sorted_by_recency(tmp_path: Path):
+    workspace_storage = tmp_path / "workspaceStorage"
+    expected_newest = workspace_storage / "workspace-newest" / "state.vscdb"
+    db_count = 15
+    for index in range(db_count):
+        state_db = workspace_storage / f"workspace-{index:03d}" / "state.vscdb"
+        state_db.parent.mkdir(parents=True)
+        state_db.write_text("", encoding="utf-8")
+        os_time = 1_000_000 + index
+        os.utime(state_db, (os_time, os_time))
+    expected_newest.parent.mkdir(parents=True)
+    expected_newest.write_text("", encoding="utf-8")
+    os.utime(expected_newest, (2_000_000, 2_000_000))
+
+    found = extract_module._cursor_state_dbs(workspace_storage)
+
+    assert len(found) == db_count + 1
+    assert found[0] == expected_newest
+    assert found[-1] == workspace_storage / "workspace-000" / "state.vscdb"
 
 
 def test_extract_cursor_sanitizes_training_unsafe_archived_rows(tmp_path: Path):
