@@ -1100,7 +1100,7 @@ output:
   # Where generated .jsonl files are written.
   # - codex / pi: normalized copies of native agent session traces
   # - claude-code: native Claude Code transcript JSONL from .claude/projects/...
-  # - hermes: one native sessions.jsonl file with one row per Hermes session, including delegated subagents
+  # - hermes: native Hermes session export JSONL from generated runs, including delegated subagents
   # - chat: text-only training rows with messages/prompt/response/thinking fields
   traces_dir: ./output
 

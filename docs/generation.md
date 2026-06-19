@@ -158,7 +158,7 @@ publish:
   private: false
 ```
 
-Dataset tags are generated from provider and model:
+Generated-run dataset tags are generated from provider and model. Extraction dataset cards use the extracted provider tag and omit model tags:
 
 - `codex`, `pi`, `claude-code`, `hermes`, `cursor`: `agent-traces`, `format:agent-traces`, provider, model, `distillation`, `teich`
 - `chat`: `conversational`, model, `distillation`, `teich`
@@ -171,11 +171,11 @@ Provider outputs:
 
 - `codex` / `pi`: normalized copies of native agent session JSONL files in `output/`, workspace snapshots in `sandbox/`, and a dataset `README.md`
 - `claude-code`: native Claude Code transcript JSONL copied from `.claude/projects/...`, workspace snapshots in `sandbox/`, and a dataset `README.md`
-- `hermes`: one native `sessions.jsonl` file with one row per Hermes `state.db` session, including delegated subagent sessions linked by `parent_session_id`
-- `cursor`: structured rows in `cursor-sessions.jsonl` extracted from Cursor `state.vscdb` tables, including both chat-like and composer-like records when present
+- `hermes`: generated Hermes runs use Hermes' native session export shape; extracted Hermes `state.db` sessions are staged as one JSONL file per native single-session export row, including delegated subagent sessions linked by `parent_session_id`
+- `cursor`: extracted Cursor `state.vscdb` rows are staged as one JSONL file per recovered session row, including both chat-like and composer-like records when present
 - `chat`: text-only JSONL training rows in `output/` and a dataset `README.md`
 
-`teich extract` writes the same trace shapes to `data/` by default, but it operates on existing local session stores and anonymizes the staged output in place before the upload prompt.
+`teich extract` writes provider-native or recovered session shapes to `data/` by default, then anonymizes the staged output in place before the upload prompt.
 
 Uploaded Hugging Face dataset artifacts include:
 
@@ -236,7 +236,7 @@ Runs Hermes Agent with built-in toolsets:
 safe,terminal,file,skills,memory,session_search,delegation
 ```
 
-Teich exports Hermes `state.db` sessions into a single native `sessions.jsonl` file matching `hermes sessions export sessions.jsonl`: each JSONL row is a session with embedded `messages`. Hermes' internal `system_prompt`, enabled toolsets, and configured tools remain metadata on each row. Delegated subagent sessions stay linked by `parent_session_id`.
+Teich extracts Hermes `state.db` sessions into one JSONL file per native single-session export row. Each file contains one session object with embedded `messages`, matching the shape of Hermes' single-session export. Hermes' internal `system_prompt`, enabled toolsets, and configured tools remain metadata on each row. Delegated subagent sessions stay linked by `parent_session_id`.
 
 ### `chat`
 

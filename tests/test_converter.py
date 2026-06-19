@@ -102,7 +102,7 @@ def test_detect_trace_type_finds_openclaw_session_header_after_earlier_event():
 
 
 def test_convert_structured_cursor_rows_preserves_messages_tools_and_trace_type(tmp_path: Path):
-    trace_file = tmp_path / "cursor-sessions.jsonl"
+    trace_file = tmp_path / "cursor-session.jsonl"
     row = {
         "messages": [
             {"role": "user", "content": "Inspect app.js"},

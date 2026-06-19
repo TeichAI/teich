@@ -573,7 +573,7 @@ def test_dataset_upload_preserves_extracted_cursor_readme_metadata(client, monke
             "cursor_table": "composerData:test",
         },
     }
-    (output_dir / "cursor-sessions.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
+    (output_dir / "cursor-session.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
     monkeypatch.setenv("HF_TOKEN", "hf-env-token")
 
     with patch("teich.studio.server.HfApi") as mock_api_cls:
@@ -812,7 +812,7 @@ def test_extract_endpoint_warns_cursor_may_take_a_while(client):
         assert progress is not None
         progress({"kind": "extract_progress", "text": "Scanning Cursor database..."})
         output_dir.mkdir(parents=True, exist_ok=True)
-        trace = output_dir / "cursor-sessions.jsonl"
+        trace = output_dir / "cursor-session.jsonl"
         trace.write_text(
             json.dumps(
                 {

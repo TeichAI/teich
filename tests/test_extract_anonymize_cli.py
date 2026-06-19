@@ -20,6 +20,17 @@ def _plain_cli_output(output: str) -> str:
     return ANSI_ESCAPE_RE.sub("", output)
 
 
+def _read_jsonl_rows(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def _read_extracted_jsonl_rows(output_dir: Path) -> list[dict]:
+    rows: list[dict] = []
+    for path in sorted(output_dir.glob("*.jsonl")):
+        rows.extend(_read_jsonl_rows(path))
+    return rows
+
+
 def _write_minimal_hermes_state_db(state_db: Path, *, session_id: str = "session/1", model: str = "test-model") -> None:
     connection = sqlite3.connect(state_db)
     try:
@@ -552,6 +563,19 @@ def test_extract_codex_from_explicit_sessions_dir(tmp_path: Path):
 def test_extract_hermes_from_explicit_state_db(tmp_path: Path):
     state_db = tmp_path / "state.db"
     _write_minimal_hermes_state_db(state_db)
+    connection = sqlite3.connect(state_db)
+    try:
+        connection.execute(
+            "INSERT INTO sessions (id, source, started_at, model) VALUES (?, ?, ?, ?)",
+            ("session/2", "cli", "2026-06-13T00:00:02Z", "test-model"),
+        )
+        connection.execute(
+            "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+            ("session/2", "user", "second", "2026-06-13T00:00:03Z"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
 
     output_dir = tmp_path / "output"
     result = runner.invoke(
@@ -561,14 +585,18 @@ def test_extract_hermes_from_explicit_state_db(tmp_path: Path):
     )
 
     assert result.exit_code == 0
-    extracted = output_dir / "sessions.jsonl"
-    assert extracted.exists()
-    rows = [json.loads(line) for line in extracted.read_text(encoding="utf-8").splitlines()]
-    assert rows[0]["id"] == "session/1"
-    assert rows[0]["source"] == "cli"
-    assert rows[0]["hermes_source"] == "cli"
-    assert rows[0]["messages"][0]["role"] == "user"
-    assert rows[0]["messages"][0]["content"] == "hello"
+    extracted_files = sorted(output_dir.glob("hermes-session-*.jsonl"))
+    assert [path.name for path in extracted_files] == ["hermes-session-1.jsonl", "hermes-session-2.jsonl"]
+    assert all(len(_read_jsonl_rows(path)) == 1 for path in extracted_files)
+    rows = _read_extracted_jsonl_rows(output_dir)
+    rows_by_id = {row["id"]: row for row in rows}
+    assert rows_by_id["session/1"]["source"] == "cli"
+    assert rows_by_id["session/1"]["hermes_source"] == "cli"
+    assert rows_by_id["session/1"]["messages"][0]["role"] == "user"
+    assert rows_by_id["session/1"]["messages"][0]["content"] == "hello"
+    assert rows_by_id["session/2"]["messages"][0]["content"] == "second"
+    converted = convert_traces_to_training_data(output_dir)
+    assert {row["metadata"]["session_id"] for row in converted} == {"session/1", "session/2"}
     assert (output_dir / "README.md").exists()
 
 
@@ -592,9 +620,10 @@ def test_extract_cursor_from_workspace_state_db(tmp_path: Path):
     )
 
     assert result.exit_code == 0, result.output
-    extracted = output_dir / "cursor-sessions.jsonl"
-    assert extracted.exists()
-    rows = [json.loads(line) for line in extracted.read_text(encoding="utf-8").splitlines()]
+    extracted_files = sorted(output_dir.glob("cursor-*.jsonl"))
+    assert len(extracted_files) == 2
+    assert all(len(_read_jsonl_rows(path)) == 1 for path in extracted_files)
+    rows = _read_extracted_jsonl_rows(output_dir)
     assert len(rows) == 2
     rows_by_table = {row["metadata"]["cursor_table"]: row for row in rows}
     assert set(rows_by_table) == {"ItemTable", "composerSessions"}
@@ -633,10 +662,7 @@ def test_extract_cursor_reconstructs_archived_composer_data(tmp_path: Path):
     )
 
     assert result.exit_code == 0, result.output
-    rows = [
-        json.loads(line)
-        for line in (output_dir / "cursor-sessions.jsonl").read_text(encoding="utf-8").splitlines()
-    ]
+    rows = _read_extracted_jsonl_rows(output_dir)
     assert len(rows) == 1
     row = rows[0]
     assert row["metadata"]["cursor_storage_kind"] == "composerData"
@@ -687,10 +713,7 @@ def test_extract_cursor_reconstructs_id_keyed_composer_tables(tmp_path: Path):
     )
 
     assert result.exit_code == 0, result.output
-    rows = [
-        json.loads(line)
-        for line in (output_dir / "cursor-sessions.jsonl").read_text(encoding="utf-8").splitlines()
-    ]
+    rows = _read_extracted_jsonl_rows(output_dir)
     assert len(rows) == 1
     row = rows[0]
     assert row["metadata"]["cursor_storage_kind"] == "composerData"
@@ -749,10 +772,7 @@ def test_extract_cursor_uses_fallback_prompt_for_escaped_empty_editor_state_and_
     )
 
     assert result.exit_code == 0, result.output
-    rows = [
-        json.loads(line)
-        for line in (output_dir / "cursor-sessions.jsonl").read_text(encoding="utf-8").splitlines()
-    ]
+    rows = _read_extracted_jsonl_rows(output_dir)
     assert len(rows) == 1
     row = rows[0]
     assert row["model"] == "claude-opus-4.5"
@@ -784,10 +804,7 @@ def test_extract_cursor_detects_rich_text_only_messages_and_selected_model_id(tm
     )
 
     assert result.exit_code == 0, result.output
-    rows = [
-        json.loads(line)
-        for line in (output_dir / "cursor-sessions.jsonl").read_text(encoding="utf-8").splitlines()
-    ]
+    rows = _read_extracted_jsonl_rows(output_dir)
     assert len(rows) == 1
     row = rows[0]
     assert row["model"] == "anthropic/claude-opus-4.5"
@@ -816,10 +833,7 @@ def test_extract_cursor_sanitizes_training_unsafe_archived_rows(tmp_path: Path):
     )
 
     assert result.exit_code == 0, result.output
-    rows = [
-        json.loads(line)
-        for line in (output_dir / "cursor-sessions.jsonl").read_text(encoding="utf-8").splitlines()
-    ]
+    rows = _read_extracted_jsonl_rows(output_dir)
     assert len(rows) == 1
     row = rows[0]
     assert [message["role"] for message in row["messages"]] == ["user", "assistant", "user", "assistant"]
@@ -878,8 +892,8 @@ def test_extract_accepts_agent_root_or_native_session_store(tmp_path: Path):
         ("codex-sessions", "codex", codex_sessions, "session.jsonl"),
         ("pi-root", "pi", pi_root, "session.jsonl"),
         ("pi-sessions", "pi", pi_sessions, "session.jsonl"),
-        ("hermes-root", "hermes", hermes_root, "sessions.jsonl"),
-        ("hermes-state-db", "hermes", hermes_root / "state.db", "sessions.jsonl"),
+        ("hermes-root", "hermes", hermes_root, "hermes-session-1.jsonl"),
+        ("hermes-state-db", "hermes", hermes_root / "state.db", "hermes-session-1.jsonl"),
     ]
     for label, provider, source, expected_file in cases:
         output_dir = tmp_path / f"out-{label}"
@@ -1089,9 +1103,9 @@ def test_extract_model_filter_for_codex_claude_cursor_pi_and_hermes(tmp_path: Pa
     cases = [
         ("codex", codex_dir, "fable.jsonl"),
         ("claude", claude_dir, "fable.jsonl"),
-        ("cursor", cursor_db, "cursor-sessions.jsonl"),
+        ("cursor", cursor_db, "cursor-fable.jsonl"),
         ("pi", pi_dir, "fable.jsonl"),
-        ("hermes", state_db, "sessions.jsonl"),
+        ("hermes", state_db, "hermes-fable.jsonl"),
     ]
     for provider, source, expected_file in cases:
         output_dir = tmp_path / f"out-{provider}"

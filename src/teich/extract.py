@@ -322,9 +322,7 @@ def _extract_cursor_databases(
         rows = [row for row in rows if trace_matches_model([row], model_filter)]
     if not rows:
         return []
-    destination = destination_dir / "cursor-sessions.jsonl"
-    _write_jsonl_dict_events(destination, rows)
-    return [destination]
+    return _write_individual_jsonl_rows(destination_dir, rows, _cursor_session_file_name)
 
 
 def _emit_progress(
@@ -403,6 +401,57 @@ def _write_jsonl_dict_events(path: Path, events: list[dict[str, Any]]) -> None:
             line = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
             line = line.replace("\u0085", "\\u0085").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
             handle.write(line + "\n")
+
+
+def _write_individual_jsonl_rows(
+    destination_dir: Path,
+    rows: list[dict[str, Any]],
+    file_name_for_row: Callable[[dict[str, Any], int], str],
+) -> list[Path]:
+    copied: list[Path] = []
+    for row_index, row in enumerate(rows, start=1):
+        destination = _unique_destination(destination_dir, file_name_for_row(row, row_index))
+        _write_jsonl_dict_events(destination, [row])
+        copied.append(destination)
+    return copied
+
+
+def _safe_file_stem(value: Any, *, fallback: str, max_length: int = 96) -> str:
+    text = str(value).strip() if value is not None else ""
+    text = re.sub(r"[^A-Za-z0-9._-]+", "-", text)
+    text = re.sub(r"-{2,}", "-", text).strip("._-")
+    if not text:
+        text = fallback
+    if len(text) > max_length:
+        text = text[:max_length].rstrip("._-")
+    return text or fallback
+
+
+def _jsonl_file_name(prefix: str, identifier: Any, row_index: int) -> str:
+    fallback = f"{prefix}-{row_index:04d}"
+    stem = _safe_file_stem(identifier, fallback=fallback)
+    if not stem.lower().startswith(f"{prefix}-"):
+        stem = f"{prefix}-{stem}"
+    return f"{stem}.jsonl"
+
+
+def _cursor_session_file_name(row: dict[str, Any], row_index: int) -> str:
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    identifier = (
+        metadata.get("cursor_composer_id")
+        or metadata.get("cursor_key")
+        or (
+            f"{metadata.get('cursor_table')}-{metadata.get('cursor_row')}"
+            if metadata.get("cursor_table") is not None or metadata.get("cursor_row") is not None
+            else None
+        )
+        or row.get("prompt")
+    )
+    return _jsonl_file_name("cursor", identifier, row_index)
+
+
+def _hermes_session_file_name(row: dict[str, Any], row_index: int) -> str:
+    return _jsonl_file_name("hermes", row.get("id") or row.get("session_id") or row.get("title"), row_index)
 
 
 def _cursor_database_rows(state_db: Path, *, progress: ProgressCallback | None = None) -> list[dict[str, Any]]:
@@ -1736,16 +1785,13 @@ def _extract_hermes_state_dbs(
     *,
     model_filter: str | None = None,
 ) -> list[Path]:
-    rows: list[dict[str, Any]] = []
+    copied: list[Path] = []
     for source in sources:
         state_dbs = [source] if source.is_file() else sorted(source.rglob("state.db"))
         for state_db in state_dbs:
-            rows.extend(_hermes_state_db_session_rows(state_db, model_filter=model_filter))
-    if not rows:
-        return []
-    destination = destination_dir / "sessions.jsonl"
-    _write_jsonl_dict_events(destination, rows)
-    return [destination]
+            rows = _hermes_state_db_session_rows(state_db, model_filter=model_filter)
+            copied.extend(_write_individual_jsonl_rows(destination_dir, rows, _hermes_session_file_name))
+    return copied
 
 
 def _hermes_state_db_session_rows(
