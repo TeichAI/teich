@@ -73,7 +73,7 @@ teich extract cursor --sessions-dir /path/to/Cursor/User/workspaceStorage --out 
 teich extract cursor --sessions-dir /path/to/Cursor/User/globalStorage/state.vscdb --out data
 ```
 
-By default, extracted datasets are written to `data/` under the current directory. JSONL traces are staged directly in that folder, matching the generated Hugging Face `*.jsonl` dataset metadata. Use `--out` or `--output` to choose a different folder:
+By default, extracted datasets are written to `data/` under the current directory. JSONL traces are staged as provider-native or recovered session files, and the generated Hugging Face dataset metadata matches `**/*.jsonl` so nested provider paths are included. Use `--out` or `--output` to choose a different folder:
 
 ```bash
 teich extract codex --model gpt-5-codex --out codex-data
@@ -172,7 +172,7 @@ Provider outputs:
 - `codex` / `pi`: normalized copies of native agent session JSONL files in `output/`, workspace snapshots in `sandbox/`, and a dataset `README.md`
 - `claude-code`: native Claude Code transcript JSONL copied from `.claude/projects/...`, workspace snapshots in `sandbox/`, and a dataset `README.md`
 - `hermes`: generated Hermes runs use Hermes' native session export shape; extracted Hermes `state.db` sessions are staged as one JSONL file per native single-session export row, including delegated subagent sessions linked by `parent_session_id`
-- `cursor`: extracted Cursor `state.vscdb` rows are staged as one JSONL file per recovered session row, including both chat-like and composer-like records when present
+- `cursor`: native `.cursor/projects/.../agent-transcripts/...` JSONL files are preserved when available, including MCP tool snapshots from the same project folder; recovered `state.vscdb` rows are staged as one Cursor-style session JSONL file per recovered session
 - `chat`: text-only JSONL training rows in `output/` and a dataset `README.md`
 
 `teich extract` writes provider-native or recovered session shapes to `data/` by default, then anonymizes the staged output in place before the upload prompt.

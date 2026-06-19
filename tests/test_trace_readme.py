@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 from teich.trace_readme import README_INLINE_TOOLS_MAX_CHARS, build_traces_readme, write_traces_readme
 
@@ -129,6 +130,34 @@ def test_write_traces_readme_externalizes_large_tools_snapshot(tmp_path: Path):
     assert "<summary>Training-ready tool schema snapshot</summary>" not in readme
     assert huge_description not in readme
     assert huge_description in tools_json
+
+
+def test_write_traces_readme_omits_example_when_sample_is_too_large(tmp_path: Path):
+    trace_file = tmp_path / "huge-session.jsonl"
+    row = {
+        "messages": [
+            {"role": "user", "content": "x" * 10_000},
+            {"role": "assistant", "content": "y" * 10_000},
+            {"role": "tool", "content": "z" * 10_000},
+            {"role": "assistant", "content": "a" * 10_000},
+            {"role": "user", "content": "b" * 10_000},
+            {"role": "assistant", "content": "c" * 10_000},
+        ],
+        "metadata": {f"key_{index}": "m" * 10_000 for index in range(6)},
+    }
+    trace_file.write_text(json.dumps(row) + "\n", encoding="utf-8")
+
+    readme_path = write_traces_readme(
+        tmp_path,
+        pretty_name="Large Agent Traces",
+        tags=["agent-traces"],
+    )
+
+    readme = readme_path.read_text(encoding="utf-8")
+    assert "## Example" not in readme
+    assert "__truncated__" not in readme
+    assert "Additional sample content omitted" not in readme
+    assert "## Training" in readme
 
 
 def test_write_traces_readme_includes_extraction_snippet_when_provider_is_set(tmp_path: Path):

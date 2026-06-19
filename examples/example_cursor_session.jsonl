@@ -1,0 +1,7 @@
+{"type":"cursor_session_meta","source":"cursor","session_id":"example-cursor-session","model":"claude-opus-4.5","cursor_scope":"project"}
+{"type":"cursor_available_tools","tools":[{"type":"function","function":{"name":"Shell","description":"Run shell commands.","parameters":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}}}]}
+{"role":"user","message":{"content":[{"type":"text","text":"List files"}]}}
+{"role":"assistant","message":{"content":[{"type":"thinking","text":"Need a directory listing."},{"type":"tool_use","id":"call-shell","name":"Shell","input":{"command":"ls"}}]}}
+{"role":"user","message":{"content":[{"type":"tool_result","tool_use_id":"call-shell","content":"README.md\nsrc"}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"Found README.md and src."}]}}
+{"type":"turn_ended","status":"success"}

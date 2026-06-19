@@ -162,7 +162,7 @@ def _existing_unique_paths(paths: Iterable[Path | None]) -> list[Path]:
 
 def _clear_extract_destination(destination_dir: Path) -> None:
     """Remove stale extract artifacts while leaving unrelated files alone."""
-    for path in destination_dir.glob("*.jsonl"):
+    for path in destination_dir.rglob("*.jsonl"):
         if path.is_file():
             path.unlink()
     for artifact_name in ("README.md", "tools.json"):
@@ -207,6 +207,7 @@ def _cursor_default_sources(home: Path) -> list[Path | None]:
         _env_path("CURSOR_WORKSPACE_STORAGE"),
         _env_path("CURSOR_USER_DATA_DIR", "globalStorage", "state.vscdb"),
         _env_path("CURSOR_USER_DATA_DIR", "workspaceStorage"),
+        home / ".cursor" / "projects",
         home / ".config" / "Cursor" / "User" / "globalStorage" / "state.vscdb",
         home / "Library" / "Application Support" / "Cursor" / "User" / "globalStorage" / "state.vscdb",
         home / ".cursor-server" / "data" / "User" / "globalStorage" / "state.vscdb",
@@ -321,8 +322,129 @@ def _extract_cursor_databases(
     if model_filter:
         rows = [row for row in rows if trace_matches_model([row], model_filter)]
     if not rows:
+        return _extract_cursor_project_files(sources, destination_dir, model_filter=model_filter)
+    copied: list[Path] = []
+    for row_index, row in enumerate(rows, start=1):
+        destination = _unique_destination(destination_dir, _cursor_session_file_name(row, row_index))
+        _write_jsonl_dict_events(destination, _cursor_row_to_transcript_events(row, row_index))
+        copied.append(destination)
+    return copied
+
+
+def _extract_cursor_project_files(
+    sources: list[Path],
+    destination_dir: Path,
+    *,
+    model_filter: str | None = None,
+) -> list[Path]:
+    copied: list[Path] = []
+    for source in sources:
+        for transcript in _cursor_project_transcript_files(source):
+            events = _read_jsonl_dict_events(transcript)
+            if events is None:
+                continue
+            if model_filter and not trace_matches_model(events, model_filter):
+                continue
+            project_dir = _cursor_project_dir_for_transcript(transcript)
+            if project_dir is None:
+                relative = transcript.name
+            else:
+                try:
+                    relative = str(transcript.relative_to(project_dir.parent))
+                except ValueError:
+                    relative = transcript.name
+            destination = _unique_nested_destination(destination_dir / relative)
+            _write_jsonl_dict_events(destination, _cursor_native_transcript_events(events, transcript, project_dir))
+            copied.append(destination)
+    return copied
+
+
+def _cursor_project_transcript_files(source: Path) -> list[Path]:
+    if source.is_file() and source.suffix == ".jsonl" and "agent-transcripts" in source.parts:
+        return [source]
+    if not source.is_dir():
         return []
-    return _write_individual_jsonl_rows(destination_dir, rows, _cursor_session_file_name)
+    try:
+        if source.name == "agent-transcripts":
+            return sorted(path for path in source.rglob("*.jsonl") if path.is_file())
+        return sorted(path for path in source.rglob("agent-transcripts/**/*.jsonl") if path.is_file())
+    except OSError:
+        return []
+
+
+def _cursor_project_dir_for_transcript(transcript: Path) -> Path | None:
+    parts = transcript.parts
+    if "agent-transcripts" not in parts:
+        return None
+    index = parts.index("agent-transcripts")
+    if index == 0:
+        return None
+    return Path(*parts[:index])
+
+
+def _cursor_native_transcript_events(
+    events: list[dict[str, Any]],
+    transcript: Path,
+    project_dir: Path | None,
+) -> list[dict[str, Any]]:
+    enriched: list[dict[str, Any]] = [
+        {
+            "type": "cursor_session_meta",
+            "source": "cursor",
+            "session_id": transcript.stem,
+            "project": project_dir.name if project_dir is not None else None,
+            "source_file": str(transcript),
+        }
+    ]
+    tools = _cursor_project_tools(project_dir) if project_dir is not None else []
+    if tools:
+        enriched.append({"type": "cursor_available_tools", "tools": tools})
+    enriched.extend(events)
+    return enriched
+
+
+def _cursor_project_tools(project_dir: Path) -> list[dict[str, Any]]:
+    tools: list[dict[str, Any]] = []
+    tools_dir = project_dir / "mcps"
+    if tools_dir.is_dir():
+        for tool_path in sorted(tools_dir.glob("*/tools/*.json")):
+            try:
+                tool = json.loads(tool_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            normalized = _cursor_normalize_mcp_tool(tool)
+            if normalized is not None:
+                tools.append(normalized)
+    return _cursor_merge_tools(_cursor_builtin_tools(), tools)
+
+
+def _cursor_normalize_mcp_tool(tool: Any) -> dict[str, Any] | None:
+    if not isinstance(tool, dict):
+        return None
+    name = tool.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    function: dict[str, Any] = {"name": name.strip()}
+    description = tool.get("description")
+    if isinstance(description, str) and description.strip():
+        function["description"] = description.strip()
+    arguments = tool.get("arguments")
+    if isinstance(arguments, dict):
+        function["parameters"] = arguments
+    return {"type": "function", "function": function}
+
+
+def _unique_nested_destination(destination: Path) -> Path:
+    if not destination.exists():
+        return destination
+    stem = destination.stem
+    suffix = destination.suffix
+    counter = 1
+    while True:
+        candidate = destination.with_name(f"{stem}_{counter}{suffix}")
+        if not candidate.exists():
+            return candidate
+        counter += 1
 
 
 def _emit_progress(
@@ -452,6 +574,106 @@ def _cursor_session_file_name(row: dict[str, Any], row_index: int) -> str:
 
 def _hermes_session_file_name(row: dict[str, Any], row_index: int) -> str:
     return _jsonl_file_name("hermes", row.get("id") or row.get("session_id") or row.get("title"), row_index)
+
+
+def _cursor_row_to_transcript_events(row: dict[str, Any], row_index: int) -> list[dict[str, Any]]:
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    session_id = (
+        metadata.get("cursor_composer_id")
+        or metadata.get("cursor_key")
+        or f"cursor-{row_index:04d}"
+    )
+    events: list[dict[str, Any]] = [
+        {
+            "type": "cursor_session_meta",
+            "source": "cursor",
+            "session_id": str(session_id),
+            "model": row.get("model") or metadata.get("model"),
+            "source_db": metadata.get("source_db"),
+            "cursor_scope": metadata.get("cursor_scope"),
+            "cursor_workspace_id": metadata.get("cursor_workspace_id"),
+            "cursor_table": metadata.get("cursor_table"),
+            "cursor_key": metadata.get("cursor_key"),
+            "cursor_storage_kind": metadata.get("cursor_storage_kind"),
+        }
+    ]
+    tools = row.get("tools")
+    if isinstance(tools, list) and tools:
+        events.append({"type": "cursor_available_tools", "tools": tools})
+    messages = row.get("messages") if isinstance(row.get("messages"), list) else []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        event = _cursor_message_to_transcript_event(message)
+        if event is not None:
+            events.append(event)
+    events.append({"type": "turn_ended", "status": "success"})
+    return events
+
+
+def _cursor_message_to_transcript_event(message: dict[str, Any]) -> dict[str, Any] | None:
+    role = message.get("role")
+    content = message.get("content")
+    text = content if isinstance(content, str) else _cursor_string_content(content)
+    if role == "user":
+        return {
+            "role": "user",
+            "message": {"content": [{"type": "text", "text": text}]},
+        }
+    if role == "assistant":
+        blocks: list[dict[str, Any]] = []
+        reasoning = message.get("reasoning_content") or message.get("thinking")
+        if isinstance(reasoning, str) and reasoning.strip():
+            blocks.append({"type": "thinking", "text": reasoning.strip()})
+        if text.strip():
+            blocks.append({"type": "text", "text": text})
+        tool_calls = message.get("tool_calls")
+        if isinstance(tool_calls, list):
+            for tool_call in tool_calls:
+                block = _cursor_tool_call_to_content_block(tool_call)
+                if block is not None:
+                    blocks.append(block)
+        if not blocks:
+            return None
+        return {"role": "assistant", "message": {"content": blocks}}
+    if role == "tool":
+        tool_result: dict[str, Any] = {
+            "type": "tool_result",
+            "content": text,
+        }
+        tool_call_id = message.get("tool_call_id")
+        if isinstance(tool_call_id, str) and tool_call_id:
+            tool_result["tool_use_id"] = tool_call_id
+        name = message.get("name")
+        if isinstance(name, str) and name:
+            tool_result["name"] = name
+        if message.get("is_error") is True:
+            tool_result["is_error"] = True
+        return {"role": "user", "message": {"content": [tool_result]}}
+    if role == "system" and text.strip():
+        return {"role": "system", "message": {"content": [{"type": "text", "text": text}]}}
+    return None
+
+
+def _cursor_tool_call_to_content_block(tool_call: Any) -> dict[str, Any] | None:
+    if not isinstance(tool_call, dict):
+        return None
+    function = tool_call.get("function")
+    if not isinstance(function, dict):
+        return None
+    name = function.get("name")
+    if not isinstance(name, str) or not name:
+        return None
+    arguments = _cursor_tool_call_arguments(tool_call)
+    block: dict[str, Any] = {
+        "type": "tool_use",
+        "name": name,
+        "input": arguments,
+    }
+    tool_call_id = tool_call.get("id")
+    if isinstance(tool_call_id, str) and tool_call_id:
+        block["id"] = tool_call_id
+    return block
 
 
 def _cursor_database_rows(state_db: Path, *, progress: ProgressCallback | None = None) -> list[dict[str, Any]]:

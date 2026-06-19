@@ -1751,6 +1751,8 @@ def _external_session_source(event: dict[str, Any]) -> str:
 def _is_cursor_trace_row(event: Any) -> bool:
     if not isinstance(event, dict):
         return False
+    if event.get("type") in {"cursor_session_meta", "cursor_available_tools"}:
+        return True
     metadata = event.get("metadata")
     if not isinstance(metadata, dict):
         return False
@@ -3116,6 +3118,163 @@ def _convert_external_agent_trace_to_training_example(
     )
 
 
+def _convert_cursor_trace_to_training_example(
+    trace_file: Path,
+    events: list[dict[str, Any]],
+) -> TrainingExample:
+    messages: list[dict[str, Any]] = []
+    tool_names: set[str] = set()
+    tool_schemas: dict[str, dict[str, Any]] = {}
+    tool_argument_samples: dict[str, list[Any]] = {}
+    explicit_tools: dict[str, dict[str, Any]] = {}
+    session_meta: dict[str, Any] = {}
+    tool_names_by_call_id: dict[str, str] = {}
+    prompt = ""
+    first_message_timestamp = _first_message_timestamp_from_events(
+        events,
+        lambda event: event.get("role") == "user"
+        and isinstance(event.get("message"), dict)
+        and not _cursor_event_contains_tool_result(event),
+    )
+    _add_builtin_tools_for_trace_type("cursor", explicit_tools, tool_names, tool_schemas)
+
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        event_type = event.get("type")
+        if event_type == "cursor_session_meta":
+            session_meta = event
+            continue
+        if event_type == "cursor_available_tools":
+            _add_explicit_tools(event.get("tools"), explicit_tools, tool_names, tool_schemas)
+            continue
+
+        role = event.get("role")
+        payload = event.get("message")
+        if not isinstance(role, str) or not isinstance(payload, dict):
+            continue
+        content_blocks = payload.get("content")
+
+        if role == "user":
+            if isinstance(content_blocks, list) and any(
+                isinstance(block, dict) and block.get("type") == "tool_result"
+                for block in content_blocks
+            ):
+                for block in content_blocks:
+                    if not isinstance(block, dict) or block.get("type") != "tool_result":
+                        continue
+                    tool_call_id = block.get("tool_use_id") or block.get("tool_call_id")
+                    if not isinstance(tool_call_id, str) or not tool_call_id:
+                        continue
+                    tool_message: dict[str, Any] = {
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "name": block.get("name") or tool_names_by_call_id.get(tool_call_id, "unknown_tool"),
+                        "content": _claude_tool_result_text(block),
+                    }
+                    if block.get("is_error") is True:
+                        tool_message["is_error"] = True
+                    messages.append(tool_message)
+                continue
+            content = _claude_text_from_content(content_blocks)
+            if content and not prompt:
+                prompt = content
+            if content:
+                messages.append({"role": "user", "content": content})
+            continue
+
+        if role == "assistant":
+            content = _claude_text_from_content(content_blocks)
+            message: dict[str, Any] = {"role": "assistant", "content": content}
+            reasoning_content = _claude_reasoning_from_content(content_blocks)
+            if reasoning_content:
+                message["reasoning_content"] = reasoning_content
+            tool_calls: list[dict[str, Any]] = []
+            if isinstance(content_blocks, list):
+                for block in content_blocks:
+                    if not isinstance(block, dict) or block.get("type") != "tool_use":
+                        continue
+                    tool_call_id = block.get("id")
+                    tool_name = block.get("name")
+                    if not isinstance(tool_name, str) or not tool_name:
+                        continue
+                    if not isinstance(tool_call_id, str) or not tool_call_id:
+                        tool_call_id = f"{tool_name}_{len(tool_calls) + 1}"
+                    arguments = _normalize_json_like_value(block.get("input") or {})
+                    tool_names.add(tool_name)
+                    tool_names_by_call_id[tool_call_id] = tool_name
+                    tool_argument_samples.setdefault(tool_name, []).append(arguments)
+                    tool_calls.append(
+                        {
+                            "id": tool_call_id,
+                            "type": "function",
+                            "function": {
+                                "name": tool_name,
+                                "arguments": arguments,
+                            },
+                        }
+                    )
+            if tool_calls:
+                message["tool_calls"] = tool_calls
+            if content or reasoning_content or tool_calls:
+                _append_or_merge_assistant_message(messages, message)
+            continue
+
+        if role == "system":
+            content = _claude_text_from_content(content_blocks)
+            if content:
+                messages.append({"role": "system", "content": content})
+
+    tools = _build_tools_from_snapshots_and_calls(
+        tool_names,
+        tool_schemas,
+        tool_argument_samples,
+        explicit_tools,
+    )
+    if not prompt:
+        prompt = next(
+            (
+                message.get("content", "")
+                for message in messages
+                if message.get("role") == "user" and isinstance(message.get("content"), str)
+            ),
+            "",
+        )
+    metadata: dict[str, Any] = {
+        "source_file": trace_file.name,
+        "session_id": session_meta.get("session_id") or trace_file.stem,
+        "trace_type": "cursor",
+        "model": session_meta.get("model"),
+        "source": session_meta.get("source") or "cursor",
+        "source_db": session_meta.get("source_db"),
+        "cursor_scope": session_meta.get("cursor_scope"),
+        "cursor_workspace_id": session_meta.get("cursor_workspace_id"),
+        "cursor_table": session_meta.get("cursor_table"),
+        "cursor_key": session_meta.get("cursor_key"),
+        "cursor_storage_kind": session_meta.get("cursor_storage_kind"),
+        "turn_count": sum(1 for message in messages if message.get("role") == "user"),
+    }
+    _add_first_message_timestamp(metadata, first_message_timestamp)
+    return TrainingExample(
+        source_file=trace_file,
+        prompt=prompt,
+        messages=messages,
+        tools=tools,
+        metadata={key: value for key, value in metadata.items() if value is not None},
+    )
+
+
+def _cursor_event_contains_tool_result(event: dict[str, Any]) -> bool:
+    payload = event.get("message")
+    if not isinstance(payload, dict):
+        return False
+    content = payload.get("content")
+    return isinstance(content, list) and any(
+        isinstance(block, dict) and block.get("type") == "tool_result"
+        for block in content
+    )
+
+
 def load_trace_file(trace_file: Path) -> list[Any]:
     return _load_trace_file(trace_file)
 
@@ -3683,6 +3842,8 @@ def convert_trace_to_training_example(trace_file: Path) -> TrainingExample:
         return _convert_droid_trace_to_training_example(trace_file, events)
     if trace_type == "hermes":
         return _convert_hermes_trace_to_training_example(trace_file, events)
+    if trace_type == "cursor":
+        return _convert_cursor_trace_to_training_example(trace_file, events)
     if trace_type == "external_agent":
         return _convert_external_agent_trace_to_training_example(trace_file, events)
     if trace_type == "openclaw":
@@ -3728,6 +3889,8 @@ def _convert_jsonl_file_to_training_rows(jsonl_file: Path, *, skip_invalid_lines
                 for row in rows
             ]
         return [_convert_hermes_trace_to_training_example(jsonl_file, rows).to_dict()]
+    if trace_type == "cursor":
+        return [_convert_cursor_trace_to_training_example(jsonl_file, rows).to_dict()]
     if trace_type == "external_agent":
         return [_convert_external_agent_trace_to_training_example(jsonl_file, rows).to_dict()]
     if trace_type == "openclaw":

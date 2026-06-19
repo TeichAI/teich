@@ -112,7 +112,7 @@ If you already have local agent sessions, Teich can stage them as an anonymized 
 teich extract claude --model fable-5
 ```
 
-`extract` supports `claude`, `codex`, `cursor`, `pi`, and `hermes`. It writes anonymized traces to `data/` by default, with JSONL files directly in that folder so the generated Hugging Face dataset metadata can match `*.jsonl`. It generates a dataset `README.md`, and then asks whether to upload the folder to Hugging Face. Use `--out` / `--output` to choose another folder.
+`extract` supports `claude`, `codex`, `cursor`, `pi`, and `hermes`. It writes anonymized traces to `data/` by default using provider-native or recovered session JSONL files. The generated Hugging Face dataset metadata matches `**/*.jsonl`, so providers such as Cursor can preserve nested project transcript paths. It generates a dataset `README.md`, and then asks whether to upload the folder to Hugging Face. Use `--out` / `--output` to choose another folder.
 
 If the agent store is somewhere other than the default home-directory location, pass it explicitly. `--sessions-dir` accepts either the agent root, such as `.claude`, `.codex`, `.pi`, or `.hermes`, or the native store under it, such as `.claude/projects`, `.codex/sessions`, `.hermes/state.db`, or Cursor's `workspaceStorage` / `globalStorage/state.vscdb`:
 

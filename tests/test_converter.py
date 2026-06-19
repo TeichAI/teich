@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from teich import detect_trace_type
 from teich.converter import (
     convert_trace_to_training_example,
@@ -8,6 +10,28 @@ from teich.converter import (
     normalize_claude_code_trace_events,
     normalize_codex_trace_events,
 )
+
+
+def _read_jsonl_events(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+@pytest.mark.parametrize(
+    ("example_file", "expected_trace_type"),
+    [
+        ("example_claude_code.jsonl", "claude_code"),
+        ("example_codex_session.jsonl", "codex"),
+        ("example_droid_session.jsonl", "droid"),
+        ("example_hermes_session.jsonl", "hermes"),
+        ("example_pi_session.jsonl", "pi"),
+        ("example_cursor_session.jsonl", "cursor"),
+        ("example_openclaw_session.jsonl", "openclaw"),
+    ],
+)
+def test_detect_trace_type_matches_checked_in_examples(example_file: str, expected_trace_type: str):
+    example_path = Path(__file__).resolve().parent.parent / "examples" / example_file
+
+    assert detect_trace_type(_read_jsonl_events(example_path)) == expected_trace_type
 
 
 def test_detect_trace_type_returns_known_trace_type():
@@ -152,6 +176,71 @@ def test_convert_structured_cursor_rows_preserves_messages_tools_and_trace_type(
     assert {"read_file", "run_terminal_cmd", "edit_file", "codebase_search"}.issubset(tools_by_name)
     assert tools_by_name["read_file"]["function"]["parameters"]["required"] == ["path"]
     assert tools_by_name["read_file"]["function"]["description"] == "Read file contents from the workspace."
+
+
+def test_convert_cursor_session_events_preserves_messages_tools_and_trace_type(tmp_path: Path):
+    trace_file = tmp_path / "cursor-session.jsonl"
+    events = [
+        {
+            "type": "cursor_session_meta",
+            "source": "cursor",
+            "session_id": "session-1",
+            "model": "claude-opus-4.5",
+            "cursor_scope": "project",
+        },
+        {
+            "type": "cursor_available_tools",
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "Shell",
+                        "description": "Run shell commands.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"command": {"type": "string"}},
+                            "required": ["command"],
+                        },
+                    },
+                }
+            ],
+        },
+        {"role": "user", "message": {"content": [{"type": "text", "text": "List files"}]}},
+        {
+            "role": "assistant",
+            "message": {
+                "content": [
+                    {"type": "thinking", "text": "Need a directory listing."},
+                    {"type": "tool_use", "id": "call-shell", "name": "Shell", "input": {"command": "ls"}},
+                ]
+            },
+        },
+        {
+            "role": "user",
+            "message": {
+                "content": [{"type": "tool_result", "tool_use_id": "call-shell", "content": "README.md\nsrc"}]
+            },
+        },
+        {"role": "assistant", "message": {"content": [{"type": "text", "text": "Found README.md and src."}]}},
+        {"type": "turn_ended", "status": "success"},
+    ]
+    trace_file.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
+
+    assert detect_trace_type(events) == "cursor"
+    example = convert_trace_to_training_example(trace_file)
+
+    assert example.prompt == "List files"
+    assert example.metadata["trace_type"] == "cursor"
+    assert example.metadata["session_id"] == "session-1"
+    assert example.metadata["model"] == "claude-opus-4.5"
+    assert [message["role"] for message in example.messages] == ["user", "assistant", "tool", "assistant"]
+    assert example.messages[1]["reasoning_content"] == "Need a directory listing."
+    assert example.messages[1]["tool_calls"][0]["function"]["name"] == "Shell"
+    assert example.messages[2]["tool_call_id"] == "call-shell"
+    assert example.messages[2]["content"] == "README.md\nsrc"
+    tools_by_name = {tool["function"]["name"]: tool for tool in example.tools}
+    assert {"Shell", "read_file", "run_terminal_cmd", "edit_file", "codebase_search"}.issubset(tools_by_name)
+    assert tools_by_name["Shell"]["function"]["parameters"]["required"] == ["command"]
 
 
 def test_convert_structured_provider_rows_seed_provider_builtin_tools(tmp_path: Path):

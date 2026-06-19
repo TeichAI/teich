@@ -622,24 +622,159 @@ def test_extract_cursor_from_workspace_state_db(tmp_path: Path):
     assert result.exit_code == 0, result.output
     extracted_files = sorted(output_dir.glob("cursor-*.jsonl"))
     assert len(extracted_files) == 2
-    assert all(len(_read_jsonl_rows(path)) == 1 for path in extracted_files)
-    rows = _read_extracted_jsonl_rows(output_dir)
-    assert len(rows) == 2
-    rows_by_table = {row["metadata"]["cursor_table"]: row for row in rows}
+    assert all(_read_jsonl_rows(path)[0]["type"] == "cursor_session_meta" for path in extracted_files)
+    converted = convert_traces_to_training_data(output_dir)
+    assert len(converted) == 2
+    rows_by_table = {row["metadata"]["cursor_table"]: row for row in converted}
     assert set(rows_by_table) == {"ItemTable", "composerSessions"}
-    assert {row["metadata"]["cursor_scope"] for row in rows} == {"workspace"}
-    assert {row["metadata"]["cursor_workspace_id"] for row in rows} == {"workspace-hash"}
+    assert {row["metadata"]["cursor_scope"] for row in converted} == {"workspace"}
+    assert {row["metadata"]["cursor_workspace_id"] for row in converted} == {"workspace-hash"}
     assert rows_by_table["composerSessions"]["prompt"] == "composer prompt"
     assert rows_by_table["ItemTable"]["prompt"] == "open chat prompt"
     assert [message["content"] for message in rows_by_table["ItemTable"]["messages"] if message["role"] == "user"] == [
         "open chat prompt"
     ]
     assert '"root"' not in rows_by_table["ItemTable"]["prompt"]
-    assert rows_by_table["ItemTable"]["tools"][0]["function"]["name"] == "read_file"
+    assert "read_file" in {tool["function"]["name"] for tool in rows_by_table["ItemTable"]["tools"]}
     assert rows_by_table["ItemTable"]["messages"][1]["tool_calls"][0]["function"]["name"] == "read_file"
-    converted = convert_traces_to_training_data(output_dir)
     assert {row["prompt"] for row in converted} == {"composer prompt", "open chat prompt"}
     assert {row["metadata"]["trace_type"] for row in converted} == {"cursor"}
+
+
+def test_extract_cursor_preserves_native_project_transcripts_and_tools(tmp_path: Path):
+    projects_dir = tmp_path / ".cursor" / "projects"
+    project_dir = projects_dir / "c-Users-test-project"
+    transcript = project_dir / "agent-transcripts" / "session-1" / "session-1.jsonl"
+    transcript.parent.mkdir(parents=True)
+    transcript_events = [
+        {"role": "user", "message": {"content": [{"type": "text", "text": "native prompt"}]}},
+        {
+            "role": "assistant",
+            "message": {
+                "content": [
+                    {"type": "thinking", "text": "native thinking"},
+                    {"type": "tool_use", "id": "call-shell", "name": "Shell", "input": {"command": "ls"}},
+                    {"type": "text", "text": "native answer"},
+                ]
+            },
+        },
+        {
+            "role": "user",
+            "message": {"content": [{"type": "tool_result", "tool_use_id": "call-shell", "content": "files"}]},
+        },
+        {"type": "turn_ended", "status": "success"},
+    ]
+    transcript.write_text("\n".join(json.dumps(event) for event in transcript_events) + "\n", encoding="utf-8")
+    tools_dir = project_dir / "mcps" / "user-shell" / "tools"
+    tools_dir.mkdir(parents=True)
+    (tools_dir / "Shell.json").write_text(
+        json.dumps(
+            {
+                "name": "Shell",
+                "description": "Run shell commands.",
+                "arguments": {
+                    "type": "object",
+                    "properties": {"command": {"type": "string"}},
+                    "required": ["command"],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    output_dir = tmp_path / "output"
+    result = runner.invoke(
+        app,
+        [
+            "extract",
+            "cursor",
+            "--sessions-dir",
+            str(projects_dir),
+            "--output",
+            str(output_dir),
+            "--no-anon",
+        ],
+        input="n\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    copied_transcript = output_dir / "c-Users-test-project" / "agent-transcripts" / "session-1" / "session-1.jsonl"
+    assert copied_transcript.exists()
+    events = _read_jsonl_rows(copied_transcript)
+    assert events[0]["type"] == "cursor_session_meta"
+    assert events[0]["project"] == "c-Users-test-project"
+    assert events[1]["type"] == "cursor_available_tools"
+    assert events[2:] == transcript_events
+
+    converted = convert_traces_to_training_data(output_dir)
+    assert len(converted) == 1
+    row = converted[0]
+    assert row["prompt"] == "native prompt"
+    assert [message["role"] for message in row["messages"]] == ["user", "assistant", "tool"]
+    assert row["messages"][1]["content"] == "native answer"
+    assert row["messages"][1]["reasoning_content"] == "native thinking"
+    assert row["messages"][1]["tool_calls"][0]["function"]["name"] == "Shell"
+    assert row["messages"][2]["content"] == "files"
+    tools_by_name = {tool["function"]["name"]: tool for tool in row["tools"]}
+    assert {"Shell", "read_file", "run_terminal_cmd", "edit_file", "codebase_search"}.issubset(tools_by_name)
+    assert tools_by_name["Shell"]["function"]["parameters"]["required"] == ["command"]
+
+
+def test_extract_cursor_prefers_recovered_db_sessions_over_redacted_native_transcripts(tmp_path: Path):
+    state_db = tmp_path / "workspaceStorage" / "workspace-hash" / "state.vscdb"
+    _write_minimal_cursor_state_db(state_db)
+    transcript = (
+        tmp_path
+        / ".cursor"
+        / "projects"
+        / "c-Users-test-project"
+        / "agent-transcripts"
+        / "redacted-session"
+        / "redacted-session.jsonl"
+    )
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text(
+        json.dumps(
+            {
+                "role": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": '{"root":{"children":[{"children":[],"type":"paragraph"}]}}',
+                        }
+                    ]
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    output_dir = tmp_path / "output"
+    result = runner.invoke(
+        app,
+        [
+            "extract",
+            "cursor",
+            "--sessions-dir",
+            str(tmp_path),
+            "--output",
+            str(output_dir),
+            "--no-anon",
+        ],
+        input="n\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert sorted(path.name for path in output_dir.glob("cursor-*.jsonl")) == [
+        "cursor-composer-1.jsonl",
+        "cursor-workbench.panel.aichat.view.aichat.chatdata.jsonl",
+    ]
+    assert not (output_dir / ".cursor" / "projects").exists()
+    converted = convert_traces_to_training_data(output_dir)
+    assert {row["prompt"] for row in converted} == {"composer prompt", "open chat prompt"}
+    assert '{"root"' not in json.dumps(converted)
 
 
 def test_extract_cursor_reconstructs_archived_composer_data(tmp_path: Path):
@@ -662,34 +797,31 @@ def test_extract_cursor_reconstructs_archived_composer_data(tmp_path: Path):
     )
 
     assert result.exit_code == 0, result.output
-    rows = _read_extracted_jsonl_rows(output_dir)
-    assert len(rows) == 1
-    row = rows[0]
-    assert row["metadata"]["cursor_storage_kind"] == "composerData"
-    assert row["metadata"]["cursor_scope"] == "global"
-    assert row["metadata"]["cursor_headers"] == 4
+    events = _read_extracted_jsonl_rows(output_dir)
+    assert events[0]["type"] == "cursor_session_meta"
+    assert events[0]["cursor_storage_kind"] == "composerData"
+    assert events[0]["cursor_scope"] == "global"
+    converted = convert_traces_to_training_data(output_dir)
+    assert len(converted) == 1
+    row = converted[0]
     assert row["prompt"] == "archived prompt"
     assert row["messages"][0]["content"] == "archived prompt"
     assert '"root"' not in row["prompt"]
-    assert row["response"] == "final response"
-    assert row["model"] == "cursor-fable-5"
-    assert [message["role"] for message in row["messages"]] == ["user", "assistant", "assistant", "tool", "assistant"]
+    assert row["metadata"]["model"] == "cursor-fable-5"
+    assert [message["role"] for message in row["messages"]] == ["user", "assistant", "tool", "assistant"]
     assert row["messages"][1]["reasoning_content"] == "archived reasoning"
-    assert row["messages"][2]["tool_calls"][0]["function"]["name"] == "read_file"
-    assert row["messages"][3]["tool_call_id"] == "call-read"
-    assert row["messages"][3]["content"] == "file contents"
-    assert row["messages"][4]["content"] == "final response"
+    assert row["messages"][1]["tool_calls"][0]["function"]["name"] == "read_file"
+    assert row["messages"][2]["tool_call_id"] == "call-read"
+    assert row["messages"][2]["content"] == "file contents"
+    assert row["messages"][3]["content"] == "final response"
     tools_by_name = {tool["function"]["name"]: tool for tool in row["tools"]}
     assert "run_terminal_cmd" in tools_by_name
     assert tools_by_name["read_file"]["function"]["parameters"]["properties"]["path"] == {"type": "string"}
     assert tools_by_name["read_file"]["function"]["parameters"]["required"] == ["path"]
 
-    converted = convert_traces_to_training_data(output_dir)
-    assert len(converted) == 1
-    assert converted[0]["prompt"] == "archived prompt"
     assert any(
         message.get("role") == "assistant" and message.get("content") == "final response"
-        for message in converted[0]["messages"]
+        for message in row["messages"]
     )
 
 
@@ -713,17 +845,16 @@ def test_extract_cursor_reconstructs_id_keyed_composer_tables(tmp_path: Path):
     )
 
     assert result.exit_code == 0, result.output
-    rows = _read_extracted_jsonl_rows(output_dir)
-    assert len(rows) == 1
-    row = rows[0]
-    assert row["metadata"]["cursor_storage_kind"] == "composerData"
-    assert row["metadata"]["cursor_workspace_id"] == "workspace-id"
+    events = _read_extracted_jsonl_rows(output_dir)
+    assert events[0]["type"] == "cursor_session_meta"
+    assert events[0]["cursor_storage_kind"] == "composerData"
+    assert events[0]["cursor_workspace_id"] == "workspace-id"
+    converted = convert_traces_to_training_data(output_dir)
+    assert len(converted) == 1
+    row = converted[0]
     assert row["prompt"] == "id-keyed prompt"
-    assert row["response"] == "id-keyed answer"
     assert [message["content"] for message in row["messages"]] == ["id-keyed prompt", "id-keyed answer"]
-    assert row["model"] == "cursor-fable-5"
-    assert row["raw_cursor"]["bubble_ids"] == ["user", "assistant"]
-    assert "largeBlob" not in json.dumps(row["raw_cursor"])
+    assert row["metadata"]["model"] == "cursor-fable-5"
     assert "unused answer" not in json.dumps(row)
 
 
@@ -772,10 +903,10 @@ def test_extract_cursor_uses_fallback_prompt_for_escaped_empty_editor_state_and_
     )
 
     assert result.exit_code == 0, result.output
-    rows = _read_extracted_jsonl_rows(output_dir)
-    assert len(rows) == 1
-    row = rows[0]
-    assert row["model"] == "claude-opus-4.5"
+    converted = convert_traces_to_training_data(output_dir)
+    assert len(converted) == 1
+    row = converted[0]
+    assert row["metadata"]["model"] == "claude-opus-4.5"
     assert row["prompt"] == "actual cursor prompt"
     assert row["messages"][0] == {"role": "user", "content": "actual cursor prompt"}
     assert row["messages"][1] == {"role": "assistant", "content": "actual cursor answer"}
@@ -804,10 +935,10 @@ def test_extract_cursor_detects_rich_text_only_messages_and_selected_model_id(tm
     )
 
     assert result.exit_code == 0, result.output
-    rows = _read_extracted_jsonl_rows(output_dir)
-    assert len(rows) == 1
-    row = rows[0]
-    assert row["model"] == "anthropic/claude-opus-4.5"
+    converted = convert_traces_to_training_data(output_dir)
+    assert len(converted) == 1
+    row = converted[0]
+    assert row["metadata"]["model"] == "anthropic/claude-opus-4.5"
     assert row["prompt"] == "rich text only prompt"
     assert row["messages"][0] == {"role": "user", "content": "rich text only prompt"}
     assert row["messages"][1] == {"role": "assistant", "content": "rich text only answer"}
@@ -833,9 +964,9 @@ def test_extract_cursor_sanitizes_training_unsafe_archived_rows(tmp_path: Path):
     )
 
     assert result.exit_code == 0, result.output
-    rows = _read_extracted_jsonl_rows(output_dir)
-    assert len(rows) == 1
-    row = rows[0]
+    converted = convert_traces_to_training_data(output_dir)
+    assert len(converted) == 1
+    row = converted[0]
     assert [message["role"] for message in row["messages"]] == ["user", "assistant", "user", "assistant"]
     assert [message["content"] for message in row["messages"]] == [
         "first prompt",
@@ -844,15 +975,10 @@ def test_extract_cursor_sanitizes_training_unsafe_archived_rows(tmp_path: Path):
         "second answer",
     ]
     assert row["prompt"] == "first prompt"
-    assert row["response"] == "second answer"
-    assert row["metadata"]["cursor_message_count"] == 4
     tool_names = {tool["function"]["name"] for tool in row["tools"]}
     assert {"read_file", "run_terminal_cmd", "edit_file"}.issubset(tool_names)
 
-    converted = convert_traces_to_training_data(output_dir)
-    assert len(converted) == 1
-    assert converted[0]["messages"] == row["messages"]
-    assert converted[0]["metadata"]["trace_type"] == "cursor"
+    assert row["metadata"]["trace_type"] == "cursor"
 
 
 def test_extract_accepts_agent_root_or_native_session_store(tmp_path: Path):
@@ -1305,7 +1431,7 @@ def test_extract_can_upload_staged_anonymized_output_to_huggingface(tmp_path: Pa
     )
     readme = (output_dir / "README.md").read_text(encoding="utf-8")
     assert "armand0e/fable-traces" in readme
-    assert 'path: "*.jsonl"' in readme
+    assert 'path: "**/*.jsonl"' in readme
     assert '- "codex"' in readme
     assert '- "pi"' not in readme
     assert '- "fable-5"' not in readme

@@ -278,12 +278,32 @@ def _summarize_structured_row(event: dict[str, Any]) -> list[dict[str, Any]]:
     return summarize_chat_row(event)
 
 
+def _summarize_cursor(event: dict[str, Any]) -> list[dict[str, Any]]:
+    if isinstance(event.get("messages"), list):
+        return summarize_chat_row(event)
+    role = event.get("role")
+    message = event.get("message")
+    if not isinstance(role, str) or not isinstance(message, dict):
+        return []
+    content = message.get("content")
+    if not isinstance(content, list):
+        return []
+    events: list[dict[str, Any]] = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        summary = _summarize_claude_content_item(item)
+        if summary is not None and not (role == "user" and summary["kind"] == "assistant"):
+            events.append(summary)
+    return events
+
+
 _SUMMARIZERS = {
     "codex": _summarize_codex,
     "pi": _summarize_pi,
     "claude-code": _summarize_claude,
     "hermes": _summarize_external,
-    "cursor": _summarize_structured_row,
+    "cursor": _summarize_cursor,
     "chat": _summarize_structured_row,
 }
 
@@ -342,6 +362,16 @@ def _trace_user_text(provider: str, event: dict[str, Any]) -> str | None:
                 isinstance(item, dict) and item.get("type") == "tool_result" for item in content
             ):
                 return _content_text(content)
+        return None
+    if provider == "cursor":
+        message = event.get("message")
+        if event.get("role") == "user" and isinstance(message, dict):
+            content = message.get("content")
+            if isinstance(content, list) and any(
+                isinstance(item, dict) and item.get("type") == "tool_result" for item in content
+            ):
+                return None
+            return _content_text(content)
         return None
     if provider == "hermes":
         if event.get("type") == "external_message" and event.get("role") == "user":

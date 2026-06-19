@@ -199,7 +199,7 @@ def _frontmatter(pretty_name: str, tags: list[str]) -> str:
             "- config_name: default",
             "  data_files:",
             "  - split: train",
-            '    path: "*.jsonl"',
+            '    path: "**/*.jsonl"',
             "---",
             "",
         ]
@@ -257,16 +257,6 @@ def _sample_lines(trace_files: Iterable[Path], sample_size: int = 1) -> list[str
                     sample = _readme_sample_line(line)
                     projected_total = total_chars + len(sample) + (1 if samples else 0)
                     if projected_total > README_SAMPLE_MAX_CHARS:
-                        samples.append(
-                            json.dumps(
-                                {
-                                    "__truncated__": (
-                                        "Additional sample content omitted to keep the Hugging Face dataset card small."
-                                    )
-                                },
-                                ensure_ascii=False,
-                            )
-                        )
                         return samples
                     samples.append(sample)
                     total_chars = projected_total
@@ -413,24 +403,7 @@ def build_traces_readme(
     dataset_reference = repo_id or "username/repo"
     row_count = _row_count(trace_files)
     sample_lines = _sample_lines(trace_files)
-    sample_block = "\n".join(sample_lines) if sample_lines else json.dumps(
-        {
-            "messages": [
-                {"role": "user", "content": "Hello", "thinking": None},
-                {"role": "assistant", "content": "Hi!", "thinking": None},
-            ],
-            "prompt": "Hello",
-            "response": "Hi!",
-            "model": model_id or "unknown model",
-        } if structured_dataset else {
-            "type": "session_meta",
-            "payload": {
-                "id": "example-session",
-                "model_provider": "codex",
-            },
-        },
-        ensure_ascii=False,
-    )
+    sample_block = "\n".join(sample_lines)
     lines = [
         _frontmatter(pretty_name, tags),
         'This dataset was generated using [teich](https://github.com/TeichAI/teich) by [TeichAI](https://huggingface.co/TeichAI) <img src="https://cdn-avatars.huggingface.co/v1/production/uploads/6837935ac3b7ffe0d2559ce9/-AxyvV4wfUY8uo87kNKkK.png" width="20" height="20" style="display: inline-block; vertical-align: middle; margin: 0 3px;">',
@@ -521,14 +494,10 @@ def build_traces_readme(
                 "",
             ]
         )
+    if sample_block:
+        lines.extend(["## Example", "", "```json", sample_block, "```", ""])
     lines.extend(
         [
-            "## Example",
-            "",
-            "```json",
-            sample_block,
-            "```",
-            "",
             "## Training",
             "",
             f"Use this dataset as `{dataset_reference}` with Teich's data preparation and training utilities.",
