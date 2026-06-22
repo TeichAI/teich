@@ -346,6 +346,27 @@ def test_codex_config_omits_service_tier_when_unset(tmp_path: Path):
     assert "service_tier" not in content
 
 
+def test_codex_config_writes_reasoning_summary(tmp_path: Path):
+    """reasoning_summary is written to config.toml as model_reasoning_summary when set."""
+    config = Config(model=ModelConfig(model="gpt-5.5", reasoning_summary="detailed"))
+    with patch.object(CodexRunner, "_ensure_image"):
+        runner = CodexRunner(config)
+    codex_home = tmp_path / ".codex"
+    runner._write_codex_config(codex_home)
+    content = (codex_home / "config.toml").read_text(encoding="utf-8")
+    assert 'model_reasoning_summary = "detailed"' in content
+
+
+def test_codex_config_omits_reasoning_summary_when_unset(tmp_path: Path):
+    config = Config(model=ModelConfig(model="gpt-5.5"))
+    with patch.object(CodexRunner, "_ensure_image"):
+        runner = CodexRunner(config)
+    codex_home = tmp_path / ".codex"
+    runner._write_codex_config(codex_home)
+    content = (codex_home / "config.toml").read_text(encoding="utf-8")
+    assert "model_reasoning_summary" not in content
+
+
 def _codex_host_auth_config(tmp_path: Path) -> tuple[Config, Path]:
     host_auth = tmp_path / "host" / "auth.json"
     host_auth.parent.mkdir(parents=True, exist_ok=True)

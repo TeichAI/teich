@@ -239,6 +239,19 @@ model:
 
 Teich writes `service_tier = "fast"` into the container's `config.toml`. Fast mode requires ChatGPT subscription auth (set `agent.codex.use_host_auth: true` above) and a supported model; with an API key Codex falls back to standard pricing. `service_tier` is a free-form passthrough, so other tiers (e.g. `flex`) also work.
 
+#### Reasoning summaries
+
+Codex reasoning models only return their chain-of-thought as opaque encrypted content plus human-readable **summaries**; the summaries are what teich records in traces (as `reasoning_text`). Codex's default summary setting can yield empty summaries (`summary: []`). To capture richer reasoning in your traces, set the summary detail:
+
+```yaml
+model:
+  model: gpt-5.5
+  reasoning_effort: xhigh     # depth of reasoning
+  reasoning_summary: detailed # how much of it is summarized into the trace
+```
+
+Teich writes `model_reasoning_summary = "detailed"` into `config.toml`. Values are `auto | concise | detailed | none` (free-form passthrough); leave unset to use Codex's default. Note this controls the *summary* of the reasoning, not the raw chain-of-thought — Codex/OpenAI never return the full raw CoT in plaintext.
+
 ### `pi`
 
 Copies native Pi session JSONL from mounted `/home/codex/pi-sessions`, then normalizes and validates tool-call structure before writing output.

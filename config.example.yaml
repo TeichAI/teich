@@ -47,6 +47,12 @@ model:
   # safe,terminal,file,skills,memory,session_search,delegation
   reasoning_effort: medium
 
+  # Optional Codex reasoning-summary detail, forwarded as model_reasoning_summary.
+  # Values: auto | concise | detailed | none. Set to "detailed" to capture rich
+  # reasoning summaries in traces (Codex's default can emit empty summaries).
+  # Leave null to use Codex's default.
+  reasoning_summary: null
+
   # Optional Codex service tier. Set to "fast" to enable Codex fast mode: it
   # runs ~1.5x faster at a higher credit rate and requires ChatGPT subscription
   # auth (agent.codex.use_host_auth) plus a supported model such as gpt-5.5 or

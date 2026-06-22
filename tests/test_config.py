@@ -397,6 +397,17 @@ def test_model_service_tier_is_free_string_passthrough():
     assert ModelConfig(service_tier="flex").service_tier == "flex"
 
 
+def test_model_reasoning_summary_defaults_to_none():
+    """Reasoning summaries use Codex's default unless explicitly set."""
+    assert Config().model.reasoning_summary is None
+
+
+def test_model_reasoning_summary_is_free_string_passthrough():
+    """reasoning_summary accepts auto/concise/detailed/none without an enum."""
+    assert ModelConfig(reasoning_summary="detailed").reasoning_summary == "detailed"
+    assert ModelConfig(reasoning_summary="concise").reasoning_summary == "concise"
+
+
 def test_codex_auth_config_defaults():
     """Codex host-auth is off by default with a project-local auth dir."""
     codex = Config().agent.codex

@@ -128,6 +128,7 @@ class ModelConfig(BaseModel):
     approval_policy: str = "never"
     sandbox: str = "danger-full-access"
     reasoning_effort: str | None = None
+    reasoning_summary: str | None = None
     service_tier: str | None = None
     context_length: int | None = None
     approval_mode: str | None = "none"

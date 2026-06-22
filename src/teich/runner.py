@@ -2165,6 +2165,10 @@ class CodexRunner(DockerRuntimeRunner):
             lines.append(
                 f"model_reasoning_effort = {self._toml_string(self.config.model.reasoning_effort)}"
             )
+        if self.config.model.reasoning_summary:
+            lines.append(
+                f"model_reasoning_summary = {self._toml_string(self.config.model.reasoning_summary)}"
+            )
         if self.config.model.service_tier:
             lines.append(
                 f"service_tier = {self._toml_string(self.config.model.service_tier)}"
