@@ -3212,6 +3212,8 @@ class ClaudeCodeRunner(ExternalCliRunner):
         permission_mode = self._permission_mode()
         if permission_mode:
             claude_command.extend(["--permission-mode", permission_mode])
+        if self.config.developer_instructions:
+            claude_command.extend(["--append-system-prompt", self.config.developer_instructions])
         if resume_session_id:
             claude_command.extend(["--resume", resume_session_id])
         elif continue_session:
@@ -3683,6 +3685,24 @@ class HermesRunner(ExternalCliRunner):
         }
         (home_dir / "config.yaml").write_text(json.dumps(hermes_config, indent=2), encoding="utf-8")
 
+    def _write_agents_md(self, workspace: Path) -> None:
+        """Inject developer_instructions via AGENTS.md, which Hermes auto-loads.
+
+        Hermes has no system-prompt flag; it auto-injects AGENTS.md from the
+        workspace (Teich does not pass --ignore-rules). Append to an existing
+        AGENTS.md so a cloned repo's own guidance is preserved.
+        """
+        instructions = self.config.developer_instructions
+        if not instructions or not instructions.strip():
+            return
+        block = instructions.strip() + "\n"
+        agents_md = workspace / "AGENTS.md"
+        if agents_md.exists():
+            existing = agents_md.read_text(encoding="utf-8").rstrip("\n")
+            agents_md.write_text(f"{existing}\n\n{block}", encoding="utf-8")
+        else:
+            agents_md.write_text(block, encoding="utf-8")
+
     @staticmethod
     def _decode_hermes_content(value: Any) -> Any:
         if isinstance(value, str) and value.startswith("\x00json:"):
@@ -3942,6 +3962,7 @@ class HermesRunner(ExternalCliRunner):
         try:
             workspace.mkdir(parents=True, exist_ok=True)
             self._write_hermes_runtime_config(home_dir)
+            self._write_agents_md(workspace)
             if len(turn_prompts) > 1:
                 self._start_tracked_container(
                     self._build_external_persistent_container_command(workspace, home_dir, container_name),
@@ -5312,6 +5333,8 @@ class PiRunner(DockerRuntimeRunner):
         api_key = self.config.get_api_key()
         if api_key and not configured_base_url:
             pi_command.extend(["--api-key", api_key])
+        if self.config.developer_instructions:
+            pi_command.extend(["--append-system-prompt", self.config.developer_instructions])
         if continue_session:
             pi_command.append("--continue")
         prompt_path = shlex.quote(f"{WORKSPACE_IN_CONTAINER}/{TEICH_PROMPT_FILE_NAME}")

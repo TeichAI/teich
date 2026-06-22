@@ -252,6 +252,28 @@ model:
 
 Teich writes `model_reasoning_summary = "detailed"` into `config.toml`. Values are `auto | concise | detailed | none` (free-form passthrough); leave unset to use Codex's default. Note this controls the *summary* of the reasoning, not the raw chain-of-thought — Codex/OpenAI never return the full raw CoT in plaintext.
 
+### Developer instructions / CoT narration (all agents)
+
+The top-level `developer_instructions` config is injected into **every** agent run as additive system/developer guidance, via each agent's native mechanism:
+
+| Agent | Mechanism |
+|-------|-----------|
+| codex | `developer_instructions` in `config.toml` |
+| claude-code | `--append-system-prompt` |
+| pi | `--append-system-prompt` |
+| hermes | auto-loaded `AGENTS.md` in the workspace (appended, so a cloned repo's own `AGENTS.md` is preserved) |
+
+It augments each agent's built-in base prompt rather than replacing it. A useful pattern for training data is to nudge the agent to narrate its reasoning in its visible output, which lands in the trace (and SFT rows) alongside Codex's reasoning summaries:
+
+```yaml
+developer_instructions: |
+  Think out loud so your problem-solving process is visible. Before each tool
+  call or edit, briefly explain what you're doing and why; after a command or
+  test runs, state what you concluded before the next step.
+```
+
+This produces reasoning *narration* in the assistant messages — not the model's hidden raw chain-of-thought, which providers don't expose. (The `chat` provider is text-only distillation and uses per-prompt `system` instead.)
+
 ### `pi`
 
 Copies native Pi session JSONL from mounted `/home/codex/pi-sessions`, then normalizes and validates tool-call structure before writing output.

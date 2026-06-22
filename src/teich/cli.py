@@ -1166,7 +1166,15 @@ timeout_seconds: 600
 # Prefer env vars or api.api_key above for new configs.
 openai_api_key: null
 
-# Optional developer instructions injected into the runtime.
+# Optional developer/system instructions injected into every agent run.
+# Applied across codex (developer_instructions), claude-code and pi
+# (--append-system-prompt), and hermes (AGENTS.md) — additive, so the agent's
+# built-in base prompt is preserved. Handy for nudging chain-of-thought into the
+# trace, e.g.:
+#   developer_instructions: |
+#     Think out loud so your problem-solving process is visible. Before each tool
+#     call or edit, briefly explain what you're doing and why; after a command or
+#     test runs, state what you concluded before the next step.
 developer_instructions: null
 '''
 

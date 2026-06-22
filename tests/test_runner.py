@@ -1693,6 +1693,93 @@ def test_hermes_runner_writes_custom_endpoint_runtime_config(tmp_path: Path):
     ]
 
 
+_DEV_INSTRUCTIONS = "Think out loud and explain your reasoning."
+
+
+def _dev_instructions_config(provider: str, tmp_path: Path) -> Config:
+    return Config(
+        agent={"provider": provider},
+        output={"traces_dir": tmp_path / "output", "sandbox_dir": tmp_path / "sandbox"},
+        developer_instructions=_DEV_INSTRUCTIONS,
+    )
+
+
+def _plain_config(provider: str, tmp_path: Path) -> Config:
+    return Config(
+        agent={"provider": provider},
+        output={"traces_dir": tmp_path / "output", "sandbox_dir": tmp_path / "sandbox"},
+    )
+
+
+def test_claude_appends_developer_instructions_as_system_prompt(tmp_path: Path):
+    with patch.object(ClaudeCodeRunner, "_ensure_image"):
+        runner = ClaudeCodeRunner(_dev_instructions_config("claude-code", tmp_path))
+    command = runner._build_shell_command()
+    assert "--append-system-prompt" in command
+    assert _DEV_INSTRUCTIONS in command
+
+
+def test_claude_omits_system_prompt_without_developer_instructions(tmp_path: Path):
+    with patch.object(ClaudeCodeRunner, "_ensure_image"):
+        runner = ClaudeCodeRunner(_plain_config("claude-code", tmp_path))
+    assert "--append-system-prompt" not in runner._build_shell_command()
+
+
+def test_pi_appends_developer_instructions_as_system_prompt(tmp_path: Path):
+    with patch.object(PiRunner, "_ensure_image"):
+        runner = PiRunner(_dev_instructions_config("pi", tmp_path))
+    joined = " ".join(runner._build_pi_agent_command())
+    assert "--append-system-prompt" in joined
+    assert _DEV_INSTRUCTIONS in joined
+
+
+def test_pi_omits_system_prompt_without_developer_instructions(tmp_path: Path):
+    with patch.object(PiRunner, "_ensure_image"):
+        runner = PiRunner(_plain_config("pi", tmp_path))
+    assert "--append-system-prompt" not in " ".join(runner._build_pi_agent_command())
+
+
+def test_hermes_writes_developer_instructions_to_agents_md(tmp_path: Path):
+    with patch.object(HermesRunner, "_ensure_image"):
+        runner = HermesRunner(_dev_instructions_config("hermes", tmp_path))
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    runner._write_agents_md(workspace)
+    agents_md = workspace / "AGENTS.md"
+    assert agents_md.exists()
+    assert _DEV_INSTRUCTIONS in agents_md.read_text(encoding="utf-8")
+
+
+def test_hermes_appends_to_existing_agents_md(tmp_path: Path):
+    with patch.object(HermesRunner, "_ensure_image"):
+        runner = HermesRunner(_dev_instructions_config("hermes", tmp_path))
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "AGENTS.md").write_text("# Existing project rules\n", encoding="utf-8")
+    runner._write_agents_md(workspace)
+    content = (workspace / "AGENTS.md").read_text(encoding="utf-8")
+    assert "# Existing project rules" in content
+    assert _DEV_INSTRUCTIONS in content
+
+
+def test_hermes_no_agents_md_without_developer_instructions(tmp_path: Path):
+    with patch.object(HermesRunner, "_ensure_image"):
+        runner = HermesRunner(_plain_config("hermes", tmp_path))
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    runner._write_agents_md(workspace)
+    assert not (workspace / "AGENTS.md").exists()
+
+
+def test_codex_writes_developer_instructions_to_config(tmp_path: Path):
+    with patch.object(CodexRunner, "_ensure_image"):
+        runner = CodexRunner(_dev_instructions_config("codex", tmp_path))
+    codex_home = tmp_path / ".codex"
+    runner._write_codex_config(codex_home)
+    content = (codex_home / "config.toml").read_text(encoding="utf-8")
+    assert f'developer_instructions = "{_DEV_INSTRUCTIONS}"' in content
+
+
 def test_external_runner_decodes_subprocess_output_as_utf8(tmp_path: Path):
     config = Config(
         agent={"provider": "hermes"},
