@@ -226,6 +226,8 @@ publish:
 
 `agent.provider: chat` writes structured chat rows directly and does not require Docker. Agent providers preserve raw or native traces as source-of-truth artifacts.
 
+To run Codex on your ChatGPT subscription instead of an API key, set `agent.codex.use_host_auth: true` (Teich shares your host `codex login` across containers), and enable Codex fast mode with `model.service_tier: fast`. See [Generation](docs/generation.md#using-your-chatgpt-subscription-host-auth).
+
 ## Python Entry Points
 
 ```python

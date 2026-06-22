@@ -201,6 +201,44 @@ Copies native Codex session JSONL from mounted `CODEX_HOME/sessions` and normali
 
 Teich appends configured `tool_schema` metadata so tools remain available for training even if the model did not call them.
 
+#### Using your ChatGPT subscription (host auth)
+
+By default Codex runs on an API key. To run it on your ChatGPT subscription instead, point Teich at your host Codex login:
+
+```yaml
+agent:
+  provider: codex
+  codex:
+    use_host_auth: true
+    # host_auth_file: null          # defaults to $CODEX_HOME/auth.json or ~/.codex/auth.json
+    # auth_dir: ./.teich/codex-auth # where the auth snapshot lives during a run
+```
+
+You must have logged in on the host first (`codex login`). When enabled, Teich:
+
+1. Copies your host `auth.json` **once** into `auth_dir` as a snapshot. It re-seeds from the host only when the host file is newer, so a token already rotated in place is never clobbered by a stale host copy.
+2. Starts a single host-side **token broker** that owns the rotating OAuth refresh token for the whole run. Each Codex container is seeded with its own `auth.json` whose `refresh_token` is a per-run secret, and is pointed at the broker via `CODEX_REFRESH_TOKEN_URL_OVERRIDE`. The broker is the sole caller of the real refresh endpoint, so the durable refresh token never enters a container.
+3. Passes **no** `*_API_KEY` env into the container, so Codex uses the subscription tokens even if an ambient `OPENAI_API_KEY` is set in your shell.
+
+Important caveats (Codex's OAuth refresh tokens are single-use/rotating):
+
+- **Your host login gets invalidated.** The first time the broker rotates the token, the server invalidates your interactive `codex` login on the host. Run `codex login` again on the host afterward to restore it. (Use a dedicated Codex login for batch runs if you don't want to disturb your daily one.)
+- **`auth_dir` holds credentials.** Teich refuses to place it under `traces_dir`/`sandbox_dir`/`failures_dir` (those are uploaded) and drops a `.gitignore` (`*`) into it so the snapshot isn't committed. Like the output dirs, `auth_dir` is resolved relative to the directory you run `teich` from (not the config file's location).
+- **Concurrency is safe.** The broker single-flights rotation and hands the same live access token to every container, so concurrent containers can't invalidate one another's tokens — any `max_concurrency` works.
+- To re-seed from a fresh host login, delete `auth_dir` (or just its `auth.json`).
+
+#### Fast mode
+
+Codex "fast mode" is a service tier (not a model or reasoning level) that runs a supported model faster at a higher credit rate. Enable it with:
+
+```yaml
+model:
+  model: gpt-5.5      # fast mode supports gpt-5.5 / gpt-5.4
+  service_tier: fast
+```
+
+Teich writes `service_tier = "fast"` into the container's `config.toml`. Fast mode requires ChatGPT subscription auth (set `agent.codex.use_host_auth: true` above) and a supported model; with an API key Codex falls back to standard pricing. `service_tier` is a free-form passthrough, so other tiers (e.g. `flex`) also work.
+
 ### `pi`
 
 Copies native Pi session JSONL from mounted `/home/codex/pi-sessions`, then normalizes and validates tool-call structure before writing output.

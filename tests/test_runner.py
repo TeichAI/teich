@@ -325,6 +325,187 @@ def test_codex_config_setup(tmp_path: Path):
         assert oct(config_file.stat().st_mode & 0o777) == "0o666"
 
 
+def test_codex_config_writes_service_tier(tmp_path: Path):
+    """Fast mode is written to config.toml as service_tier when set."""
+    config = Config(model=ModelConfig(model="gpt-5.5", service_tier="fast"))
+    with patch.object(CodexRunner, "_ensure_image"):
+        runner = CodexRunner(config)
+    codex_home = tmp_path / ".codex"
+    runner._write_codex_config(codex_home)
+    content = (codex_home / "config.toml").read_text(encoding="utf-8")
+    assert 'service_tier = "fast"' in content
+
+
+def test_codex_config_omits_service_tier_when_unset(tmp_path: Path):
+    config = Config(model=ModelConfig(model="gpt-5.5"))
+    with patch.object(CodexRunner, "_ensure_image"):
+        runner = CodexRunner(config)
+    codex_home = tmp_path / ".codex"
+    runner._write_codex_config(codex_home)
+    content = (codex_home / "config.toml").read_text(encoding="utf-8")
+    assert "service_tier" not in content
+
+
+def _codex_host_auth_config(tmp_path: Path) -> tuple[Config, Path]:
+    host_auth = tmp_path / "host" / "auth.json"
+    host_auth.parent.mkdir(parents=True, exist_ok=True)
+    host_auth.write_text('{"tokens":{"refresh_token":"R0"}}', encoding="utf-8")
+    config = Config(
+        agent={
+            "provider": "codex",
+            "codex": {
+                "use_host_auth": True,
+                "host_auth_file": str(host_auth),
+                "auth_dir": str(tmp_path / "project" / ".teich" / "codex-auth"),
+            },
+        },
+    )
+    return config, host_auth
+
+
+def test_codex_prepare_shared_host_auth_seeds_from_host(tmp_path: Path):
+    config, host_auth = _codex_host_auth_config(tmp_path)
+    with patch.object(CodexRunner, "_ensure_image"):
+        runner = CodexRunner(config)
+    shared = runner._prepare_shared_host_auth()
+    assert shared == (tmp_path / "project" / ".teich" / "codex-auth" / "auth.json")
+    assert shared.read_text(encoding="utf-8") == '{"tokens":{"refresh_token":"R0"}}'
+    if _filesystem_preserves_chmod(tmp_path):
+        assert oct(shared.stat().st_mode & 0o777) == "0o666"
+
+
+def test_codex_prepare_shared_host_auth_gitignores_credentials(tmp_path: Path):
+    """The credential snapshot dir is gitignored by default, not just by docs."""
+    config, _ = _codex_host_auth_config(tmp_path)
+    with patch.object(CodexRunner, "_ensure_image"):
+        runner = CodexRunner(config)
+    shared = runner._prepare_shared_host_auth()
+    gitignore = shared.parent / ".gitignore"
+    assert gitignore.exists()
+    assert "*" in gitignore.read_text(encoding="utf-8").split()
+
+
+def test_codex_prepare_shared_host_auth_preserves_rotated_token(tmp_path: Path):
+    """A refreshed (rotated) shared token must not be clobbered by the stale host file."""
+    config, host_auth = _codex_host_auth_config(tmp_path)
+    with patch.object(CodexRunner, "_ensure_image"):
+        runner = CodexRunner(config)
+    shared = runner._prepare_shared_host_auth()
+    # Codex refreshes in place: shared advances to R1, newer than the host file.
+    shared.write_text('{"tokens":{"refresh_token":"R1"}}', encoding="utf-8")
+    os.utime(shared, (time.time() + 10, time.time() + 10))
+    again = runner._prepare_shared_host_auth()
+    assert again.read_text(encoding="utf-8") == '{"tokens":{"refresh_token":"R1"}}'
+
+
+def test_codex_prepare_shared_host_auth_reseeds_when_host_newer(tmp_path: Path):
+    """A fresh host login (newer mtime) re-seeds the shared snapshot."""
+    config, host_auth = _codex_host_auth_config(tmp_path)
+    with patch.object(CodexRunner, "_ensure_image"):
+        runner = CodexRunner(config)
+    runner._prepare_shared_host_auth()
+    host_auth.write_text('{"tokens":{"refresh_token":"R_new"}}', encoding="utf-8")
+    os.utime(host_auth, (time.time() + 10, time.time() + 10))
+    shared = runner._prepare_shared_host_auth()
+    assert shared.read_text(encoding="utf-8") == '{"tokens":{"refresh_token":"R_new"}}'
+
+
+def test_codex_prepare_shared_host_auth_errors_when_missing(tmp_path: Path):
+    config = Config(
+        agent={
+            "provider": "codex",
+            "codex": {"use_host_auth": True, "host_auth_file": str(tmp_path / "missing.json")},
+        },
+    )
+    with patch.object(CodexRunner, "_ensure_image"):
+        runner = CodexRunner(config)
+    with pytest.raises(RuntimeError, match="codex login"):
+        runner._prepare_shared_host_auth()
+
+
+def _codex_host_auth_config_with_tokens(tmp_path: Path) -> Config:
+    """Host-auth config whose snapshot is a complete ChatGPT login (the broker
+    validates that both an access and a refresh token are present)."""
+    host_auth = tmp_path / "host" / "auth.json"
+    host_auth.parent.mkdir(parents=True, exist_ok=True)
+    host_auth.write_text(
+        '{"tokens":{"access_token":"A0","refresh_token":"R0","account_id":"acct"}}',
+        encoding="utf-8",
+    )
+    return Config(
+        agent={
+            "provider": "codex",
+            "codex": {
+                "use_host_auth": True,
+                "host_auth_file": str(host_auth),
+                "auth_dir": str(tmp_path / "project" / ".teich" / "codex-auth"),
+            },
+        },
+    )
+
+
+def test_codex_command_uses_broker_and_suppresses_api_key(tmp_path: Path, monkeypatch):
+    """With host-auth on, point Codex at the broker (refresh override + host-gateway),
+    mount no auth.json, and pass no API key env (even an ambient one)."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-ambient-should-not-leak")
+    config = _codex_host_auth_config_with_tokens(tmp_path)
+    with patch.object(CodexRunner, "_ensure_image"):
+        runner = CodexRunner(config)
+    try:
+        cmd = runner._build_codex_command(
+            "Build app",
+            workspace=tmp_path / "ws",
+            codex_home=tmp_path / "ch",
+            container_name="teich-codex-x",
+        )
+        override = next(
+            part for part in cmd if part.startswith("CODEX_REFRESH_TOKEN_URL_OVERRIDE=")
+        )
+        assert override.startswith("CODEX_REFRESH_TOKEN_URL_OVERRIDE=http://host.docker.internal:")
+        assert override.endswith("/oauth/token")
+        assert "host.docker.internal:host-gateway" in cmd
+        # No auth.json bind-mount, and no API key env (broker owns the real token).
+        assert not any(":/home/codex/.codex/auth.json" in part for part in cmd)
+        assert not any(part.startswith("OPENAI_API_KEY=") for part in cmd)
+    finally:
+        if runner._broker is not None:
+            runner._broker.stop()
+
+
+def test_codex_write_seeded_auth_hides_real_refresh_token(tmp_path: Path):
+    """Each container's seeded auth.json carries real tokens but a secret refresh token."""
+    config = _codex_host_auth_config_with_tokens(tmp_path)
+    with patch.object(CodexRunner, "_ensure_image"):
+        runner = CodexRunner(config)
+    try:
+        broker = runner._ensure_broker()
+        assert broker is not None
+        codex_home = tmp_path / "ch"
+        codex_home.mkdir()
+        runner._write_seeded_codex_auth(codex_home, broker)
+        seeded = json.loads((codex_home / "auth.json").read_text(encoding="utf-8"))
+        assert seeded["tokens"]["access_token"] == "A0"
+        assert seeded["tokens"]["refresh_token"] == broker.secret
+        assert seeded["tokens"]["refresh_token"] != "R0"
+    finally:
+        if runner._broker is not None:
+            runner._broker.stop()
+
+
+def test_codex_command_without_host_auth_still_passes_api_key(tmp_path: Path):
+    config = Config(model=ModelConfig(model="o4-mini"), openai_api_key="sk-test123")
+    with patch.object(CodexRunner, "_ensure_image"):
+        runner = CodexRunner(config)
+    cmd = runner._build_codex_command(
+        "Build app",
+        workspace=tmp_path / "ws",
+        codex_home=tmp_path / "ch",
+        container_name="teich-codex-x",
+    )
+    assert "OPENAI_API_KEY=sk-test123" in cmd
+    assert not any(":/home/codex/.codex/auth.json" in part for part in cmd)
+
+
 def test_run_session_command_generation():
     """Test that codex exec command is generated correctly."""
     config = Config(
