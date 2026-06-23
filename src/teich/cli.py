@@ -716,6 +716,15 @@ def generate(
     try:
         if agent_provider == "codex":
             runner = CodexRunner(cfg)
+            if cfg.agent.codex.use_host_auth:
+                console.print(
+                    "[yellow]Codex host-auth enabled: using your ChatGPT subscription via "
+                    f"{cfg.get_codex_host_auth_source()}.[/yellow]"
+                )
+                console.print(
+                    "[yellow]Heads up: once the rotating token is refreshed, your host Codex login "
+                    "will be invalidated — run `codex login` on the host afterward to restore it.[/yellow]"
+                )
             if cfg.agent.langfuse.enabled:
                 console.print(
                     "[cyan]Codex Langfuse tracing enabled: uploading each session to "
@@ -1031,6 +1040,20 @@ agent:
   # chat = direct text-only dataset generation via an OpenAI-compatible API
   provider: pi
 
+  # Codex-only: use your ChatGPT subscription instead of an API key. Teich seeds
+  # one auth.json snapshot from your host login ($CODEX_HOME/auth.json or
+  # ~/.codex/auth.json) into auth_dir, then runs a host-side broker that owns the
+  # rotating refresh token. Each container gets its own seeded auth.json (refresh
+  # token swapped for a per-run secret) and refreshes through the broker, which
+  # single-flights rotation, so any max_concurrency is safe.
+  # NOTE: the first rotation invalidates your host `codex` login; run `codex
+  # login` again afterward to restore it. auth_dir holds live credentials, so
+  # Teich keeps it out of output/sandbox/failures and gitignores it.
+  # codex:
+  #   use_host_auth: true
+  #   host_auth_file: null            # default: $CODEX_HOME/auth.json or ~/.codex/auth.json
+  #   auth_dir: ./.teich/codex-auth
+
   # Trace each agent session to Langfuse (https://langfuse.com). Works for Codex
   # and Claude Code -- each uses its own native integration (Codex plugin, Claude
   # Code Stop hook) and Teich passes the credentials into the container. Side-
@@ -1061,6 +1084,18 @@ model:
   # Hermes also enables built-in toolsets:
   # safe,terminal,file,skills,memory,session_search,delegation
   reasoning_effort: medium
+
+  # Optional Codex reasoning-summary detail, forwarded as model_reasoning_summary.
+  # Values: auto | concise | detailed | none. Set to "detailed" to capture rich
+  # reasoning summaries in traces (Codex's default can emit empty summaries).
+  # Leave null to use Codex's default.
+  reasoning_summary: null
+
+  # Optional Codex service tier. Set to "fast" to enable Codex fast mode: it
+  # runs ~1.5x faster at a higher credit rate and requires ChatGPT subscription
+  # auth (agent.codex.use_host_auth) plus a supported model such as gpt-5.5 or
+  # gpt-5.4. Leave null for the standard tier.
+  service_tier: null
 
   # Optional context length override for providers that support it.
   # Useful for Hermes custom endpoints when /v1/models reports a served
@@ -1154,7 +1189,15 @@ timeout_seconds: 600
 # Prefer env vars or api.api_key above for new configs.
 openai_api_key: null
 
-# Optional developer instructions injected into the runtime.
+# Optional developer/system instructions injected into every agent run.
+# Applied across codex (developer_instructions), claude-code and pi
+# (--append-system-prompt), and hermes (AGENTS.md) — additive, so the agent's
+# built-in base prompt is preserved. Handy for nudging chain-of-thought into the
+# trace, e.g.:
+#   developer_instructions: |
+#     Think out loud so your problem-solving process is visible. Before each tool
+#     call or edit, briefly explain what you're doing and why; after a command or
+#     test runs, state what you concluded before the next step.
 developer_instructions: null
 '''
 

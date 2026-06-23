@@ -31,6 +31,22 @@ def _langfuse_config(**overrides) -> Config:
     )
 
 
+# -- runtime image selection -------------------------------------------------
+
+def test_codex_langfuse_uses_tracing_runtime_image():
+    with patch.object(CodexRunner, "_ensure_image"):
+        runner = CodexRunner(_langfuse_config())
+    assert runner.image_name == "teich-runtime:v3-langfuse"
+    assert runner._runtime_build_args() == ["--build-arg", "TEICH_INSTALL_LANGFUSE=1"]
+
+
+def test_codex_without_langfuse_uses_standard_runtime_image():
+    with patch.object(CodexRunner, "_ensure_image"):
+        runner = CodexRunner(Config(model=ModelConfig(model="gpt-5.5")))
+    assert runner.image_name == "teich-runtime:v3"
+    assert runner._runtime_build_args() == []
+
+
 # -- config.toml blocks ------------------------------------------------------
 
 def test_codex_config_writes_langfuse_blocks_when_enabled(tmp_path: Path):

@@ -26,6 +26,7 @@ RUN ln -sf /usr/bin/python3 /usr/local/bin/python && \
     ln -sf /opt/venv/bin/pip3 /usr/local/bin/pip3
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 ENV VIRTUAL_ENV=/opt/venv
+ARG TEICH_INSTALL_LANGFUSE=0
 
 # Install Astral uv and npm-backed agent CLIs in one layer
 # Use npm cache mount for faster installs
@@ -47,27 +48,30 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     chmod +x /usr/local/bin/hermes && \
     (hermes --version || hermes --help >/dev/null)
 
-# Bake the Langfuse Codex observability plugin into a staging CODEX_HOME so Teich
-# can seed it into each session offline (no per-run network on the sandboxes).
-# Only used when agent.langfuse.enabled is set; side-channel/observability
-# only. NOTE: pulls the plugin at its current HEAD -- the version is pinned at
-# image-build time, not by a commit hash. chmod a+rX so the unprivileged in-
-# container `codex` user (and the host `docker cp`) can read it.
+# Bake Langfuse tooling only for the tracing-enabled runtime image. The default
+# runtime image leaves this off so normal Teich runs do not depend on Langfuse
+# plugin, pip, or git availability during Docker rebuilds.
 RUN HOME=/opt/codex-langfuse CODEX_HOME=/opt/codex-langfuse/.codex \
     sh -c 'mkdir -p "$CODEX_HOME" \
-      && codex plugin marketplace add langfuse/codex-observability-plugin \
-      && codex plugin add tracing@codex-observability-plugin \
+      && if [ "$TEICH_INSTALL_LANGFUSE" = "1" ]; then \
+        codex plugin marketplace add langfuse/codex-observability-plugin \
+        && codex plugin add tracing@codex-observability-plugin; \
+      fi \
       && chmod -R a+rX /opt/codex-langfuse'
 
 # Langfuse hook + SDK for Claude Code, pinned to a known-good commit so the
 # baked hook script is reproducible. The SDK goes in the venv because Claude
 # strips it from a hook's PATH, so the hook calls it by full path.
-RUN /opt/venv/bin/pip install --no-cache-dir "langfuse>=4.0,<5" && \
-    git clone https://github.com/langfuse/Claude-Observability-Plugin.git \
-        /opt/claude-langfuse-plugin && \
-    git -C /opt/claude-langfuse-plugin checkout 597af67d6c6b369f3e55db6cfa2ebe444f1af46c && \
-    rm -rf /opt/claude-langfuse-plugin/.git && \
-    chmod -R a+rX /opt/claude-langfuse-plugin
+RUN if [ "$TEICH_INSTALL_LANGFUSE" = "1" ]; then \
+      /opt/venv/bin/pip install --no-cache-dir "langfuse>=4.0,<5" \
+      && git clone https://github.com/langfuse/Claude-Observability-Plugin.git \
+          /opt/claude-langfuse-plugin \
+      && git -C /opt/claude-langfuse-plugin checkout 597af67d6c6b369f3e55db6cfa2ebe444f1af46c \
+      && rm -rf /opt/claude-langfuse-plugin/.git \
+      && chmod -R a+rX /opt/claude-langfuse-plugin; \
+    else \
+      mkdir -p /opt/claude-langfuse-plugin; \
+    fi
 
 # Create working directory and user in one layer
 WORKDIR /workspace

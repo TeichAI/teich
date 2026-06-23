@@ -58,6 +58,20 @@ def _claude_langfuse_config(base_url: str = "https://langfuse.example.com") -> C
     )
 
 
+def test_claude_langfuse_uses_tracing_runtime_image():
+    with patch.object(ClaudeCodeRunner, "_ensure_image"):
+        runner = ClaudeCodeRunner(_claude_langfuse_config())
+    assert runner.image_name == "teich-runtime:v3-langfuse"
+    assert runner._runtime_build_args() == ["--build-arg", "TEICH_INSTALL_LANGFUSE=1"]
+
+
+def test_claude_without_langfuse_uses_standard_runtime_image():
+    with patch.object(ClaudeCodeRunner, "_ensure_image"):
+        runner = ClaudeCodeRunner(Config(model=ModelConfig(model="claude-sonnet-4-6")))
+    assert runner.image_name == "teich-runtime:v3"
+    assert runner._runtime_build_args() == []
+
+
 def test_claude_langfuse_env_items_when_enabled():
     with patch.object(ClaudeCodeRunner, "_ensure_image"):
         runner = ClaudeCodeRunner(_claude_langfuse_config())

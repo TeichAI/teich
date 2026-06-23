@@ -325,6 +325,208 @@ def test_codex_config_setup(tmp_path: Path):
         assert oct(config_file.stat().st_mode & 0o777) == "0o666"
 
 
+def test_codex_config_writes_service_tier(tmp_path: Path):
+    """Fast mode is written to config.toml as service_tier when set."""
+    config = Config(model=ModelConfig(model="gpt-5.5", service_tier="fast"))
+    with patch.object(CodexRunner, "_ensure_image"):
+        runner = CodexRunner(config)
+    codex_home = tmp_path / ".codex"
+    runner._write_codex_config(codex_home)
+    content = (codex_home / "config.toml").read_text(encoding="utf-8")
+    assert 'service_tier = "fast"' in content
+
+
+def test_codex_config_omits_service_tier_when_unset(tmp_path: Path):
+    config = Config(model=ModelConfig(model="gpt-5.5"))
+    with patch.object(CodexRunner, "_ensure_image"):
+        runner = CodexRunner(config)
+    codex_home = tmp_path / ".codex"
+    runner._write_codex_config(codex_home)
+    content = (codex_home / "config.toml").read_text(encoding="utf-8")
+    assert "service_tier" not in content
+
+
+def test_codex_config_writes_reasoning_summary(tmp_path: Path):
+    """reasoning_summary is written to config.toml as model_reasoning_summary when set."""
+    config = Config(model=ModelConfig(model="gpt-5.5", reasoning_summary="detailed"))
+    with patch.object(CodexRunner, "_ensure_image"):
+        runner = CodexRunner(config)
+    codex_home = tmp_path / ".codex"
+    runner._write_codex_config(codex_home)
+    content = (codex_home / "config.toml").read_text(encoding="utf-8")
+    assert 'model_reasoning_summary = "detailed"' in content
+
+
+def test_codex_config_omits_reasoning_summary_when_unset(tmp_path: Path):
+    config = Config(model=ModelConfig(model="gpt-5.5"))
+    with patch.object(CodexRunner, "_ensure_image"):
+        runner = CodexRunner(config)
+    codex_home = tmp_path / ".codex"
+    runner._write_codex_config(codex_home)
+    content = (codex_home / "config.toml").read_text(encoding="utf-8")
+    assert "model_reasoning_summary" not in content
+
+
+def _codex_host_auth_config(tmp_path: Path) -> tuple[Config, Path]:
+    host_auth = tmp_path / "host" / "auth.json"
+    host_auth.parent.mkdir(parents=True, exist_ok=True)
+    host_auth.write_text('{"tokens":{"refresh_token":"R0"}}', encoding="utf-8")
+    config = Config(
+        agent={
+            "provider": "codex",
+            "codex": {
+                "use_host_auth": True,
+                "host_auth_file": str(host_auth),
+                "auth_dir": str(tmp_path / "project" / ".teich" / "codex-auth"),
+            },
+        },
+    )
+    return config, host_auth
+
+
+def test_codex_prepare_shared_host_auth_seeds_from_host(tmp_path: Path):
+    config, host_auth = _codex_host_auth_config(tmp_path)
+    with patch.object(CodexRunner, "_ensure_image"):
+        runner = CodexRunner(config)
+    shared = runner._prepare_shared_host_auth()
+    assert shared == (tmp_path / "project" / ".teich" / "codex-auth" / "auth.json")
+    assert shared.read_text(encoding="utf-8") == '{"tokens":{"refresh_token":"R0"}}'
+    if _filesystem_preserves_chmod(tmp_path):
+        assert oct(shared.stat().st_mode & 0o777) == "0o666"
+
+
+def test_codex_prepare_shared_host_auth_gitignores_credentials(tmp_path: Path):
+    """The credential snapshot dir is gitignored by default, not just by docs."""
+    config, _ = _codex_host_auth_config(tmp_path)
+    with patch.object(CodexRunner, "_ensure_image"):
+        runner = CodexRunner(config)
+    shared = runner._prepare_shared_host_auth()
+    gitignore = shared.parent / ".gitignore"
+    assert gitignore.exists()
+    assert "*" in gitignore.read_text(encoding="utf-8").split()
+
+
+def test_codex_prepare_shared_host_auth_preserves_rotated_token(tmp_path: Path):
+    """A refreshed (rotated) shared token must not be clobbered by the stale host file."""
+    config, host_auth = _codex_host_auth_config(tmp_path)
+    with patch.object(CodexRunner, "_ensure_image"):
+        runner = CodexRunner(config)
+    shared = runner._prepare_shared_host_auth()
+    # Codex refreshes in place: shared advances to R1, newer than the host file.
+    shared.write_text('{"tokens":{"refresh_token":"R1"}}', encoding="utf-8")
+    os.utime(shared, (time.time() + 10, time.time() + 10))
+    again = runner._prepare_shared_host_auth()
+    assert again.read_text(encoding="utf-8") == '{"tokens":{"refresh_token":"R1"}}'
+
+
+def test_codex_prepare_shared_host_auth_reseeds_when_host_newer(tmp_path: Path):
+    """A fresh host login (newer mtime) re-seeds the shared snapshot."""
+    config, host_auth = _codex_host_auth_config(tmp_path)
+    with patch.object(CodexRunner, "_ensure_image"):
+        runner = CodexRunner(config)
+    runner._prepare_shared_host_auth()
+    host_auth.write_text('{"tokens":{"refresh_token":"R_new"}}', encoding="utf-8")
+    os.utime(host_auth, (time.time() + 10, time.time() + 10))
+    shared = runner._prepare_shared_host_auth()
+    assert shared.read_text(encoding="utf-8") == '{"tokens":{"refresh_token":"R_new"}}'
+
+
+def test_codex_prepare_shared_host_auth_errors_when_missing(tmp_path: Path):
+    config = Config(
+        agent={
+            "provider": "codex",
+            "codex": {"use_host_auth": True, "host_auth_file": str(tmp_path / "missing.json")},
+        },
+    )
+    with patch.object(CodexRunner, "_ensure_image"):
+        runner = CodexRunner(config)
+    with pytest.raises(RuntimeError, match="codex login"):
+        runner._prepare_shared_host_auth()
+
+
+def _codex_host_auth_config_with_tokens(tmp_path: Path) -> Config:
+    """Host-auth config whose snapshot is a complete ChatGPT login (the broker
+    validates that both an access and a refresh token are present)."""
+    host_auth = tmp_path / "host" / "auth.json"
+    host_auth.parent.mkdir(parents=True, exist_ok=True)
+    host_auth.write_text(
+        '{"tokens":{"access_token":"A0","refresh_token":"R0","account_id":"acct"}}',
+        encoding="utf-8",
+    )
+    return Config(
+        agent={
+            "provider": "codex",
+            "codex": {
+                "use_host_auth": True,
+                "host_auth_file": str(host_auth),
+                "auth_dir": str(tmp_path / "project" / ".teich" / "codex-auth"),
+            },
+        },
+    )
+
+
+def test_codex_command_uses_broker_and_suppresses_api_key(tmp_path: Path, monkeypatch):
+    """With host-auth on, point Codex at the broker (refresh override + host-gateway),
+    mount no auth.json, and pass no API key env (even an ambient one)."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-ambient-should-not-leak")
+    config = _codex_host_auth_config_with_tokens(tmp_path)
+    with patch.object(CodexRunner, "_ensure_image"):
+        runner = CodexRunner(config)
+    try:
+        cmd = runner._build_codex_command(
+            "Build app",
+            workspace=tmp_path / "ws",
+            codex_home=tmp_path / "ch",
+            container_name="teich-codex-x",
+        )
+        override = next(
+            part for part in cmd if part.startswith("CODEX_REFRESH_TOKEN_URL_OVERRIDE=")
+        )
+        assert override.startswith("CODEX_REFRESH_TOKEN_URL_OVERRIDE=http://host.docker.internal:")
+        assert override.endswith("/oauth/token")
+        assert "host.docker.internal:host-gateway" in cmd
+        # No auth.json bind-mount, and no API key env (broker owns the real token).
+        assert not any(":/home/codex/.codex/auth.json" in part for part in cmd)
+        assert not any(part.startswith("OPENAI_API_KEY=") for part in cmd)
+    finally:
+        if runner._broker is not None:
+            runner._broker.stop()
+
+
+def test_codex_write_seeded_auth_hides_real_refresh_token(tmp_path: Path):
+    """Each container's seeded auth.json carries real tokens but a secret refresh token."""
+    config = _codex_host_auth_config_with_tokens(tmp_path)
+    with patch.object(CodexRunner, "_ensure_image"):
+        runner = CodexRunner(config)
+    try:
+        broker = runner._ensure_broker()
+        assert broker is not None
+        codex_home = tmp_path / "ch"
+        codex_home.mkdir()
+        runner._write_seeded_codex_auth(codex_home, broker)
+        seeded = json.loads((codex_home / "auth.json").read_text(encoding="utf-8"))
+        assert seeded["tokens"]["access_token"] == "A0"
+        assert seeded["tokens"]["refresh_token"] == broker.secret
+        assert seeded["tokens"]["refresh_token"] != "R0"
+    finally:
+        if runner._broker is not None:
+            runner._broker.stop()
+
+
+def test_codex_command_without_host_auth_still_passes_api_key(tmp_path: Path):
+    config = Config(model=ModelConfig(model="o4-mini"), openai_api_key="sk-test123")
+    with patch.object(CodexRunner, "_ensure_image"):
+        runner = CodexRunner(config)
+    cmd = runner._build_codex_command(
+        "Build app",
+        workspace=tmp_path / "ws",
+        codex_home=tmp_path / "ch",
+        container_name="teich-codex-x",
+    )
+    assert "OPENAI_API_KEY=sk-test123" in cmd
+    assert not any(":/home/codex/.codex/auth.json" in part for part in cmd)
+
+
 def test_run_session_command_generation():
     """Test that codex exec command is generated correctly."""
     config = Config(
@@ -1489,6 +1691,93 @@ def test_hermes_runner_writes_custom_endpoint_runtime_config(tmp_path: Path):
             "models": {"Opus-Agent": {"context_length": 131072}},
         }
     ]
+
+
+_DEV_INSTRUCTIONS = "Think out loud and explain your reasoning."
+
+
+def _dev_instructions_config(provider: str, tmp_path: Path) -> Config:
+    return Config(
+        agent={"provider": provider},
+        output={"traces_dir": tmp_path / "output", "sandbox_dir": tmp_path / "sandbox"},
+        developer_instructions=_DEV_INSTRUCTIONS,
+    )
+
+
+def _plain_config(provider: str, tmp_path: Path) -> Config:
+    return Config(
+        agent={"provider": provider},
+        output={"traces_dir": tmp_path / "output", "sandbox_dir": tmp_path / "sandbox"},
+    )
+
+
+def test_claude_appends_developer_instructions_as_system_prompt(tmp_path: Path):
+    with patch.object(ClaudeCodeRunner, "_ensure_image"):
+        runner = ClaudeCodeRunner(_dev_instructions_config("claude-code", tmp_path))
+    command = runner._build_shell_command()
+    assert "--append-system-prompt" in command
+    assert _DEV_INSTRUCTIONS in command
+
+
+def test_claude_omits_system_prompt_without_developer_instructions(tmp_path: Path):
+    with patch.object(ClaudeCodeRunner, "_ensure_image"):
+        runner = ClaudeCodeRunner(_plain_config("claude-code", tmp_path))
+    assert "--append-system-prompt" not in runner._build_shell_command()
+
+
+def test_pi_appends_developer_instructions_as_system_prompt(tmp_path: Path):
+    with patch.object(PiRunner, "_ensure_image"):
+        runner = PiRunner(_dev_instructions_config("pi", tmp_path))
+    joined = " ".join(runner._build_pi_agent_command())
+    assert "--append-system-prompt" in joined
+    assert _DEV_INSTRUCTIONS in joined
+
+
+def test_pi_omits_system_prompt_without_developer_instructions(tmp_path: Path):
+    with patch.object(PiRunner, "_ensure_image"):
+        runner = PiRunner(_plain_config("pi", tmp_path))
+    assert "--append-system-prompt" not in " ".join(runner._build_pi_agent_command())
+
+
+def test_hermes_writes_developer_instructions_to_agents_md(tmp_path: Path):
+    with patch.object(HermesRunner, "_ensure_image"):
+        runner = HermesRunner(_dev_instructions_config("hermes", tmp_path))
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    runner._write_agents_md(workspace)
+    agents_md = workspace / "AGENTS.md"
+    assert agents_md.exists()
+    assert _DEV_INSTRUCTIONS in agents_md.read_text(encoding="utf-8")
+
+
+def test_hermes_appends_to_existing_agents_md(tmp_path: Path):
+    with patch.object(HermesRunner, "_ensure_image"):
+        runner = HermesRunner(_dev_instructions_config("hermes", tmp_path))
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "AGENTS.md").write_text("# Existing project rules\n", encoding="utf-8")
+    runner._write_agents_md(workspace)
+    content = (workspace / "AGENTS.md").read_text(encoding="utf-8")
+    assert "# Existing project rules" in content
+    assert _DEV_INSTRUCTIONS in content
+
+
+def test_hermes_no_agents_md_without_developer_instructions(tmp_path: Path):
+    with patch.object(HermesRunner, "_ensure_image"):
+        runner = HermesRunner(_plain_config("hermes", tmp_path))
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    runner._write_agents_md(workspace)
+    assert not (workspace / "AGENTS.md").exists()
+
+
+def test_codex_writes_developer_instructions_to_config(tmp_path: Path):
+    with patch.object(CodexRunner, "_ensure_image"):
+        runner = CodexRunner(_dev_instructions_config("codex", tmp_path))
+    codex_home = tmp_path / ".codex"
+    runner._write_codex_config(codex_home)
+    content = (codex_home / "config.toml").read_text(encoding="utf-8")
+    assert f'developer_instructions = "{_DEV_INSTRUCTIONS}"' in content
 
 
 def test_external_runner_decodes_subprocess_output_as_utf8(tmp_path: Path):

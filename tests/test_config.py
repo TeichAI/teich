@@ -386,6 +386,96 @@ api:
         Config.from_yaml(config_file)
 
 
+def test_model_service_tier_defaults_to_none():
+    """Fast mode is opt-in: service_tier is unset by default."""
+    assert Config().model.service_tier is None
+
+
+def test_model_service_tier_is_free_string_passthrough():
+    """service_tier accepts arbitrary tiers (fast/flex/priority) without an enum."""
+    assert ModelConfig(service_tier="fast").service_tier == "fast"
+    assert ModelConfig(service_tier="flex").service_tier == "flex"
+
+
+def test_model_reasoning_summary_defaults_to_none():
+    """Reasoning summaries use Codex's default unless explicitly set."""
+    assert Config().model.reasoning_summary is None
+
+
+def test_model_reasoning_summary_is_free_string_passthrough():
+    """reasoning_summary accepts auto/concise/detailed/none without an enum."""
+    assert ModelConfig(reasoning_summary="detailed").reasoning_summary == "detailed"
+    assert ModelConfig(reasoning_summary="concise").reasoning_summary == "concise"
+
+
+def test_codex_auth_config_defaults():
+    """Codex host-auth is off by default with a project-local auth dir."""
+    codex = Config().agent.codex
+    assert codex.use_host_auth is False
+    assert codex.host_auth_file is None
+    assert codex.auth_dir == Path("./.teich/codex-auth")
+
+
+def test_codex_auth_config_from_yaml(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("TEICH_MODEL", raising=False)
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        """
+agent:
+  provider: codex
+  codex:
+    use_host_auth: true
+    host_auth_file: ~/.codex/auth.json
+    auth_dir: ./.teich/codex-auth
+model:
+  model: gpt-5.5
+  service_tier: fast
+"""
+    )
+    config = Config.from_yaml(config_file)
+    assert config.agent.codex.use_host_auth is True
+    assert config.agent.codex.host_auth_file == Path("~/.codex/auth.json")
+    assert config.agent.codex.auth_dir == Path("./.teich/codex-auth")
+    assert config.model.service_tier == "fast"
+
+
+def test_codex_auth_dir_under_output_rejected_when_enabled():
+    """The auth snapshot must never live under uploaded output dirs."""
+    with pytest.raises(ValueError, match="auth_dir"):
+        Config(
+            agent={"provider": "codex", "codex": {"use_host_auth": True, "auth_dir": "./output/secrets"}},
+            output={"traces_dir": "./output"},
+        )
+
+
+def test_codex_auth_dir_under_output_allowed_when_disabled():
+    """When host-auth is off the snapshot dir is never used, so don't over-validate."""
+    config = Config(
+        agent={"provider": "codex", "codex": {"use_host_auth": False, "auth_dir": "./output/secrets"}},
+        output={"traces_dir": "./output"},
+    )
+    assert config.agent.codex.auth_dir == Path("./output/secrets")
+
+
+def test_codex_host_auth_source_prefers_explicit_override(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    override = tmp_path / "creds" / "auth.json"
+    config = Config(agent={"provider": "codex", "codex": {"host_auth_file": str(override)}})
+    assert config.get_codex_host_auth_source() == override
+
+
+def test_codex_host_auth_source_uses_codex_home_env(monkeypatch):
+    monkeypatch.setenv("CODEX_HOME", "/custom/codex")
+    config = Config(agent={"provider": "codex"})
+    assert config.get_codex_host_auth_source() == Path("/custom/codex/auth.json")
+
+
+def test_codex_host_auth_source_defaults_to_home(monkeypatch):
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    config = Config(agent={"provider": "codex"})
+    assert config.get_codex_host_auth_source() == Path.home() / ".codex" / "auth.json"
+
+
 def test_mcp_config():
     """Test MCP server configuration."""
     mcp = MCPConfig(
