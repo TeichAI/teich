@@ -29,6 +29,8 @@ if TYPE_CHECKING:
 
 from .config import PromptInput
 
+from .codex_auth_broker import CodexTokenBroker
+
 from .converter import (
     TEICH_AVAILABLE_TOOLS_CUSTOM_TYPE,
     convert_trace_to_training_example,
@@ -2006,6 +2008,11 @@ class DockerRuntimeRunner:
 class CodexRunner(DockerRuntimeRunner):
     """Manages Docker-based Codex sessions."""
 
+    def __init__(self, config: Config):
+        self._broker: CodexTokenBroker | None = None
+        self._broker_lock = threading.Lock()
+        super().__init__(config)
+
     @staticmethod
     def _toml_string(value: str) -> str:
         return json.dumps(value)
@@ -2082,6 +2089,70 @@ class CodexRunner(DockerRuntimeRunner):
         normalized = provider.strip().lower()
         return normalized in {"llama.cpp", "llama_cpp", "llamacpp"}
 
+    def _prepare_shared_host_auth(self) -> Path:
+        """Seed (once) and return the shared project ``auth.json`` snapshot.
+
+        Copies the host Codex login into ``agent.codex.auth_dir`` the first time,
+        and re-seeds only when the host file is newer than the snapshot, so a
+        token that Codex has already rotated in place is never clobbered by a
+        now-stale host file.
+        """
+        source = self.config.get_codex_host_auth_source()
+        if not source.exists():
+            raise RuntimeError(
+                f"Codex host auth file not found: {source}. Run `codex login` on the host "
+                "first, or disable agent.codex.use_host_auth."
+            )
+        shared_dir = self.config.agent.codex.auth_dir
+        shared_dir.mkdir(parents=True, exist_ok=True)
+        # The snapshot holds live credentials; keep it out of version control by
+        # default rather than relying on the user's project .gitignore.
+        gitignore = shared_dir / ".gitignore"
+        if not gitignore.exists():
+            gitignore.write_text("*\n", encoding="utf-8")
+        shared_auth = shared_dir / "auth.json"
+        if not shared_auth.exists() or source.stat().st_mtime > shared_auth.stat().st_mtime:
+            shutil.copyfile(source, shared_auth)
+            shared_auth.chmod(0o666)
+        return shared_auth
+
+    def _ensure_broker(self) -> CodexTokenBroker | None:
+        """Start (once per run) and return the host-side token broker.
+
+        Returns ``None`` when host auth is disabled. The broker seeds itself
+        from the ``auth_dir`` snapshot and owns the rotating refresh token for
+        the whole run; every container is pointed at it via the refresh-URL
+        override and seeded with its own copy.
+        """
+        if not self.config.agent.codex.use_host_auth:
+            return None
+        # run_all drives sessions from a thread pool, so guard creation: only one
+        # thread may build+start the single shared broker (double-checked lock).
+        if self._broker is None:
+            with self._broker_lock:
+                if self._broker is None:
+                    shared_auth = self._prepare_shared_host_auth()
+                    broker = CodexTokenBroker(
+                        shared_auth,
+                        port=self.config.agent.codex.broker_port,
+                    )
+                    broker.start()
+                    self._broker = broker
+        return self._broker
+
+    def _write_seeded_codex_auth(self, codex_home: Path, broker: CodexTokenBroker) -> None:
+        """Write a per-container ``auth.json`` (real tokens, secret refresh token)."""
+        auth_path = codex_home / "auth.json"
+        auth_path.write_text(
+            json.dumps(broker.seed_auth_json(), indent=2) + "\n",
+            encoding="utf-8",
+        )
+        # 0o666 (matching _write_codex_config's config.toml) so the in-container
+        # `codex` user can read/rewrite the bind-mounted file regardless of how
+        # its uid maps to the host. This copy holds only a short-lived access
+        # token and the per-run broker secret -- never the real refresh token.
+        auth_path.chmod(0o666)
+
     def _write_codex_config(self, codex_home: Path) -> None:
         codex_home.mkdir(parents=True, exist_ok=True)
         codex_home.chmod(0o777)
@@ -2093,6 +2164,14 @@ class CodexRunner(DockerRuntimeRunner):
         if self.config.model.reasoning_effort:
             lines.append(
                 f"model_reasoning_effort = {self._toml_string(self.config.model.reasoning_effort)}"
+            )
+        if self.config.model.reasoning_summary:
+            lines.append(
+                f"model_reasoning_summary = {self._toml_string(self.config.model.reasoning_summary)}"
+            )
+        if self.config.model.service_tier:
+            lines.append(
+                f"service_tier = {self._toml_string(self.config.model.service_tier)}"
             )
 
         for mcp in self.config.mcp_servers:
@@ -2263,6 +2342,7 @@ class CodexRunner(DockerRuntimeRunner):
         base_url, proxy_target = self._codex_base_url_and_proxy_target()
         provider_name = self.config.api.provider
         provider_env_key = self._provider_env_key(provider_name)
+        broker = self._ensure_broker()
         cmd = [
             "docker",
             "run",
@@ -2283,11 +2363,18 @@ class CodexRunner(DockerRuntimeRunner):
             "-w",
             WORKSPACE_IN_CONTAINER,
         ]
-        if proxy_target or (configured_base_url and base_url != configured_base_url):
+        broker_active = broker is not None
+        if proxy_target or broker_active or (configured_base_url and base_url != configured_base_url):
             cmd.extend([
                 "--add-host",
                 "host.docker.internal:host-gateway",
             ])
+        if broker is not None:
+            # Codex stays native (talks to chatgpt.com directly) but every
+            # token refresh is redirected to the host-side broker, which is the
+            # sole owner of the rotating refresh token. Codex is seeded with its
+            # own auth.json copy in CODEX_HOME (see _write_seeded_codex_auth).
+            cmd.extend(["-e", f"CODEX_REFRESH_TOKEN_URL_OVERRIDE={broker.override_url}"])
         if proxy_target:
             cmd.extend(
                 [
@@ -2297,7 +2384,7 @@ class CodexRunner(DockerRuntimeRunner):
                     f"TEICH_LOCAL_PROVIDER_PORT={self._local_provider_default_port(provider_name)}",
                 ]
             )
-        if api_key:
+        if api_key and not broker_active:
             cmd.extend(["-e", f"{provider_env_key}={api_key}"])
         return cmd, proxy_target
 
@@ -2476,6 +2563,9 @@ class CodexRunner(DockerRuntimeRunner):
 
         try:
             self._write_codex_config(codex_home)
+            broker = self._ensure_broker()
+            if broker is not None:
+                self._write_seeded_codex_auth(codex_home, broker)
             if self._local_provider_proxy_target(self.config.api.provider, self.config.get_base_url()):
                 self._write_local_provider_proxy(codex_home)
             existing_sessions = {path.resolve() for path in self._list_session_files(codex_home)}
@@ -2609,12 +2699,17 @@ class CodexRunner(DockerRuntimeRunner):
         prompt_inputs: list[PromptInput] | None = None,
         resume: bool = False,
     ) -> list[Path]:
-        return super().run_all(
-            max_concurrency=max_concurrency,
-            progress_callback=progress_callback,
-            prompt_inputs=prompt_inputs,
-            resume=resume,
-        )
+        try:
+            return super().run_all(
+                max_concurrency=max_concurrency,
+                progress_callback=progress_callback,
+                prompt_inputs=prompt_inputs,
+                resume=resume,
+            )
+        finally:
+            if self._broker is not None:
+                self._broker.stop()
+                self._broker = None
 
 
 class ExternalCliRunner(DockerRuntimeRunner):
@@ -3117,6 +3212,8 @@ class ClaudeCodeRunner(ExternalCliRunner):
         permission_mode = self._permission_mode()
         if permission_mode:
             claude_command.extend(["--permission-mode", permission_mode])
+        if self.config.developer_instructions:
+            claude_command.extend(["--append-system-prompt", self.config.developer_instructions])
         if resume_session_id:
             claude_command.extend(["--resume", resume_session_id])
         elif continue_session:
@@ -3588,6 +3685,24 @@ class HermesRunner(ExternalCliRunner):
         }
         (home_dir / "config.yaml").write_text(json.dumps(hermes_config, indent=2), encoding="utf-8")
 
+    def _write_agents_md(self, workspace: Path) -> None:
+        """Inject developer_instructions via AGENTS.md, which Hermes auto-loads.
+
+        Hermes has no system-prompt flag; it auto-injects AGENTS.md from the
+        workspace (Teich does not pass --ignore-rules). Append to an existing
+        AGENTS.md so a cloned repo's own guidance is preserved.
+        """
+        instructions = self.config.developer_instructions
+        if not instructions or not instructions.strip():
+            return
+        block = instructions.strip() + "\n"
+        agents_md = workspace / "AGENTS.md"
+        if agents_md.exists():
+            existing = agents_md.read_text(encoding="utf-8").rstrip("\n")
+            agents_md.write_text(f"{existing}\n\n{block}", encoding="utf-8")
+        else:
+            agents_md.write_text(block, encoding="utf-8")
+
     @staticmethod
     def _decode_hermes_content(value: Any) -> Any:
         if isinstance(value, str) and value.startswith("\x00json:"):
@@ -3847,6 +3962,7 @@ class HermesRunner(ExternalCliRunner):
         try:
             workspace.mkdir(parents=True, exist_ok=True)
             self._write_hermes_runtime_config(home_dir)
+            self._write_agents_md(workspace)
             if len(turn_prompts) > 1:
                 self._start_tracked_container(
                     self._build_external_persistent_container_command(workspace, home_dir, container_name),
@@ -5217,6 +5333,8 @@ class PiRunner(DockerRuntimeRunner):
         api_key = self.config.get_api_key()
         if api_key and not configured_base_url:
             pi_command.extend(["--api-key", api_key])
+        if self.config.developer_instructions:
+            pi_command.extend(["--append-system-prompt", self.config.developer_instructions])
         if continue_session:
             pi_command.append("--continue")
         prompt_path = shlex.quote(f"{WORKSPACE_IN_CONTAINER}/{TEICH_PROMPT_FILE_NAME}")

@@ -3359,6 +3359,13 @@ def _load_trace_file(trace_file: Path, *, skip_invalid_lines: bool = False) -> l
     return events
 
 
+def _is_codex_runtime_context(text: str) -> bool:
+    """Codex injects ``<environment_context>`` / ``<user_instructions>`` as leading
+    user messages. They are runtime context, not the user's prompt, so they must
+    not become the training example's prompt (which also breaks --resume matching)."""
+    return text.lstrip().startswith(("<environment_context>", "<user_instructions>"))
+
+
 def _convert_codex_trace_to_training_example(
     trace_file: Path,
     events: list[dict[str, Any]],
@@ -3442,6 +3449,10 @@ def _convert_codex_trace_to_training_example(
                 continue
             normalized_role = _normalize_role(role)
             content = _first_text_block(payload.get("content"))
+            # Only the leading wrappers (before the real prompt) are Codex
+            # runtime context; never drop user content mid-conversation.
+            if normalized_role == "user" and not prompt and _is_codex_runtime_context(content):
+                continue
             if normalized_role == "user" and content and not prompt:
                 prompt = content
             message: dict[str, Any] = {

@@ -218,6 +218,74 @@ openai_api_key: sk-test
         assert not (output_dir / "tools.json").exists()
 
 
+def test_generate_warns_on_host_auth_concurrency(tmp_path: Path):
+    """Host-auth runs warn about host re-login and concurrent-refresh races."""
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(f"""
+agent:
+  provider: codex
+  codex:
+    use_host_auth: true
+model:
+  model: gpt-5.5
+prompts:
+  - Build a todo app
+  - Another prompt
+output:
+  traces_dir: {tmp_path}/output
+max_concurrency: 2
+""")
+
+    with patch('teich.cli.CodexRunner') as mock_runner:
+        mock_instance = MagicMock()
+        mock_instance.run_all.return_value = [tmp_path / "output/session1.jsonl"]
+        mock_runner.return_value = mock_instance
+
+        output_dir = tmp_path / "output"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "session1.jsonl").write_text(
+            '{"type":"session_meta","payload":{"id":"session1"}}\n'
+            '{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Build a todo app"}]}}\n'
+        )
+
+        result = runner.invoke(app, ["generate", "-c", str(config_file)])
+
+    assert result.exit_code == 0
+    assert "host Codex login" in result.output
+    assert "concurren" in result.output.lower()
+
+
+def test_generate_no_host_auth_warning_when_disabled(tmp_path: Path):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(f"""
+agent:
+  provider: codex
+model:
+  model: codex-mini-latest
+prompts:
+  - Build a todo app
+output:
+  traces_dir: {tmp_path}/output
+openai_api_key: sk-test
+max_concurrency: 2
+""")
+
+    with patch('teich.cli.CodexRunner') as mock_runner:
+        mock_instance = MagicMock()
+        mock_instance.run_all.return_value = [tmp_path / "output/session1.jsonl"]
+        mock_runner.return_value = mock_instance
+        output_dir = tmp_path / "output"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "session1.jsonl").write_text(
+            '{"type":"session_meta","payload":{"id":"session1"}}\n'
+            '{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Build a todo app"}]}}\n'
+        )
+        result = runner.invoke(app, ["generate", "-c", str(config_file)])
+
+    assert result.exit_code == 0
+    assert "host Codex login" not in result.output
+
+
 def test_generate_command_success_chat(tmp_path: Path):
     config_file = tmp_path / "config.yaml"
     config_file.write_text(f"""
