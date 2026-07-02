@@ -162,6 +162,65 @@ def test_config_generates_chat_dataset_tags():
     assert config.get_dataset_tags() == ["conversational", "distillation", "teich", "gpt-4.1-mini"]
 
 
+def test_config_readme_template_resolves_relative_to_config_dir(tmp_path: Path, monkeypatch):
+    """A relative output.readme_template resolves against the config file, like prompts_file —
+    not the process CWD, so `teich -c project/config.yaml` works from another directory."""
+    project = tmp_path / "project"
+    project.mkdir()
+    template = project / "card.md.j2"
+    template.write_text("# {{ pretty_name }}\n", encoding="utf-8")
+    config_file = project / "config.yaml"
+    config_file.write_text("output:\n  readme_template: card.md.j2\n", encoding="utf-8")
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)  # load from a different working directory
+
+    config = Config.from_yaml(config_file)
+    assert config.output.readme_template == template.resolve()
+
+
+def test_config_bench_source_resolves_relative_to_config_dir(tmp_path: Path, monkeypatch):
+    """A relative *local* bench source (./local-tasks) resolves against the config file, not CWD;
+    a registry spec (name@version) is left untouched."""
+    project = tmp_path / "project"
+    (project / "local-tasks").mkdir(parents=True)
+    config_file = project / "config.yaml"
+    config_file.write_text(
+        "bench:\n  sources:\n    - { type: harbor, source: ./local-tasks }\n", encoding="utf-8"
+    )
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)  # load from a different working directory
+
+    config = Config.from_yaml(config_file)
+    assert config.bench.sources[0].source == str((project / "local-tasks").resolve())
+
+    config_file.write_text(
+        "bench:\n  sources:\n    - { type: harbor, source: terminal-bench@2.0 }\n", encoding="utf-8"
+    )
+    assert Config.from_yaml(config_file).bench.sources[0].source == "terminal-bench@2.0"
+
+
+def test_config_bench_source_resolves_bare_relative_local_path(tmp_path: Path, monkeypatch):
+    """A bare relative bench source that exists beside the config (data/tasks) resolves against the
+    config dir too; a registry/HF spec with no matching local path is left untouched."""
+    project = tmp_path / "project"
+    (project / "data" / "tasks").mkdir(parents=True)
+    config_file = project / "config.yaml"
+    config_file.write_text(
+        "bench:\n  sources:\n"
+        "    - { type: harbor, source: data/tasks }\n"
+        "    - { type: swe-bench, source: SWE-bench/SWE-bench_Verified }\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)  # not the config dir
+
+    sources = Config.from_yaml(config_file).bench.sources
+    assert sources[0].source == str((project / "data" / "tasks").resolve())  # bare local resolved
+    assert sources[1].source == "SWE-bench/SWE-bench_Verified"  # HF id untouched
+
+
 def test_config_prompts_file(tmp_path: Path):
     """Test loading structured prompts from CSV file."""
     prompts_file = tmp_path / "prompts.csv"

@@ -185,6 +185,9 @@ class GenerationJob:
                 repo_id=self.config.get_publish_repo_id(),
                 tools=snapshot_configured_tools(self.config),
                 excluded_dirs=[self.config.output.failures_dir],
+                license=self.config.output.license,
+                card_extra=self.config.output.card_extra,
+                readme_template=self.config.output.readme_template,
             )
         except Exception:
             pass

@@ -173,6 +173,9 @@ class ExtractionJob:
             model_id=None,
             repo_id=cfg.get_publish_repo_id(),
             extraction_provider=self.provider,
+            license=cfg.output.license,
+            card_extra=cfg.output.card_extra,
+            readme_template=cfg.output.readme_template,
         )
         self.events.append({"kind": "extract_readme", "text": f"Wrote {readme_path.name}.", "path": str(readme_path)})
 

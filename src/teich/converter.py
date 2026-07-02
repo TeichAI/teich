@@ -18,6 +18,15 @@ from .tool_schema import (
 )
 
 _INLINE_THINKING_BLOCK_PATTERN = re.compile(r"<(think|thinking)>(.*?)</\1>", re.DOTALL)
+# Output subdirectories that hold non-dataset artifacts (partial/failed runs, verifier
+# sidecars, sandbox checkouts, harbor bench intermediates). Dataset scanners, the README
+# builder, and the mode guard skip these so the dataset view stays clean. (Publish keeps
+# its own UPLOAD_IGNORE_PATTERNS in cli.py, which drops partials/failures/bench but still
+# uploads verifier sidecars as dataset provenance.) The bench intermediates normally live
+# in a sibling ``bench`` dir; the name is listed here only to defend a nested override.
+NON_DATA_TRACE_DIR_NAMES = frozenset(
+    {"partials", "failures", "verification", "sandbox", "__pycache__", "bench"}
+)
 FIRST_MESSAGE_TIMESTAMP_METADATA_KEY = "first_message_timestamp"
 PI_SYSTEM_PROMPT_CUSTOM_TYPE = "teich-system-prompt"
 TEICH_AVAILABLE_TOOLS_CUSTOM_TYPE = "teich-available-tools"
@@ -3933,7 +3942,8 @@ def _jsonl_files(source: Path) -> list[Path]:
     return sorted(
         path
         for path in source.rglob("*.jsonl")
-        if path.is_file() and not {"partials", "failures"}.intersection(path.relative_to(source).parts)
+        if path.is_file()
+        and not NON_DATA_TRACE_DIR_NAMES.intersection(path.relative_to(source).parts)
     )
 
 
@@ -3979,5 +3989,6 @@ def convert_traces_to_training_data(traces_dir: Path | str, *, skip_invalid_line
     trace_files = _jsonl_files(source)
     rows: list[dict[str, Any]] = []
     for path in trace_files:
-        rows.extend(_convert_jsonl_file_to_training_rows(path, skip_invalid_lines=skip_invalid_lines))
+        file_rows = _convert_jsonl_file_to_training_rows(path, skip_invalid_lines=skip_invalid_lines)
+        rows.extend(file_rows)
     return rows

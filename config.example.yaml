@@ -144,6 +144,11 @@ output:
   # These files are excluded from resume detection, conversion, README generation, and uploads.
   failures_dir: ./failures
 
+  # Harbor bench-mode intermediates (downloaded sources, raw trials, normalized sessions).
+  # Defaults to a `bench` dir beside traces_dir (parallel to sandbox/failures), never inside
+  # the dataset. Set a path to override.
+  bench_dir: null
+
   # Used in the generated trace README.
   pretty_name: "My Agent Traces"
 
@@ -153,6 +158,25 @@ publish:
   repo_id: null
   hf_token: null
   private: false
+
+# Benchmark mode (`teich generate --mode bench`). Each source is run by a backend selected
+# by `type`: `harbor` (the harbor package; needs teich[harbor], Python 3.12+) or `swe-bench`
+# (the swebench package; needs teich[swe]). teich runs the configured agent on each task/
+# instance, harvests the plain native trace into output/{passed,failed,borderline}/, and
+# writes scores + provenance to output/metadata/<stem>.json. Intermediates live under
+# output.bench_dir (a sibling `bench` dir by default), outside the dataset/uploads.
+# `--resume` skips already-harvested tasks; `--refresh` re-downloads remote harbor sources
+# (no effect on swe-bench, which uses Hugging Face's own dataset cache).
+# Keep bench its own project: dedicated output.traces_dir + publish.repo_id.
+bench:
+  sources: []
+    # - { type: harbor,    source: terminal-bench@2.0 }          # registry spec
+    # - { type: harbor,    source: ./local-tasks }               # local task dir / dir of task dirs
+    # - { type: swe-bench, source: SWE-bench/SWE-bench_Verified, split: test }
+    # - { type: swe-bench, source: SWE-bench/SWE-bench_Lite, instances: [django__django-12345] }
+    # - { type: swe-bench, source: ./my-instances.jsonl, namespace: null }  # build custom images locally
+    #   # optional per-source: repo (git/HF registry), version, instances [..], backend (harbor);
+    #   # swe-bench namespace (default "swebench" pulls published images; null builds locally)
 
 # Number of prompts to run in parallel.
 max_concurrency: 1

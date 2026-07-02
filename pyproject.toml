@@ -20,6 +20,7 @@ dependencies = [
     "rich>=13.0",
     "datasets>=2.19.0",
     "huggingface_hub>=0.23.0",
+    "jinja2>=3.1",
     "fastapi>=0.110",
     "uvicorn>=0.29",
     "websockets>=12",
@@ -28,6 +29,10 @@ dependencies = [
 [project.optional-dependencies]
 studio = ["fastapi>=0.110", "uvicorn>=0.29", "websockets>=12"]
 dev = ["pytest>=8.0", "ruff>=0.4", "jinja2>=3.1", "httpx>=0.27"]
+# Per-backend bench extras (install only what you run); `bench` enables both.
+harbor = ["harbor>=0.15.0 ; python_full_version >= '3.12'"]
+swe = ["swebench>=4.1.0", "jinja2>=3.1"]
+bench = ["teich[harbor,swe]"]
 
 [project.scripts]
 teich = "teich.cli:main"

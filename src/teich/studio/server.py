@@ -844,6 +844,9 @@ def create_app(project_dir: Path) -> FastAPI:
                 repo_id=publish.repo_id,
                 extraction_provider=extraction_provider,
                 excluded_dirs=[cfg.output.failures_dir],
+                license=cfg.output.license,
+                card_extra=cfg.output.card_extra,
+                readme_template=cfg.output.readme_template,
             )
             repo_url = _upload_dataset_folder(
                 folder_path=cfg.output.traces_dir,

@@ -2875,6 +2875,20 @@ def test_convert_pi_trace_uses_thinking_blocks_and_tool_results(tmp_path: Path):
     assert bash_tool["function"]["parameters"]["properties"]["command"] == {"type": "string"}
 
 
+def _write_structured_trace(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    row = {"messages": [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "ok"}], "prompt": "hi"}
+    path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+
+
+def test_convert_without_sidecar_has_no_reward(tmp_path: Path):
+    out = tmp_path / "output"
+    _write_structured_trace(out / "codex-z.jsonl")
+    rows = convert_traces_to_training_data(out)
+    assert "reward" not in rows[0]
+    assert "passed" not in rows[0]
+
+
 def test_codex_skips_injected_runtime_context(tmp_path: Path):
     """Codex injects <environment_context>/<user_instructions> as leading user
     messages; they must not become the prompt (which also breaks --resume)."""

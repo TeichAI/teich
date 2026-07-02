@@ -1512,7 +1512,7 @@ def test_extract_can_upload_staged_anonymized_output_to_huggingface(tmp_path: Pa
         folder_path=str(output_dir),
         repo_type="dataset",
         private=False,
-        ignore_patterns=["partials/**", "failures/**", "README.md", "tools.json"],
+        ignore_patterns=["partials/**", "failures/**", "bench/**", "README.md", "tools.json"],
     )
     mock_api.upload_folder.assert_called_once_with(
         folder_path=str(output_dir),
@@ -1520,11 +1520,11 @@ def test_extract_can_upload_staged_anonymized_output_to_huggingface(tmp_path: Pa
         repo_type="dataset",
         commit_message="Upload teich dataset metadata",
         allow_patterns=["README.md"],
-        ignore_patterns=["partials/**", "failures/**"],
+        ignore_patterns=["partials/**", "failures/**", "bench/**"],
     )
     readme = (output_dir / "README.md").read_text(encoding="utf-8")
     assert "armand0e/fable-traces" in readme
-    assert 'path: "**/*.jsonl"' in readme
+    assert 'path: "*.jsonl"' in readme  # top-level glob (excludes non-data subdirs)
     assert '- "codex"' in readme
     assert '- "pi"' not in readme
     assert '- "fable-5"' not in readme

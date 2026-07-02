@@ -185,7 +185,32 @@ class OutputConfig(BaseModel):
     traces_dir: Path = Field(default=Path("./output"))
     sandbox_dir: Path = Field(default=Path("./sandbox"))
     failures_dir: Path = Field(default=Path("./failures"))
+    # Harbor bench intermediates (trials/sources/sessions). None -> a sibling ``bench``
+    # dir next to traces_dir, parallel to sandbox/failures (never inside the dataset).
+    bench_dir: Path | None = None
+    # Remove each task's per-task Docker image after the bench run (harbor's ``hb__<task>``
+    # image or the pulled prebuilt task image, the swe-bench agent layer) so they don't
+    # accumulate and fill the disk. Set True to keep them (e.g. for debugging, or to avoid
+    # rebuilds/re-pulls across runs).
+    keep_bench_images: bool = False
     pretty_name: str = "Agentic Training Traces"
+    # Dataset-card customization (all optional; the default card is unchanged when unset).
+    # ``license`` adds an SPDX id to the card frontmatter; ``card_extra`` merges arbitrary
+    # extra frontmatter keys; ``readme_template`` points at a user Jinja2 template that
+    # replaces the shipped default (rendered with the same context).
+    license: str | None = None
+    card_extra: dict[str, Any] = Field(default_factory=dict)
+    readme_template: Path | None = None
+
+    @field_validator("readme_template")
+    @classmethod
+    def validate_readme_template(cls, value: Path | None) -> Path | None:
+        if value is None:
+            return None
+        path = Path(value).expanduser()
+        if not path.is_file():
+            raise ValueError(f"output.readme_template not found: {path}")
+        return path
 
 
 class PublishConfig(BaseModel):
@@ -277,6 +302,35 @@ class PromptInput(BaseModel):
         return [self.prompt, *self.follow_up_prompts]
 
 
+class BenchSource(BaseModel):
+    """One benchmark source for ``generate --mode bench``.
+
+    ``type`` selects the backend (``harbor`` | ``swe-bench``). ``source`` is the dataset
+    spec for that backend: harbor → a local task dir, a registry spec (``name@version`` or
+    ``org/name@ref``), or (with ``repo``) a dataset name in a git/HF registry; swe-bench →
+    a Hugging Face dataset id (or a local json/jsonl path). ``version``/``repo`` are harbor
+    knobs; ``split``/``instances`` select swe-bench rows; ``backend`` is harbor's
+    EnvironmentType. Remote data is fetched into ``<output.bench_dir>/`` and run locally.
+
+    ``namespace`` (swe-bench only) is the Docker image namespace for instance images: the
+    default ``"swebench"`` pulls the published ``swebench/...`` images; set it to ``null`` to
+    build instance images locally, which is required for custom/unpublished instances.
+    """
+    type: str = "harbor"
+    source: str
+    repo: str | None = None
+    version: str | None = None
+    split: str | None = None
+    instances: list[str] | None = None
+    backend: str = "docker"
+    namespace: str | None = "swebench"
+
+
+class BenchConfig(BaseModel):
+    """Bench-mode settings: an array of benchmark sources, each run by its backend."""
+    sources: list[BenchSource] = Field(default_factory=list)
+
+
 class Config(BaseModel):
     """Main configuration."""
     agent: AgentConfig = Field(default_factory=AgentConfig)
@@ -287,6 +341,7 @@ class Config(BaseModel):
     prompts_file: Path | None = None
     output: OutputConfig = Field(default_factory=OutputConfig)
     publish: PublishConfig = Field(default_factory=PublishConfig)
+    bench: BenchConfig = Field(default_factory=BenchConfig)
     max_concurrency: int = Field(default=1, ge=1)
     timeout_seconds: int = 600
     openai_api_key: str | None = None
@@ -344,6 +399,35 @@ class Config(BaseModel):
             if prompts_file_path := data.get("prompts_file"):
                 if not Path(prompts_file_path).is_absolute():
                     data["prompts_file"] = (path.parent / prompts_file_path).resolve()
+
+        # Resolve a relative output.readme_template against the config file, like prompts_file
+        # above — otherwise it's validated against the process CWD and `teich -c project/x.yaml`
+        # from elsewhere fails even when the template sits next to the config.
+        output_section = data.get("output")
+        if isinstance(output_section, dict):
+            template = output_section.get("readme_template")
+            if isinstance(template, str) and template.strip():
+                template_path = Path(template).expanduser()
+                if not template_path.is_absolute():
+                    output_section["readme_template"] = (path.parent / template_path).resolve()
+
+        # Resolve a relative *local* bench source (./tasks, ../x, ~/x) against the config dir, like
+        # prompts_file — otherwise it's tried against the process CWD and falls through to the
+        # remote-download path. A registry spec (name@version, org/name) never starts with those.
+        bench_section = data.get("bench")
+        if isinstance(bench_section, dict):
+            for bench_source in bench_section.get("sources") or []:
+                if not isinstance(bench_source, dict):
+                    continue
+                spec = bench_source.get("source")
+                if isinstance(spec, str) and spec.strip():
+                    spec_str = spec.strip()
+                    candidate = path.parent / Path(spec_str).expanduser()
+                    # Rewrite an explicit ./ ../ ~ path, or a bare relative that actually exists
+                    # beside the config (data/tasks, instances.jsonl). A registry/HF spec
+                    # (name@version, org/name) has no such local path, so it's left untouched.
+                    if spec_str.startswith(("./", "../", "~")) or candidate.exists():
+                        bench_source["source"] = str(candidate.resolve())
 
         # Apply environment variable overrides
         if model_env := _get_env_alias("TEICH_MODEL"):

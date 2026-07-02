@@ -1,0 +1,26 @@
+{#- Teich SWE-bench agent layer.
+
+    Rendered on top of a SWE-bench *instance* image (which already has the repo
+    checked out at base_commit in /testbed with its deps installed) so a teich agent
+    can edit /testbed. The agent's git diff becomes the candidate patch, which swebench
+    then grades. Generated file — do not edit by hand; change agent.dockerfile.j2.
+
+    Vars: base_image, provider, runtime_install, agent_install, langfuse (+ langfuse_install).
+    Whitespace is trimmed after this comment so the syntax directive stays the first line.
+-#}
+# syntax=docker/dockerfile:1
+FROM {{ base_image }}
+
+USER root
+ENV DEBIAN_FRONTEND=noninteractive
+
+# --- runtime ({{ provider }}) ---
+{{ runtime_install }}
+
+# --- {{ provider }} agent CLI ---
+{{ agent_install }}
+{% if langfuse %}
+# --- Langfuse tracing (side-channel: reads transcripts, fails open) ---
+{{ langfuse_install }}
+{% endif %}
+WORKDIR /testbed

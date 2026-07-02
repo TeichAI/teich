@@ -51,6 +51,87 @@ def test_generate_command_missing_config():
     assert "not found" in result.output
 
 
+def test_generate_rejects_unknown_mode(tmp_path: Path):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text("prompts:\n  - hello\n", encoding="utf-8")
+    result = runner.invoke(app, ["generate", "-c", str(config_file), "--mode", "wat"])
+    assert result.exit_code == 1
+    assert "Unknown --mode" in result.output
+
+
+def test_generate_bench_mode_requires_source(tmp_path: Path):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text("agent:\n  provider: codex\n", encoding="utf-8")  # no bench.sources
+    result = runner.invoke(app, ["generate", "-c", str(config_file), "--mode", "bench"])
+    assert result.exit_code == 1
+    assert "bench.sources" in result.output
+
+
+def test_generate_bench_refuses_to_mix_with_prompts_output(tmp_path: Path):
+    output = tmp_path / "output"
+    output.mkdir()
+    (output / "some-trace.jsonl").write_text('{"messages": []}\n', encoding="utf-8")  # prompts data
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        f"agent:\n  provider: pi\nbench:\n  sources:\n    - {{type: harbor, source: {tmp_path}/tasks}}\noutput:\n  traces_dir: {output}\n",
+        encoding="utf-8",
+    )
+    result = runner.invoke(app, ["generate", "-c", str(config_file), "--mode", "bench"])
+    assert result.exit_code == 1
+    assert "already contains prompts-mode data" in " ".join(result.output.split())
+
+
+def test_generate_bench_writes_readme_for_partial_dataset_on_failure(tmp_path: Path, monkeypatch):
+    # An earlier bench source may harvest rows before a later one fails; the partial dataset must
+    # still get a README (like prompt mode) even though the CLI exits non-zero.
+    output = tmp_path / "output"
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        f"agent:\n  provider: pi\nbench:\n  sources:\n    - {{type: harbor, source: {tmp_path}/tasks}}\noutput:\n  traces_dir: {output}\n",
+        encoding="utf-8",
+    )
+
+    def _partial_then_fail(cfg, **kwargs):
+        row = cfg.output.traces_dir / "passed" / "bench-x.jsonl"
+        row.parent.mkdir(parents=True, exist_ok=True)
+        row.write_text('{"messages": []}\n', encoding="utf-8")
+        raise RuntimeError("a later bench source blew up")
+
+    monkeypatch.setattr("teich.bench.run_bench", _partial_then_fail)
+    result = runner.invoke(app, ["generate", "-c", str(config_file), "--mode", "bench"])
+    assert result.exit_code == 1
+    assert (output / "README.md").exists()  # partial dataset still documented
+
+
+def test_generate_prompts_refuses_to_mix_with_bench_output(tmp_path: Path):
+    output = tmp_path / "output"
+    output.mkdir()
+    (output / "bench-add-bug.jsonl").write_text('{"messages": []}\n', encoding="utf-8")  # bench data
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        f"agent:\n  provider: chat\nprompts:\n  - hello\noutput:\n  traces_dir: {output}\n",
+        encoding="utf-8",
+    )
+    result = runner.invoke(app, ["generate", "-c", str(config_file)])
+    assert result.exit_code == 1
+    assert "already contains bench-mode data" in " ".join(result.output.split())
+
+
+def test_existing_dataset_modes_classifies_rows(tmp_path: Path):
+    from teich.cli import _existing_dataset_modes
+
+    (tmp_path / "bench-x.jsonl").write_text('{"messages": []}\n', encoding="utf-8")
+    (tmp_path / "organic.jsonl").write_text('{"messages": []}\n', encoding="utf-8")
+    (tmp_path / "passed").mkdir()
+    (tmp_path / "passed" / "routed.jsonl").write_text('{"messages": []}\n', encoding="utf-8")
+    # Intermediates / empties must not count as dataset rows (a nested `bench` dir is excluded
+    # by name; normally bench_dir is a sibling of output and never under traces_dir at all).
+    (tmp_path / "bench" / "sessions").mkdir(parents=True)
+    (tmp_path / "bench" / "sessions" / "pi.jsonl").write_text('{"type":"session"}\n', encoding="utf-8")
+    (tmp_path / "empty.jsonl").write_text("", encoding="utf-8")
+    assert _existing_dataset_modes(tmp_path) == {"bench", "prompts"}
+
+
 def test_convert_command_writes_openai_style_training_jsonl(tmp_path: Path):
     traces_dir = tmp_path / "traces"
     traces_dir.mkdir()
@@ -465,7 +546,7 @@ api:
             folder_path=str(output_dir),
             repo_type="dataset",
             private=True,
-            ignore_patterns=["partials/**", "failures/**", "README.md", "tools.json"],
+            ignore_patterns=["partials/**", "failures/**", "bench/**", "README.md", "tools.json"],
         )
         mock_api.upload_folder.assert_called_once_with(
             folder_path=str(output_dir),
@@ -473,7 +554,7 @@ api:
             repo_type="dataset",
             commit_message="Upload teich dataset metadata",
             allow_patterns=["README.md"],
-            ignore_patterns=["partials/**", "failures/**"],
+            ignore_patterns=["partials/**", "failures/**", "bench/**"],
         )
 
 
@@ -621,7 +702,7 @@ api:
             folder_path=str(output_dir),
             repo_type="dataset",
             private=False,
-            ignore_patterns=["partials/**", "failures/**", "README.md", "tools.json"],
+            ignore_patterns=["partials/**", "failures/**", "bench/**", "README.md", "tools.json"],
         )
         mock_api.upload_folder.assert_called_once_with(
             folder_path=str(output_dir),
@@ -629,7 +710,7 @@ api:
             repo_type="dataset",
             commit_message="Upload teich dataset metadata",
             allow_patterns=["README.md"],
-            ignore_patterns=["partials/**", "failures/**"],
+            ignore_patterns=["partials/**", "failures/**", "bench/**"],
         )
 
 

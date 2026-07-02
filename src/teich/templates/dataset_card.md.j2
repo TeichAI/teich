@@ -1,0 +1,140 @@
+---
+pretty_name: "{{ pretty_name }}"
+task_categories:
+- text-generation
+{% if tags %}
+tags:
+{% for tag in tags %}
+- "{{ tag }}"
+{% endfor %}
+{% endif %}
+configs:
+- config_name: default
+  data_files:
+{% for split, path in data_files %}
+  - split: {{ split }}
+    path: "{{ path }}"
+{% endfor %}
+{% if license %}
+license: {{ license }}
+{% endif %}
+{% if size_categories %}
+size_categories:
+{% for size in size_categories %}
+- {{ size }}
+{% endfor %}
+{% endif %}
+{{ card_extra_yaml }}---
+
+This dataset was generated using [teich](https://github.com/TeichAI/teich) by [TeichAI](https://huggingface.co/TeichAI) <img src="https://cdn-avatars.huggingface.co/v1/production/uploads/6837935ac3b7ffe0d2559ce9/-AxyvV4wfUY8uo87kNKkK.png" width="20" height="20" style="display: inline-block; vertical-align: middle; margin: 0 3px;">
+
+# {{ pretty_name }}
+
+{{ intro_line }}
+
+{{ rows_line }}
+
+{% if model_id %}
+Model metadata: `{{ model_id }}`
+
+{% endif %}
+{% if reward_stats %}
+## Reward labels
+
+This is a verifiable dataset: rows carry the task verifier's outcome so it can be used for reward-based training and filtering.
+
+- `passed` (bool): whether the task verifier succeeded after the agent's edits
+- `reward` (float): the verifier's own score when it reports one, else the binary `1.0`/`0.0` implied by `passed`
+
+Verified tasks: {{ reward_stats.total }} ({{ reward_stats.passed }} passed / {{ reward_stats.failed }} failed{% if reward_stats.borderline %} / {{ reward_stats.borderline }} borderline{% endif %}).
+Each reward comes from the task verifier run after the agent's attempt.
+{% if reward_stats.numeric %}
+{{ reward_stats.numeric }} of {{ reward_stats.total }} carry an explicit numeric score (the rest are binary pass/fail).
+{% endif %}
+
+{% endif %}
+{% if dataset_tools %}
+## Training-ready tools
+
+Generated agent traces carry configured or recovered tool schemas so tools remain available for training even when a session did not call them.
+Native Claude Code imports recover schemas for Claude Code and Claude Desktop built-ins, plus conservative name-derived MCP schemas, when the raw transcript only records tool names or calls.
+{% if externalize_tools %}
+A complete dataset-level `tools` schema snapshot is stored in `tools.json` to keep this dataset card upload-safe.
+{% else %}
+A complete dataset-level `tools` schema snapshot is embedded in the collapsed section at the bottom of this README.
+{% endif %}
+`load_traces` applies the dataset snapshot to each loaded example as a fallback `tools` field.
+
+{% endif %}
+{% if extraction_provider %}
+## Create A Similar Dataset
+
+This dataset was staged from existing local agent sessions with `teich extract`.
+To build your own local dataset, install Teich and point it at one of the supported providers:
+
+```bash
+teich extract {{ extraction_provider }} --out data
+```
+
+Use `--sessions-dir /path/to/store` when your sessions are not in the default location,
+and `--model <substring>` when you only want sessions whose model metadata matches a value.
+
+{% endif %}
+## Format
+
+{% if structured_dataset %}
+Each file is newline-delimited JSON where every line is already a training example.
+Chat-only datasets include `messages` plus convenience fields like optional `system`, `prompt`, `follow_up_prompts`, `thinking`, `response`, and `responses`.
+Tool datasets can include the same normalized `messages` structure together with a `tools` field.
+
+{% elif agent_trace_rows %}
+Each file is newline-delimited JSON where every line is one preserved agent session.
+Rows use `id`, `task`, `traces`, `tools`, and `metadata`:
+
+- `id`: provider session id
+- `task`: first user prompt extracted from the trace
+- `traces`: native conversation messages in `from` / `value` form
+- `tools`: the tool schema available to that session, including tools that were not called
+- `metadata`: provider, model, first-message timestamp, token, cost, parent-session, and export details
+- `metadata.first_message_timestamp`: first timestamp-bearing source user message when the trace format provides one
+
+{% else %}
+Each file is newline-delimited JSON representing a single captured agent session.
+The trace schema is designed for upload-first preservation so you can keep the original session history and convert it later for training.
+Teich normalizes split assistant fragments during trace copy and conversion so the semantic order is reasoning first, optional assistant text second, and tool calls last.
+Native Claude Code conversion also preserves runtime context such as skills, MCP instructions, hook context, permission state, date changes, and session recaps as masked `system` messages when the raw transcript provides them.
+
+Common top-level event groups:
+
+- `session_meta`
+- `turn_context`
+- `event_msg`
+- `response_item`
+- `session`
+- `message`
+- `session_info`
+- `model_change`
+- `thinking_level_change`
+- `external_session_meta`
+- `external_message`
+- `external_stderr`
+
+{% endif %}
+{% if sample_block %}
+## Example
+
+```json
+{{ sample_block }}
+```
+
+{% endif %}
+## Training
+
+Use this dataset as `{{ dataset_reference }}` with Teich's data preparation and training utilities.
+If you do not want Teich to handle chat-template formatting or masking, run `teich convert` to write standalone OpenAI-style JSONL rows with `prompt`, `messages`, `tools`, and `metadata`.
+Training setup details evolve over time, so the maintained guide lives in the [Teich training docs]({{ training_docs_url }}).
+For loading, mixing, converting, and validating Teich datasets, see [Preparing Data]({{ prepare_docs_url }}).
+{% if dataset_tools %}
+
+{{ tools_details_block }}
+{% endif %}
