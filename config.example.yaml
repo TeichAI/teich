@@ -29,6 +29,24 @@ agent:
   #   host_auth_file: null            # default: $CODEX_HOME/auth.json or ~/.codex/auth.json
   #   auth_dir: ./.teich/codex-auth
 
+  # Claude Code-only settings.
+  # Subscription auth (Pro/Max): create a long-lived token with `claude
+  # setup-token` on the host and export CLAUDE_CODE_OAUTH_TOKEN (or set
+  # oauth_token below). When a token is available and api.base_url is unset,
+  # Teich passes it into each container and withholds ANTHROPIC_API_KEY (an API
+  # key silently wins over subscription auth inside Claude Code and would bill
+  # the API). Usage counts against your plan's rate limits, not API credits,
+  # and the token is safe at any max_concurrency.
+  # fallback_model forwards as --fallback-model (a model or list, tried in
+  # order on overload); always_thinking writes alwaysThinkingEnabled into the
+  # container's ~/.claude/settings.json; max_thinking_tokens sets
+  # MAX_THINKING_TOKENS in the container (0 disables thinking where allowed).
+  # claude:
+  #   oauth_token: null               # prefer CLAUDE_CODE_OAUTH_TOKEN in the env
+  #   fallback_model: [sonnet, haiku]
+  #   always_thinking: true
+  #   max_thinking_tokens: null
+
   # Trace each agent session to Langfuse (https://langfuse.com). Works for Codex
   # and Claude Code -- each uses its own native integration (Codex plugin, Claude
   # Code Stop hook) and Teich passes the credentials into the container. Side-
@@ -55,7 +73,9 @@ model:
   # Optional reasoning / thinking level.
   # - Codex: forwarded as model_reasoning_effort
   # - Pi: normalized to low / medium / high when supported
-  # - Claude Code / Hermes: model/provider specific
+  # - Claude Code: forwarded as --effort (low | medium | high | xhigh | max on
+  #   supported models)
+  # - Hermes: model/provider specific
   # Hermes also enables built-in toolsets:
   # safe,terminal,file,skills,memory,session_search,delegation
   reasoning_effort: medium
