@@ -723,6 +723,11 @@ def generate(
             written = run_bench(cfg, console=console, resume=resume, refresh=refresh)
         except RuntimeError as exc:
             console.print(f"[red]{exc}[/red]")
+            # An earlier source may have harvested rows before a later one failed; write the card
+            # for that partial dataset (like prompt mode does on error). Don't auto-publish.
+            readme_path = _try_write_completed_output_metadata(cfg)
+            if readme_path:
+                console.print(f"[green]Wrote README: {readme_path}[/green]")
             raise typer.Exit(1) from exc
         if written:
             readme_path = _write_output_metadata(cfg)

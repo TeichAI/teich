@@ -53,6 +53,7 @@ def run_bench(
 
     max_workers = max(1, int(cfg.max_concurrency))
     written: list[Path] = []
+    attempted = 0
 
     def record(task: BenchTask, run: base.BenchRun, src: BenchSource) -> None:
         if not run.native_lines:
@@ -86,6 +87,7 @@ def run_bench(
         )
         if not pending:
             continue
+        attempted += len(pending)
 
         # Bind src + the bound run method as defaults so the closure doesn't capture the
         # loop variables by reference (ruff B023).
@@ -135,4 +137,14 @@ def run_bench(
             raise
         finally:
             pool.shutdown(wait=not interrupted, cancel_futures=interrupted)
+
+    # Per-task failures are swallowed (skipped) above; if every dispatched task failed we'd
+    # otherwise return an empty list and the CLI would exit 0 — a misconfigured run then looks
+    # like a successful empty benchmark in automation. Distinguish it from a legitimately empty
+    # run (nothing dispatched / all resume-skipped, which keeps `written` populated).
+    if attempted and not written:
+        raise RuntimeError(
+            f"bench: all {attempted} attempted task(s) failed; no rows were harvested "
+            "(see the per-task errors above)."
+        )
     return written

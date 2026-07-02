@@ -215,7 +215,7 @@ def _dataset_tools(trace_files: Iterable[Path]) -> list[dict[str, Any]]:
     return [merged_by_name[name] for name in sorted(merged_by_name)]
 
 
-def _split_data_files(traces_dir: Path) -> list[tuple[str, str]]:
+def _split_data_files(traces_dir: Path, excluded_dirs: Iterable[Path] = ()) -> list[tuple[str, str]]:
     """Dataset-card split -> file glob, reflecting the actual routing folders.
 
     When routed split folders (passed/failed/borderline) hold data, expose them as
@@ -225,6 +225,10 @@ def _split_data_files(traces_dir: Path) -> list[tuple[str, str]]:
     (e.g. Cursor's project-relative transcripts) live only in subdirs, so a bare
     top-level ``*.jsonl`` would advertise an empty dataset while the card still counts
     those rows — HF's ``data_files`` config must reach them.
+
+    ``excluded_dirs`` (e.g. a custom ``output.failures_dir`` under ``traces_dir``) are
+    skipped too — they hold ignored/failed runs and their basename may not be in the
+    reserved non-data set, so they must not be advertised as a train split.
     """
     routing = ("passed", "failed", "borderline")
     splits = [
@@ -234,10 +238,18 @@ def _split_data_files(traces_dir: Path) -> list[tuple[str, str]]:
     ]
     if splits:
         return splits
+    traces_resolved = traces_dir.resolve()
+    excluded_names = {
+        excluded.resolve().relative_to(traces_resolved).parts[0]
+        for excluded in excluded_dirs
+        if excluded.resolve() != traces_resolved and _path_is_relative_to(excluded, traces_dir)
+    }
     patterns = ["*.jsonl"]
     if traces_dir.is_dir():
         for child in sorted(traces_dir.iterdir()):
             if not child.is_dir() or child.name in NON_DATA_TRACE_DIR_NAMES or child.name in routing:
+                continue
+            if child.name in excluded_names:
                 continue
             if any(child.rglob("*.jsonl")):
                 patterns.append(f"{child.name}/**/*.jsonl")
@@ -606,7 +618,7 @@ def write_traces_readme(
             tools=dataset_tools,
             extraction_provider=extraction_provider,
             reward_stats=_reward_stats(traces_dir, trace_files),
-            data_files=_split_data_files(traces_dir),
+            data_files=_split_data_files(traces_dir, excluded_dirs or []),
             license=license,
             card_extra=card_extra,
             readme_template=readme_template,

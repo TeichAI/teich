@@ -335,7 +335,11 @@ def _run_agent(
     run = _run_command(cfg, layer)
     shell = (
         f"cd {TESTBED} && ({run} || true) && git -C {TESTBED} add -A && "
-        f"git -C {TESTBED} diff --cached --no-color > {capture} 2>/dev/null || true"
+        f"git -C {TESTBED} diff --cached --no-color > {capture} 2>/dev/null || true; "
+        # The container runs as root and writes the agent's session dir into the bind-mounted
+        # capture tree. On native-Linux Docker those files land root-owned, so the next no-resume
+        # run's shutil.rmtree(capture_dir) fails; hand the tree back to the host UID before exit.
+        f"chmod -R a+rwX {CAPTURE} 2>/dev/null || true"
     )
     cmd = [
         "docker", "run", "--rm", "--name", container, "--env-file", str(env_file),

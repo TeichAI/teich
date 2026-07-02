@@ -415,8 +415,14 @@ class Config(BaseModel):
                 if not isinstance(bench_source, dict):
                     continue
                 spec = bench_source.get("source")
-                if isinstance(spec, str) and spec.strip().startswith(("./", "../", "~")):
-                    bench_source["source"] = str((path.parent / Path(spec.strip()).expanduser()).resolve())
+                if isinstance(spec, str) and spec.strip():
+                    spec_str = spec.strip()
+                    candidate = path.parent / Path(spec_str).expanduser()
+                    # Rewrite an explicit ./ ../ ~ path, or a bare relative that actually exists
+                    # beside the config (data/tasks, instances.jsonl). A registry/HF spec
+                    # (name@version, org/name) has no such local path, so it's left untouched.
+                    if spec_str.startswith(("./", "../", "~")) or candidate.exists():
+                        bench_source["source"] = str(candidate.resolve())
 
         # Apply environment variable overrides
         if model_env := _get_env_alias("TEICH_MODEL"):

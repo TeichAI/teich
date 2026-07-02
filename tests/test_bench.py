@@ -594,6 +594,15 @@ def test_run_bench_drives_sources_and_harvests(tmp_path, monkeypatch):
     assert (tmp_path / "output" / "failed" / f"{base.bench_stem(s, 't2')}.jsonl").is_file()
 
 
+def test_run_bench_raises_when_all_tasks_fail(tmp_path, monkeypatch):
+    # Per-task errors are swallowed; if EVERY dispatched task fails, run_bench must raise (so the
+    # CLI exits non-zero) rather than return empty and look like a successful empty benchmark.
+    fake = _FakeBackend({"t1": RuntimeError("docker boom"), "t2": RuntimeError("docker boom")})
+    monkeypatch.setattr(bench_runner, "get_backend", lambda t: fake)
+    with pytest.raises(RuntimeError, match="all 2 attempted task"):
+        run_bench(_bench_cfg(tmp_path))
+
+
 def test_run_bench_resume_skips_and_failure_continues(tmp_path, monkeypatch):
     s = BenchSource(type="fake", source="S")
     # Pre-harvest t1 so resume skips it; t2 raises (skipped); t3 succeeds.

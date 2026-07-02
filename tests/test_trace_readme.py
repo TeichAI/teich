@@ -430,6 +430,22 @@ def test_reward_stats_counts_borderline_bench_tasks(tmp_path: Path):
     assert "3 of 3 carry an explicit numeric score" in readme
 
 
+def test_card_data_files_exclude_custom_failures_dir(tmp_path: Path):
+    # A custom output.failures_dir located under traces_dir (basename not in the reserved set)
+    # must not be advertised as a train split — those are failed/interrupted runs, ignored on
+    # upload — while a real data-bearing subdir still is.
+    (tmp_path / "failed-runs").mkdir()
+    _write_structured_row(tmp_path / "failed-runs" / "bad.jsonl")
+    (tmp_path / "proj").mkdir()
+    _write_structured_row(tmp_path / "proj" / "good.jsonl")
+
+    readme = write_traces_readme(
+        tmp_path, pretty_name="X", tags=["agent-traces"], excluded_dirs=[tmp_path / "failed-runs"]
+    ).read_text(encoding="utf-8")
+    assert 'path: "proj/**/*.jsonl"' in readme  # real nested data advertised
+    assert "failed-runs" not in readme  # custom failures dir not advertised
+
+
 def test_readme_has_no_reward_section_without_verification(tmp_path: Path):
     _write_structured_row(tmp_path / "plain.jsonl")
     readme_path = write_traces_readme(tmp_path, pretty_name="Plain Traces", tags=["agent-traces"])
