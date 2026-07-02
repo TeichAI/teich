@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ... import agent_cfg
 from . import base
 
 if TYPE_CHECKING:
@@ -136,19 +137,8 @@ def _agent_layer(cfg: Config) -> AgentLayer:
 
 
 def _model_name(cfg: Config) -> str:
-    """Model for the in-container agent, with the pi ``<provider>/<model>`` prefix when needed.
-
-    Mirrors the harbor backend's prefix rule: pi splits ``<provider>/<model>`` to pick the
-    credential env var, so ``model: z-ai/glm-5.2`` + ``api.provider: openrouter`` becomes
-    ``openrouter/z-ai/glm-5.2``.
-    """
-    model = cfg.get_effective_model().strip()
-    if not model:
-        return model
-    api_provider = (cfg.api.provider or "").strip()
-    if cfg.get_agent_provider() == "pi" and api_provider and not model.startswith(f"{api_provider}/"):
-        return f"{api_provider}/{model}"
-    return model
+    """Model for the in-container agent (pi gets a ``<provider>/<model>`` prefix). Shared helper."""
+    return agent_cfg.pi_prefixed_model(cfg)
 
 
 def _run_command(cfg: Config, layer: AgentLayer) -> str:
@@ -160,25 +150,11 @@ def _run_command(cfg: Config, layer: AgentLayer) -> str:
 
 
 def _auth_env(cfg: Config) -> dict[str, str]:
-    """Model credentials for the in-container agent, mirroring the harbor backend.
-
-    An ``anthropic`` project sets ``ANTHROPIC_API_KEY`` only (not shadowed under
-    ``OPENAI_API_KEY``); otherwise the key goes to ``OPENAI_API_KEY`` plus
-    ``OPENROUTER_API_KEY`` for an OpenRouter project.
-    """
-    env: dict[str, str] = {}
-    api_key = cfg.get_api_key()
-    if api_key:
-        if cfg.api.provider == "anthropic":
-            env["ANTHROPIC_API_KEY"] = api_key
-        else:
-            env["OPENAI_API_KEY"] = api_key
-            if cfg.api.provider == "openrouter":
-                env["OPENROUTER_API_KEY"] = api_key
-    base_url = cfg.get_base_url()
-    if base_url:
-        env["OPENAI_BASE_URL"] = base_url
-    return env
+    """Model credentials + base URL for the in-container agent — the same derivation prompt mode
+    uses (shared ``agent_cfg``), so every provider (zai/deepseek/xai/... not just
+    openai/openrouter/anthropic) gets the right key var and a host-local base_url is rewritten
+    to host.docker.internal."""
+    return agent_cfg.bench_auth_env(cfg)
 
 
 def render_agent_dockerfile(

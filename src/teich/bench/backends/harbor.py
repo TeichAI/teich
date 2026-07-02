@@ -19,6 +19,7 @@ from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ... import agent_cfg
 from . import base
 
 if TYPE_CHECKING:
@@ -51,42 +52,16 @@ def _agent_name_for(provider: str) -> str:
 
 
 def _agent_auth_env(cfg: Config) -> dict[str, str]:
-    """Model credentials for the in-container agent from teich's `api` config.
-
-    An ``anthropic`` project exports the key as ``ANTHROPIC_API_KEY`` only (claude-code reads
-    it; it must not be shadowed under ``OPENAI_API_KEY``). Otherwise the key goes to
-    ``OPENAI_API_KEY``, plus ``OPENROUTER_API_KEY`` for an OpenRouter project (pi/hermes read
-    that name while codex/claude-code use ``OPENAI_API_KEY`` against the OpenRouter base_url).
-    """
-    env: dict[str, str] = {}
-    api_key = cfg.get_api_key()
-    if api_key:
-        if cfg.api.provider == "anthropic":
-            env["ANTHROPIC_API_KEY"] = api_key
-        else:
-            env["OPENAI_API_KEY"] = api_key
-            if cfg.api.provider == "openrouter":
-                env["OPENROUTER_API_KEY"] = api_key
-    base_url = cfg.get_base_url()
-    if base_url:
-        env["OPENAI_BASE_URL"] = base_url
-    return env
+    """Model credentials + base URL for the in-container agent — shared ``agent_cfg`` derivation
+    (the same one prompt mode uses), so every provider gets the right key var (not just
+    openai/openrouter/anthropic) and a host-local base_url reaches the container."""
+    return agent_cfg.bench_auth_env(cfg)
 
 
-def _bench_model_name(cfg: Config) -> str | None:
-    """Model name for the in-container agent, with harbor's provider prefix when needed.
-
-    harbor's pi agent requires ``<provider>/<model>`` and splits on the first ``/`` to pick
-    the credential env var, so ``model: z-ai/glm-5.2`` + ``api.provider: openrouter`` is
-    prefixed to ``openrouter/z-ai/glm-5.2`` (else it reads provider ``z-ai`` and finds no key).
-    """
-    model = cfg.get_effective_model()
-    if not model:
-        return model
-    api_provider = (cfg.api.provider or "").strip()
-    if cfg.get_agent_provider() == "pi" and api_provider and not model.startswith(f"{api_provider}/"):
-        return f"{api_provider}/{model}"
-    return model
+def _bench_model_name(cfg: Config) -> str:
+    """Model name for the in-container agent; pi requires a ``<provider>/<model>`` prefix so it
+    splits on the first ``/`` to pick the credential env var (shared ``agent_cfg`` helper)."""
+    return agent_cfg.pi_prefixed_model(cfg)
 
 
 def _resolve_task_dirs(root: str | Path) -> list[Path]:
