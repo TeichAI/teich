@@ -17,6 +17,10 @@ from .backends import BenchTask, base, get_backend
 if TYPE_CHECKING:
     from ..config import BenchSource, Config
 
+# api.wire_api values that mean "chat completions" (mirrors runner._pi_provider_api); anything
+# else (e.g. "responses") is the OpenAI Responses API, which the bench agents default to.
+_CHAT_WIRE_APIS = {"completions", "chat_completions", "chat-completions", "openai-completions"}
+
 
 class _BenchProgress:
     """Live per-source progress bar for bench runs (rich); a no-op when not a terminal.
@@ -116,6 +120,23 @@ def run_bench(
         raise RuntimeError(
             "bench mode does not yet support Codex host auth (agent.codex.use_host_auth). "
             "Configure an API key for the run, or disable use_host_auth."
+        )
+
+    # Unlike prompt mode, bench doesn't thread api.wire_api into the agent (no codex config, no pi
+    # provider_settings), so a chat-completions-only endpoint isn't honored: pi/codex default to the
+    # Responses API and hit /responses on e.g. api.z.ai, which silently fails. openrouter is exempt
+    # (its own model-prefix routing already selects completions). Fail fast instead of ignoring it.
+    _provider = cfg.api.provider.strip().lower()
+    if (
+        cfg.get_agent_provider() in ("codex", "pi")
+        and _provider != "openrouter"
+        and cfg.api.wire_api.strip().lower() in _CHAT_WIRE_APIS
+    ):
+        raise RuntimeError(
+            "bench mode does not yet thread api.wire_api into the agent, so a chat-completions-only "
+            f"endpoint won't be honored (api.wire_api={cfg.api.wire_api!r}, api.provider={_provider!r}, "
+            f"agent={cfg.get_agent_provider()!r}); the agent would default to the Responses API. "
+            "Use api.provider: openrouter, or api.wire_api: responses against a Responses-API endpoint."
         )
 
     def out(message: str) -> None:

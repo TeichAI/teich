@@ -163,6 +163,30 @@ def test_run_bench_rejects_codex_host_auth(tmp_path, monkeypatch):
         run_bench(cfg)
 
 
+def test_run_bench_rejects_chat_wire_api_on_custom_endpoint(tmp_path):
+    # Bench doesn't thread api.wire_api into pi/codex, so a chat-completions-only endpoint (e.g.
+    # z.ai via provider: openai + base_url) would silently be hit on /responses. Fail fast.
+    def _cfg(**api):
+        return Config(
+            agent={"provider": "pi"},
+            api=api,
+            bench={"sources": [{"type": "harbor", "source": "S"}]},
+            output={"traces_dir": tmp_path / "o"},
+        )
+
+    with pytest.raises(RuntimeError, match="does not yet thread api.wire_api"):
+        run_bench(_cfg(provider="openai", base_url="https://api.z.ai/api/paas/v4",
+                       wire_api="chat_completions", api_key="k"))
+    # openrouter is exempt (its prefix routing already uses completions); responses is fine.
+    #  (these get past the guard and fail later for unrelated reasons — assert the guard message is absent)
+    for ok in (dict(provider="openrouter", wire_api="chat_completions", api_key="k"),
+               dict(provider="openai", wire_api="responses", api_key="k")):
+        try:
+            run_bench(_cfg(**ok))
+        except RuntimeError as exc:
+            assert "does not yet thread api.wire_api" not in str(exc)
+
+
 def test_existing_output_across_splits(tmp_path):
     cfg = Config(output={"traces_dir": tmp_path / "output"})
     assert base.existing_output(cfg, "bench-x") is None
