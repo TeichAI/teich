@@ -1,23 +1,20 @@
 # syntax=docker/dockerfile:1
-FROM node:22-slim
+FROM node:26.4.0-alpine3.24
 
 # Install system dependencies with cache mount and minimal packages
 # Removed: build-essential (only needed for compiling, not runtime)
 # Added: --no-install-recommends to skip extra packages
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
+RUN --mount=type=cache,target=/var/cache/apk,sharing=locked \
+    apk update && apk add \
+    build-base \
+    bash \
     git \
     curl \
     ca-certificates \
     sudo \
     python3 \
     python3-dev \
-    python3-minimal \
-    python3-pip \
-    python3-venv \
-    && rm -rf /var/lib/apt/lists/*
+    py3-pip
 
 RUN ln -sf /usr/bin/python3 /usr/local/bin/python && \
     python3 -m venv /opt/venv && \
@@ -75,14 +72,14 @@ RUN if [ "$TEICH_INSTALL_LANGFUSE" = "1" ]; then \
 
 # Create working directory and user in one layer
 WORKDIR /workspace
-RUN useradd -m -s /bin/bash codex && \
+RUN adduser -D -s /bin/bash codex && \
     mkdir -p /home/codex/.codex/sessions && \
     mkdir -p /home/codex/.claude && \
     mkdir -p /home/codex/.hermes && \
     printf 'codex ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/codex && \
     chmod 0440 /etc/sudoers.d/codex && \
-    printf '#!/usr/bin/env bash\nexec sudo /usr/bin/apt-get "$@"\n' > /usr/local/bin/apt-get && \
-    printf '#!/usr/bin/env bash\nexec sudo /usr/bin/apt "$@"\n' > /usr/local/bin/apt && \
+    printf '#!/usr/bin/env bash\nif [ "$1" = "install" ]; then shift; pkgs=(); for i in "$@"; do if [[ "$i" != -* ]]; then pkgs+=("$i"); fi; done; exec sudo /sbin/apk add "${pkgs[@]}"; elif [ "$1" = "update" ]; then exec sudo /sbin/apk update; else exec sudo /sbin/apk "$@"; fi\n' > /usr/local/bin/apt-get && \
+    printf '#!/usr/bin/env bash\nif [ "$1" = "install" ]; then shift; pkgs=(); for i in "$@"; do if [[ "$i" != -* ]]; then pkgs+=("$i"); fi; done; exec sudo /sbin/apk add "${pkgs[@]}"; elif [ "$1" = "update" ]; then exec sudo /sbin/apk update; else exec sudo /sbin/apk "$@"; fi\n' > /usr/local/bin/apt && \
     chmod +x /usr/local/bin/apt-get /usr/local/bin/apt && \
     chown -R codex:codex /home/codex /workspace ${PLAYWRIGHT_BROWSERS_PATH} ${VIRTUAL_ENV}
 
