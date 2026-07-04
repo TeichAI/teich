@@ -14,7 +14,8 @@ RUN --mount=type=cache,target=/var/cache/apk,sharing=locked \
     sudo \
     python3 \
     python3-dev \
-    py3-pip
+    py3-pip \
+    chromium
 
 RUN ln -sf /usr/bin/python3 /usr/local/bin/python && \
     python3 -m venv /opt/venv && \
@@ -22,6 +23,8 @@ RUN ln -sf /usr/bin/python3 /usr/local/bin/python && \
     ln -sf /opt/venv/bin/pip /usr/local/bin/pip && \
     ln -sf /opt/venv/bin/pip3 /usr/local/bin/pip3
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
 ENV VIRTUAL_ENV=/opt/venv
 ARG TEICH_INSTALL_LANGFUSE=0
 
@@ -33,7 +36,7 @@ RUN --mount=type=cache,target=/root/.npm \
     mv /root/.local/bin/uv /usr/local/bin/uv && \
     mv /root/.local/bin/uvx /usr/local/bin/uvx && \
     npm install -g @openai/codex @anthropic-ai/claude-code @mariozechner/pi-coding-agent playwright && \
-    npx playwright install --with-deps chromium && \
+
     node --version && npm --version && npx --version && uv --version && uvx --version && python --version && python3 --version && pip --version && pip3 --version && codex --version && claude --version && pi --version
 
 RUN --mount=type=cache,target=/root/.cache/uv \
