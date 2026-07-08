@@ -10,7 +10,10 @@ import re
 import shutil
 import string
 from tempfile import NamedTemporaryFile
-from typing import Any
+from typing import Any, Callable
+
+# Called after each file with (file_report, files_done, files_total).
+AnonymizeProgress = Callable[["AnonymizeFileReport", int, int], None]
 
 
 TEXT_EXTENSIONS = {
@@ -55,7 +58,13 @@ class AnonymizeReport:
         return totals
 
 
-def anonymize_path(input_path: Path, output_path: Path, *, in_place: bool = False) -> AnonymizeReport:
+def anonymize_path(
+    input_path: Path,
+    output_path: Path,
+    *,
+    in_place: bool = False,
+    progress: AnonymizeProgress | None = None,
+) -> AnonymizeReport:
     """Anonymize trace files under input_path."""
     input_path = input_path.expanduser()
     output_path = output_path.expanduser()
@@ -71,13 +80,18 @@ def anonymize_path(input_path: Path, output_path: Path, *, in_place: bool = Fals
         destination = output_path / input_path.name if output_path.exists() and output_path.is_dir() else output_path
         file_report = _anonymize_file(input_path, destination)
         report.files.append(file_report)
+        if progress is not None:
+            progress(file_report, 1, 1)
         return report
 
-    for source_file in sorted(path for path in input_path.rglob("*") if path.is_file()):
+    source_files = sorted(path for path in input_path.rglob("*") if path.is_file())
+    for source_file in source_files:
         relative_path = source_file.relative_to(input_path)
         destination = source_file if in_place else output_path / relative_path
         file_report = _anonymize_file(source_file, destination)
         report.files.append(file_report)
+        if progress is not None:
+            progress(file_report, len(report.files), len(source_files))
     return report
 
 

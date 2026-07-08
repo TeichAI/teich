@@ -17,6 +17,8 @@ from rich.panel import Panel
 from rich.table import Table
 from typer.core import TyperCommand, TyperGroup
 
+from tqdm import tqdm
+
 from .anonymize import anonymize_path
 from .config import Config
 from .converter import convert_traces_to_training_data
@@ -193,6 +195,27 @@ def _upload_ignore_patterns(cfg: Config) -> list[str]:
         if pattern not in patterns:
             patterns.append(pattern)
     return patterns
+
+
+def _anonymize_with_progress(input_path: Path, output_path: Path, *, in_place: bool):
+    """Run anonymize_path with a live tqdm bar showing files and scrub counts."""
+    totals = {"api_key": 0, "email": 0, "username": 0}
+    with tqdm(desc="Anonymizing", unit="file", dynamic_ncols=True, leave=False) as bar:
+
+        def on_file(file_report, done: int, total: int) -> None:
+            bar.total = total
+            for key, count in file_report.replacements.items():
+                totals[key] = totals.get(key, 0) + count
+            bar.set_postfix(
+                keys=totals["api_key"],
+                emails=totals["email"],
+                users=totals["username"],
+                file=file_report.path.name,
+                refresh=False,
+            )
+            bar.update(1)
+
+        return anonymize_path(input_path, output_path, in_place=in_place, progress=on_file)
 
 
 def _has_non_empty_trace_outputs(traces_dir: Path) -> bool:
@@ -464,7 +487,7 @@ def _run_extract_command(
     stale_readme_path = output / "README.md"
     if stale_readme_path.exists() and stale_readme_path.is_file():
         stale_readme_path.unlink()
-    anonymize_report = None if skip_anonymize else anonymize_path(output, output, in_place=True)
+    anonymize_report = None if skip_anonymize else _anonymize_with_progress(output, output, in_place=True)
     readme_path = _write_extract_readme(provider, output, model_filter=model_filter)
     extracted_message = f"Extracted {result.count} {provider} trace{'s' if result.count != 1 else ''}"
     if model_filter:
@@ -556,7 +579,7 @@ def anonymize(
 ) -> None:
     """Replace emails, home-directory usernames, and API keys with deterministic dummy values."""
     try:
-        report = anonymize_path(input_path, output, in_place=in_place)
+        report = _anonymize_with_progress(input_path, output, in_place=in_place)
     except (FileNotFoundError, ValueError) as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1)
