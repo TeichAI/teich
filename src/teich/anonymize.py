@@ -69,14 +69,14 @@ def anonymize_path(input_path: Path, output_path: Path, *, in_place: bool = Fals
     report = AnonymizeReport(input_path=input_path, output_path=output_path)
     if input_path.is_file():
         destination = output_path / input_path.name if output_path.exists() and output_path.is_dir() else output_path
-        file_report = _anonymize_file(input_path, destination)
+        file_report = anonymize_file(input_path, destination)
         report.files.append(file_report)
         return report
 
     for source_file in sorted(path for path in input_path.rglob("*") if path.is_file()):
         relative_path = source_file.relative_to(input_path)
         destination = source_file if in_place else output_path / relative_path
-        file_report = _anonymize_file(source_file, destination)
+        file_report = anonymize_file(source_file, destination)
         report.files.append(file_report)
     return report
 
@@ -89,7 +89,7 @@ def _path_contains(parent: Path, child: Path) -> bool:
         return False
 
 
-def _anonymize_file(source: Path, destination: Path) -> AnonymizeFileReport:
+def anonymize_file(source: Path, destination: Path) -> AnonymizeFileReport:
     destination.parent.mkdir(parents=True, exist_ok=True)
     if source.suffix.lower() not in TEXT_EXTENSIONS:
         if source.resolve() != destination.resolve():

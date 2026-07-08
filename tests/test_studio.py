@@ -804,7 +804,7 @@ def test_extract_endpoint_warns_cursor_may_take_a_while(client):
     source = client.project_dir / "state.vscdb"
     source.write_text("", encoding="utf-8")
 
-    def fake_extract(provider, *, output_dir, sources=None, model_filter=None, clear_destination=False, progress=None):
+    def fake_extract(provider, *, output_dir, sources=None, model_filter=None, clear_destination=False, progress=None, anonymize=False):
         assert provider == "cursor"
         assert sources == [source]
         assert model_filter is None
