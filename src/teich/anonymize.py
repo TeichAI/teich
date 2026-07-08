@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 import hashlib
+import os
 import json
 import re
 import shutil
@@ -23,6 +25,10 @@ TEXT_EXTENSIONS = {
     ".toml",
     ".log",
 }
+
+# ponytail: process startup isn't free — only fan out when there are enough
+# files for the parallelism to pay for itself.
+_MIN_FILES_FOR_PARALLEL = 8
 
 
 @dataclass
@@ -73,11 +79,17 @@ def anonymize_path(input_path: Path, output_path: Path, *, in_place: bool = Fals
         report.files.append(file_report)
         return report
 
-    for source_file in sorted(path for path in input_path.rglob("*") if path.is_file()):
-        relative_path = source_file.relative_to(input_path)
-        destination = source_file if in_place else output_path / relative_path
-        file_report = _anonymize_file(source_file, destination)
-        report.files.append(file_report)
+    source_files = sorted(path for path in input_path.rglob("*") if path.is_file())
+    destinations = [source if in_place else output_path / source.relative_to(input_path) for source in source_files]
+    workers = min(os.cpu_count() or 1, len(source_files))
+    if workers > 1 and len(source_files) >= _MIN_FILES_FOR_PARALLEL:
+        # Each file is anonymized independently (fresh TraceAnonymizer per
+        # file), so files can be processed in parallel safely.
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            report.files.extend(executor.map(_anonymize_file, source_files, destinations))
+    else:
+        for source_file, destination in zip(source_files, destinations):
+            report.files.append(_anonymize_file(source_file, destination))
     return report
 
 
