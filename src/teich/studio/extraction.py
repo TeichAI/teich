@@ -152,7 +152,7 @@ class ExtractionJob:
                         "totals": self.anonymize_totals,
                     }
                 )
-            self._write_readme()
+            self._write_readme(result.copied_files)
             self._emit_status(
                 "completed",
                 f"Extracted {self.result_rows} trace row(s) across {len(self.result_files)} file(s).",
@@ -164,7 +164,7 @@ class ExtractionJob:
             self.finished_at = datetime.now(timezone.utc)
             self.events.close()
 
-    def _write_readme(self) -> None:
+    def _write_readme(self, trace_files: list[Path] | None = None) -> None:
         cfg = _extract_dataset_config(self.provider, self.output_dir, model_filter=self.model_filter)
         readme_path = write_traces_readme(
             cfg.output.traces_dir,
@@ -173,6 +173,7 @@ class ExtractionJob:
             model_id=None,
             repo_id=cfg.get_publish_repo_id(),
             extraction_provider=self.provider,
+            trace_files=trace_files,
         )
         self.events.append({"kind": "extract_readme", "text": f"Wrote {readme_path.name}.", "path": str(readme_path)})
 

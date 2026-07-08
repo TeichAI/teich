@@ -373,6 +373,7 @@ def _write_extract_readme(
     *,
     model_filter: str | None = None,
     repo_id: str | None = None,
+    trace_files: list[Path] | None = None,
 ) -> Path:
     cfg = _extract_dataset_config(provider, output, model_filter=model_filter, repo_id=repo_id)
     return write_traces_readme(
@@ -382,6 +383,7 @@ def _write_extract_readme(
         model_id=None,
         repo_id=cfg.get_publish_repo_id(),
         extraction_provider=provider,
+        trace_files=trace_files,
     )
 
 
@@ -465,7 +467,7 @@ def _run_extract_command(
     if stale_readme_path.exists() and stale_readme_path.is_file():
         stale_readme_path.unlink()
     anonymize_report = None if skip_anonymize else anonymize_path(output, output, in_place=True)
-    readme_path = _write_extract_readme(provider, output, model_filter=model_filter)
+    readme_path = _write_extract_readme(provider, output, model_filter=model_filter, trace_files=result.copied_files)
     extracted_message = f"Extracted {result.count} {provider} trace{'s' if result.count != 1 else ''}"
     if model_filter:
         extracted_message += f" with {model_filter}"
