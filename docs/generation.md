@@ -301,6 +301,50 @@ During conversion, Teich:
 
 With OpenRouter non-Claude models, Teich runs a local in-container proxy: Claude Code sees a Claude surrogate model name, while the proxy rewrites outbound requests back to the configured model. Native assistant/result events keep provider-returned model and usage fields when Claude Code records them.
 
+#### Using your Claude subscription (host auth)
+
+By default Claude Code runs on an API key (`ANTHROPIC_API_KEY` via `api.api_key` / env). To run it on your Claude subscription (Pro/Max) instead, create a long-lived OAuth token with `claude setup-token` on the host (valid for a year, purpose-built for headless use) and export it:
+
+```bash
+claude setup-token
+export CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
+```
+
+`TEICH_CLAUDE_OAUTH_TOKEN` also works (and wins over `CLAUDE_CODE_OAUTH_TOKEN`), or set `agent.claude.oauth_token` in the config. There is no separate enable flag: subscription auth activates whenever the provider is `claude-code`, a token is resolvable, and no custom `api.base_url` is configured — Teich prints a notice when it's active. Teich then passes the token into each container as `CLAUDE_CODE_OAUTH_TOKEN` and passes **no** `ANTHROPIC_API_KEY`, because Claude Code silently prefers an API key over subscription credentials when both are present — which would bill the API instead of the subscription.
+
+Compared to Codex host auth this is much simpler, by design:
+
+- **No broker, no rotation.** The setup-token credential is a durable token, so containers can share it at any `max_concurrency`, and it does not disturb your interactive host login (no re-login needed afterward).
+- **Billing goes to the plan.** Usage counts against your subscription's rate-limit windows (5-hour/weekly), not pay-per-token API credits. Hitting the plan limit behaves like hitting it interactively.
+- **Works from any host.** The token is just an env var — no credentials file to find (macOS keeps the interactive login in the Keychain, which containers can't read anyway).
+- **No custom base URL.** Subscription auth talks to the first-party Anthropic API. An explicit `api.base_url` (which includes the OpenRouter proxy path) keeps the API/proxy path: an ambient env token is ignored there (with a notice), and configuring `agent.claude.oauth_token` together with `api.base_url` is rejected.
+
+#### Effort, fallback models, and extended thinking
+
+```yaml
+agent:
+  provider: claude-code
+  claude:
+    fallback_model: [sonnet, haiku]  # --fallback-model chain, tried in order on overload
+    always_thinking: true            # alwaysThinkingEnabled in the container's settings.json
+    max_thinking_tokens: 31999       # MAX_THINKING_TOKENS env; 0 disables thinking where allowed
+
+model:
+  model: claude-opus-4-8
+  reasoning_effort: xhigh            # --effort: low | medium | high | xhigh | max (model-dependent)
+```
+
+How each setting reaches Claude Code:
+
+| Setting | Mechanism |
+|---------|-----------|
+| `model.reasoning_effort` | `--effort` CLI flag (shared field: Codex forwards it as `model_reasoning_effort`, Pi normalizes it) |
+| `agent.claude.fallback_model` | `--fallback-model` CLI flag; a list is joined to Claude Code's comma-separated form, and Claude Code keeps up to 3 models after dedup |
+| `agent.claude.always_thinking` | `alwaysThinkingEnabled` in the seeded `~/.claude/settings.json` (merged with the Langfuse hooks when tracing is on) |
+| `agent.claude.max_thinking_tokens` | `MAX_THINKING_TOKENS` container env var |
+
+All four are optional free-form passthroughs; leave them unset to use Claude Code's defaults. Note that models with adaptive reasoning treat effort as the primary control and thinking budgets as advisory.
+
 ### `hermes`
 
 Runs Hermes Agent with built-in toolsets:

@@ -523,10 +523,14 @@ def write_traces_readme(
     tools: list[dict[str, Any]] | None = None,
     excluded_dirs: list[Path] | None = None,
     extraction_provider: str | None = None,
+    trace_files: list[Path] | None = None,
 ) -> Path:
+    # Callers that just wrote the traces can pass the file list to skip the
+    # directory rescan; the exclusion filters still apply either way.
+    candidates = trace_files if trace_files is not None else traces_dir.rglob("*.jsonl")
     trace_files = sorted(
         path
-        for path in traces_dir.rglob("*.jsonl")
+        for path in candidates
         if path.is_file()
         and not {"partials", "failures"}.intersection(path.relative_to(traces_dir).parts)
         and not any(_path_is_relative_to(path, excluded_dir) for excluded_dir in excluded_dirs or [])

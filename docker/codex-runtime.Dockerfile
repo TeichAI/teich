@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM node:22-slim
+FROM node:26.4.0-slim
 
 # Install system dependencies with cache mount and minimal packages
 # Removed: build-essential (only needed for compiling, not runtime)

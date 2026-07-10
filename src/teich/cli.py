@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -20,7 +21,7 @@ from typer.core import TyperCommand, TyperGroup
 from tqdm import tqdm
 
 from .anonymize import anonymize_path
-from .config import Config
+from .config import CLAUDE_PROVIDER_ALIASES, Config
 from .converter import convert_traces_to_training_data
 from .extract import CURSOR_EXTRACTION_NOTICE, ExtractProvider, extract_local_sessions
 from .runner import (
@@ -197,13 +198,15 @@ def _upload_ignore_patterns(cfg: Config) -> list[str]:
     return patterns
 
 
-def _anonymize_with_progress(input_path: Path, output_path: Path, *, in_place: bool):
-    """Run anonymize_path with a live tqdm bar showing files and scrub counts."""
+@contextmanager
+def _anonymize_progress_bar():
+    """Yield a callback that updates a live file and replacement-count bar."""
     totals = {"api_key": 0, "email": 0, "username": 0}
     with tqdm(desc="Anonymizing", unit="file", dynamic_ncols=True, leave=False) as bar:
 
-        def on_file(file_report, done: int, total: int) -> None:
-            bar.total = total
+        def on_file(file_report, done: int, total: int | None) -> None:
+            if total is not None:
+                bar.total = total
             for key, count in file_report.replacements.items():
                 totals[key] = totals.get(key, 0) + count
             bar.set_postfix(
@@ -213,9 +216,15 @@ def _anonymize_with_progress(input_path: Path, output_path: Path, *, in_place: b
                 file=file_report.path.name,
                 refresh=False,
             )
-            bar.update(1)
+            bar.update(max(0, done - bar.n))
 
-        return anonymize_path(input_path, output_path, in_place=in_place, progress=on_file)
+        yield on_file
+
+
+def _anonymize_with_progress(input_path: Path, output_path: Path, *, in_place: bool):
+    """Run anonymize_path with a live tqdm bar showing files and scrub counts."""
+    with _anonymize_progress_bar() as progress:
+        return anonymize_path(input_path, output_path, in_place=in_place, progress=progress)
 
 
 def _has_non_empty_trace_outputs(traces_dir: Path) -> bool:
@@ -396,6 +405,7 @@ def _write_extract_readme(
     *,
     model_filter: str | None = None,
     repo_id: str | None = None,
+    trace_files: list[Path] | None = None,
 ) -> Path:
     cfg = _extract_dataset_config(provider, output, model_filter=model_filter, repo_id=repo_id)
     return write_traces_readme(
@@ -405,6 +415,7 @@ def _write_extract_readme(
         model_id=None,
         repo_id=cfg.get_publish_repo_id(),
         extraction_provider=provider,
+        trace_files=trace_files,
     )
 
 
@@ -467,13 +478,17 @@ def _run_extract_command(
     console.print(Panel.fit("Teich Extract", style="bold blue"))
     if provider == "cursor":
         console.print(f"[yellow]{CURSOR_EXTRACTION_NOTICE}[/yellow]", soft_wrap=True)
-    result = extract_local_sessions(
-        provider,
-        output_dir=output,
-        sources=sessions_dir,
-        model_filter=model_filter,
-        clear_destination=True,
-    )
+    progress_context = nullcontext(None) if skip_anonymize else _anonymize_progress_bar()
+    with progress_context as anonymize_progress:
+        result = extract_local_sessions(
+            provider,
+            output_dir=output,
+            sources=sessions_dir,
+            model_filter=model_filter,
+            clear_destination=True,
+            anonymize=not skip_anonymize,
+            anonymize_progress=anonymize_progress,
+        )
     if not result.source_paths:
         console.print(f"[red]No local {provider} session folders found.[/red]")
         console.print("[yellow]Pass one or more explicit folders with --sessions-dir.[/yellow]")
@@ -487,19 +502,18 @@ def _run_extract_command(
     stale_readme_path = output / "README.md"
     if stale_readme_path.exists() and stale_readme_path.is_file():
         stale_readme_path.unlink()
-    anonymize_report = None if skip_anonymize else _anonymize_with_progress(output, output, in_place=True)
-    readme_path = _write_extract_readme(provider, output, model_filter=model_filter)
+    readme_path = _write_extract_readme(provider, output, model_filter=model_filter, trace_files=result.copied_files)
     extracted_message = f"Extracted {result.count} {provider} trace{'s' if result.count != 1 else ''}"
     if model_filter:
         extracted_message += f" with {model_filter}"
     console.print(f"[green]{extracted_message}[/green]", soft_wrap=True)
-    if anonymize_report is None:
+    if result.anonymize_totals is None:
         console.print(
             "[yellow]Skipped anonymization because --no-anon was passed. Review the data before sharing or uploading.[/yellow]",
             soft_wrap=True,
         )
     else:
-        totals = anonymize_report.totals
+        totals = result.anonymize_totals
         console.print(
             "[cyan]Automatically scrambled[/cyan] "
             f"{totals.get('api_key', 0)} API keys, "
@@ -755,8 +769,21 @@ def generate(
                 )
         elif agent_provider == "pi":
             runner = PiRunner(cfg)
-        elif agent_provider in {"claude", "claude-code", "claude_code"}:
+        elif agent_provider in CLAUDE_PROVIDER_ALIASES:
             runner = ClaudeCodeRunner(cfg)
+            if cfg.claude_host_auth_active():
+                console.print(
+                    f"[yellow]Claude OAuth token found ({cfg.get_claude_oauth_token_source()}): "
+                    "running on your Claude subscription (usage counts against your plan's "
+                    "rate limits, not API credits). Remove the token to use an API key "
+                    "instead.[/yellow]"
+                )
+            elif cfg.get_claude_oauth_token() and cfg.get_base_url():
+                console.print(
+                    "[yellow]Claude OAuth token found but api.base_url is set; using the "
+                    "API/proxy path (subscription auth talks to the first-party Anthropic "
+                    "API only).[/yellow]"
+                )
             if cfg.agent.langfuse.enabled:
                 console.print(
                     "[cyan]Claude Code Langfuse tracing enabled: uploading each session to "
@@ -1077,6 +1104,24 @@ agent:
   #   host_auth_file: null            # default: $CODEX_HOME/auth.json or ~/.codex/auth.json
   #   auth_dir: ./.teich/codex-auth
 
+  # Claude Code-only settings.
+  # Subscription auth (Pro/Max): create a long-lived token with `claude
+  # setup-token` on the host and export CLAUDE_CODE_OAUTH_TOKEN (or set
+  # oauth_token below). When a token is available and api.base_url is unset,
+  # Teich passes it into each container and withholds ANTHROPIC_API_KEY (an API
+  # key silently wins over subscription auth inside Claude Code and would bill
+  # the API). Usage counts against your plan's rate limits, not API credits,
+  # and the token is safe at any max_concurrency.
+  # fallback_model forwards as --fallback-model (a model or list, tried in
+  # order on overload); always_thinking writes alwaysThinkingEnabled into the
+  # container's ~/.claude/settings.json; max_thinking_tokens sets
+  # MAX_THINKING_TOKENS in the container (0 disables thinking where allowed).
+  # claude:
+  #   oauth_token: null               # prefer CLAUDE_CODE_OAUTH_TOKEN in the env
+  #   fallback_model: [sonnet, haiku]
+  #   always_thinking: true
+  #   max_thinking_tokens: null
+
   # Trace each agent session to Langfuse (https://langfuse.com). Works for Codex
   # and Claude Code -- each uses its own native integration (Codex plugin, Claude
   # Code Stop hook) and Teich passes the credentials into the container. Side-
@@ -1103,7 +1148,9 @@ model:
   # Optional reasoning / thinking level.
   # - Codex: forwarded as model_reasoning_effort
   # - Pi: normalized to low / medium / high when supported
-  # - Claude Code / Hermes: model/provider specific
+  # - Claude Code: forwarded as --effort (low | medium | high | xhigh | max on
+  #   supported models)
+  # - Hermes: model/provider specific
   # Hermes also enables built-in toolsets:
   # safe,terminal,file,skills,memory,session_search,delegation
   reasoning_effort: medium

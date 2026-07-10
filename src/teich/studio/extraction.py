@@ -9,7 +9,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ..anonymize import anonymize_path
 from ..config import Config
 from ..extract import CURSOR_EXTRACTION_NOTICE, ExtractProvider, extract_local_sessions
 from ..trace_readme import extraction_readme_tags, write_traces_readme
@@ -98,6 +97,8 @@ class ExtractionJob:
                 last_progress_at = now
                 self.events.append(event)
 
+            if not self.skip_anonymize:
+                self._emit_status("running", "Extracting and anonymizing traces...")
             result = extract_local_sessions(
                 self.provider,
                 output_dir=self.output_dir,
@@ -105,6 +106,7 @@ class ExtractionJob:
                 model_filter=self.model_filter,
                 clear_destination=True,
                 progress=emit_progress,
+                anonymize=not self.skip_anonymize,
             )
             self.detected_sources = [str(path) for path in result.source_paths]
             self.result_files = [path.name for path in result.copied_files]
@@ -137,9 +139,7 @@ class ExtractionJob:
                     }
                 )
             else:
-                self._emit_status("running", "Anonymizing staged traces...")
-                report = anonymize_path(self.output_dir, self.output_dir, in_place=True)
-                self.anonymize_totals = report.totals
+                self.anonymize_totals = result.anonymize_totals or {}
                 self.events.append(
                     {
                         "kind": "extract_anonymize",
@@ -152,7 +152,7 @@ class ExtractionJob:
                         "totals": self.anonymize_totals,
                     }
                 )
-            self._write_readme()
+            self._write_readme(result.copied_files)
             self._emit_status(
                 "completed",
                 f"Extracted {self.result_rows} trace row(s) across {len(self.result_files)} file(s).",
@@ -164,7 +164,7 @@ class ExtractionJob:
             self.finished_at = datetime.now(timezone.utc)
             self.events.close()
 
-    def _write_readme(self) -> None:
+    def _write_readme(self, trace_files: list[Path] | None = None) -> None:
         cfg = _extract_dataset_config(self.provider, self.output_dir, model_filter=self.model_filter)
         readme_path = write_traces_readme(
             cfg.output.traces_dir,
@@ -173,6 +173,7 @@ class ExtractionJob:
             model_id=None,
             repo_id=cfg.get_publish_repo_id(),
             extraction_provider=self.provider,
+            trace_files=trace_files,
         )
         self.events.append({"kind": "extract_readme", "text": f"Wrote {readme_path.name}.", "path": str(readme_path)})
 

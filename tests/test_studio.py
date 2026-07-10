@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 from teich.cli import _configure_studio_event_loop_policy
 from teich.config import Config
 from teich.extract import CURSOR_EXTRACTION_NOTICE
-from teich.runner import SessionProgressUpdate
+from teich.runner import ClaudeCodeRunner, SessionProgressUpdate
 from teich.studio.events import summarize_chat_row, summarize_event, summarize_trace_events
 from teich.studio.generation import RUNNER_CLASSES, GenerationJob
 from teich.studio.interactive import InteractiveSession
@@ -804,7 +804,7 @@ def test_extract_endpoint_warns_cursor_may_take_a_while(client):
     source = client.project_dir / "state.vscdb"
     source.write_text("", encoding="utf-8")
 
-    def fake_extract(provider, *, output_dir, sources=None, model_filter=None, clear_destination=False, progress=None):
+    def fake_extract(provider, *, output_dir, sources=None, model_filter=None, clear_destination=False, progress=None, anonymize=False):
         assert provider == "cursor"
         assert sources == [source]
         assert model_filter is None
@@ -887,6 +887,31 @@ def test_chat_session_discard_rejected_while_turn_running(tmp_path):
         session.discard()
 
     assert session.status == "running"
+
+
+def test_claude_terminal_forwards_effort_and_fallback_model(tmp_path):
+    config = Config(
+        agent={"provider": "claude-code", "claude": {"fallback_model": ["sonnet", "haiku"]}},
+        model={"model": "claude-opus-4-8", "reasoning_effort": "high"},
+        output={"traces_dir": tmp_path / "output", "sandbox_dir": tmp_path / "sandbox"},
+    )
+    session = InteractiveSession(config)
+    with patch.object(ClaudeCodeRunner, "_ensure_image"):
+        session._runner = ClaudeCodeRunner(config)
+
+    command = session._native_cli_command()
+
+    assert command == [
+        "claude",
+        "--model",
+        "claude-opus-4-8",
+        "--permission-mode",
+        "bypassPermissions",
+        "--effort",
+        "high",
+        "--fallback-model",
+        "sonnet,haiku",
+    ]
 
 
 def test_generation_stop_prevents_later_prompt_starts(tmp_path, monkeypatch):
