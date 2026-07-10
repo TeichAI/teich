@@ -107,7 +107,8 @@ def _anonymize_file(source: Path, destination: Path) -> AnonymizeFileReport:
                 shutil.copy2(source, destination)
             return AnonymizeFileReport(path=source, output_path=destination)
         text = anonymizer.anonymize_text(original)
-        destination.write_text(text, encoding="utf-8")
+        if text != original or source.resolve() != destination.resolve():
+            destination.write_text(text, encoding="utf-8")
 
     return AnonymizeFileReport(
         path=source,
@@ -132,6 +133,7 @@ def _anonymize_jsonl_file(source: Path, destination: Path, anonymizer: "TraceAno
             ) as temp_handle,
         ):
             temp_path = Path(temp_handle.name)
+            changed = False
             for raw_line in handle:
                 stripped = raw_line.strip()
                 if not stripped:
@@ -140,12 +142,16 @@ def _anonymize_jsonl_file(source: Path, destination: Path, anonymizer: "TraceAno
                 try:
                     value = json.loads(raw_line)
                 except json.JSONDecodeError:
-                    temp_handle.write(anonymizer.anonymize_text(raw_line))
+                    anonymized_line = anonymizer.anonymize_text(raw_line)
+                    if anonymized_line != raw_line:
+                        changed = True
+                    temp_handle.write(anonymized_line)
                     continue
                 anonymized = anonymizer.anonymize_value(value)
                 if anonymized == value:
                     temp_handle.write(raw_line)
                     continue
+                changed = True
                 line = json.dumps(anonymized, ensure_ascii=False, separators=(",", ":"))
                 line = line.replace("\u0085", "\\u0085").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
                 temp_handle.write(line + "\n")
@@ -161,7 +167,10 @@ def _anonymize_jsonl_file(source: Path, destination: Path, anonymizer: "TraceAno
         )
         return
     if temp_path is not None:
-        temp_path.replace(destination)
+        if not changed and source.resolve() == destination.resolve():
+            temp_path.unlink()
+        else:
+            temp_path.replace(destination)
 
 
 class TraceAnonymizer:
