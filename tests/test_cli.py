@@ -286,6 +286,54 @@ max_concurrency: 2
     assert "host Codex login" not in result.output
 
 
+def _claude_config_file(tmp_path: Path) -> Path:
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(f"""
+agent:
+  provider: claude-code
+model:
+  model: claude-opus-4-8
+prompts:
+  - Build a todo app
+output:
+  traces_dir: {tmp_path}/output
+""")
+    return config_file
+
+
+def test_generate_claude_token_prints_subscription_notice(tmp_path: Path, monkeypatch):
+    """A resolvable token activates subscription auth and says so up front."""
+    monkeypatch.delenv("TEICH_CLAUDE_OAUTH_TOKEN", raising=False)
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-token")
+    config_file = _claude_config_file(tmp_path)
+
+    with patch('teich.cli.ClaudeCodeRunner') as mock_runner:
+        mock_instance = MagicMock()
+        mock_instance.run_all.return_value = []
+        mock_runner.return_value = mock_instance
+        result = runner.invoke(app, ["generate", "-c", str(config_file)])
+
+    assert "Claude OAuth token found" in result.output
+    assert "CLAUDE_CODE_OAUTH_TOKEN" in result.output
+    assert "subscription" in result.output
+    assert result.exit_code == 0
+
+
+def test_generate_claude_no_notice_without_token(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("TEICH_CLAUDE_OAUTH_TOKEN", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    config_file = _claude_config_file(tmp_path)
+
+    with patch('teich.cli.ClaudeCodeRunner') as mock_runner:
+        mock_instance = MagicMock()
+        mock_instance.run_all.return_value = []
+        mock_runner.return_value = mock_instance
+        result = runner.invoke(app, ["generate", "-c", str(config_file)])
+
+    assert "Claude OAuth token found" not in result.output
+    assert result.exit_code == 0
+
+
 def test_generate_command_success_chat(tmp_path: Path):
     config_file = tmp_path / "config.yaml"
     config_file.write_text(f"""

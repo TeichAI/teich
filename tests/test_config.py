@@ -476,6 +476,146 @@ def test_codex_host_auth_source_defaults_to_home(monkeypatch):
     assert config.get_codex_host_auth_source() == Path.home() / ".codex" / "auth.json"
 
 
+def test_claude_config_defaults():
+    """No token, no passthroughs: everything under agent.claude is opt-in."""
+    claude = Config().agent.claude
+    assert claude.oauth_token is None
+    assert claude.fallback_model is None
+    assert claude.always_thinking is None
+    assert claude.max_thinking_tokens is None
+
+
+def test_claude_oauth_token_prefers_explicit_config(monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "env-token")
+    config = Config(agent={"claude": {"oauth_token": "config-token"}})
+    assert config.get_claude_oauth_token() == "config-token"
+
+
+def test_claude_oauth_token_falls_back_to_env(monkeypatch):
+    monkeypatch.delenv("TEICH_CLAUDE_OAUTH_TOKEN", raising=False)
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "env-token")
+    assert Config().get_claude_oauth_token() == "env-token"
+
+
+def test_claude_oauth_token_teich_env_wins_over_claude_env(monkeypatch):
+    monkeypatch.setenv("TEICH_CLAUDE_OAUTH_TOKEN", "teich-token")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "claude-token")
+    assert Config().get_claude_oauth_token() == "teich-token"
+
+
+def test_claude_oauth_token_absent_when_unset(monkeypatch):
+    monkeypatch.delenv("TEICH_CLAUDE_OAUTH_TOKEN", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    assert Config().get_claude_oauth_token() is None
+
+
+def test_claude_oauth_token_source_names_the_resolving_source(monkeypatch):
+    """The CLI notice reports the source; it must track the getter's resolution order."""
+    monkeypatch.delenv("TEICH_CLAUDE_OAUTH_TOKEN", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    assert Config().get_claude_oauth_token_source() is None
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "env-token")
+    assert Config().get_claude_oauth_token_source() == "CLAUDE_CODE_OAUTH_TOKEN"
+    monkeypatch.setenv("TEICH_CLAUDE_OAUTH_TOKEN", "teich-token")
+    assert Config().get_claude_oauth_token_source() == "TEICH_CLAUDE_OAUTH_TOKEN"
+    config = Config(agent={"claude": {"oauth_token": "config-token"}})
+    assert config.get_claude_oauth_token_source() == "agent.claude.oauth_token"
+
+
+def test_claude_host_auth_active_with_token(monkeypatch):
+    monkeypatch.delenv("TEICH_CLAUDE_OAUTH_TOKEN", raising=False)
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "env-token")
+    assert Config(agent={"provider": "claude-code"}).claude_host_auth_active() is True
+
+
+def test_claude_host_auth_inactive_without_token(monkeypatch):
+    monkeypatch.delenv("TEICH_CLAUDE_OAUTH_TOKEN", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    assert Config(agent={"provider": "claude-code"}).claude_host_auth_active() is False
+
+
+def test_claude_host_auth_inactive_for_other_providers(monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "env-token")
+    assert Config(agent={"provider": "codex"}).claude_host_auth_active() is False
+
+
+def test_claude_ambient_token_yields_to_base_url(monkeypatch):
+    """An ambient env token must not override an explicit base_url config (no error either)."""
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "env-token")
+    config = Config(
+        agent={"provider": "claude-code"},
+        api={"provider": "openrouter", "base_url": "https://openrouter.ai/api/v1"},
+    )
+    assert config.claude_host_auth_active() is False
+
+
+def test_claude_configured_token_rejects_base_url():
+    """An explicit config token + base_url is a contradiction, not a silent fallback."""
+    with pytest.raises(ValueError, match="oauth_token"):
+        Config(
+            agent={"provider": "claude-code", "claude": {"oauth_token": "config-token"}},
+            api={"provider": "openrouter", "base_url": "https://openrouter.ai/api/v1"},
+        )
+
+
+def test_claude_configured_token_base_url_allowed_for_other_providers():
+    """A leftover agent.claude block must not break codex + base_url configs."""
+    config = Config(
+        agent={"provider": "codex", "claude": {"oauth_token": "config-token"}},
+        api={"provider": "openrouter", "base_url": "https://openrouter.ai/api/v1"},
+    )
+    assert config.agent.claude.oauth_token == "config-token"
+
+
+def test_claude_fallback_model_defaults_to_none():
+    assert Config().agent.claude.fallback_model is None
+    assert Config().get_claude_fallback_model() is None
+
+
+def test_claude_fallback_model_accepts_string_and_list():
+    def cfg(fallback: object) -> Config:
+        return Config(agent={"claude": {"fallback_model": fallback}})
+
+    assert cfg("sonnet").get_claude_fallback_model() == "sonnet"
+    assert cfg("sonnet, haiku").get_claude_fallback_model() == "sonnet,haiku"
+    assert cfg(["sonnet", "haiku"]).get_claude_fallback_model() == "sonnet,haiku"
+
+
+def test_claude_fallback_model_blank_entries_are_dropped():
+    assert Config(agent={"claude": {"fallback_model": [" ", ""]}}).get_claude_fallback_model() is None
+    assert Config(agent={"claude": {"fallback_model": ",,"}}).get_claude_fallback_model() is None
+
+
+def test_claude_max_thinking_tokens_rejects_negative():
+    with pytest.raises(ValueError):
+        Config(agent={"claude": {"max_thinking_tokens": -1}})
+
+
+def test_claude_settings_from_yaml(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("TEICH_MODEL", raising=False)
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        """
+agent:
+  provider: claude-code
+  claude:
+    oauth_token: sk-ant-oat01-test
+    fallback_model: [sonnet, haiku]
+    always_thinking: true
+    max_thinking_tokens: 31999
+model:
+  model: claude-opus-4-8
+  reasoning_effort: xhigh
+"""
+    )
+    config = Config.from_yaml(config_file)
+    assert config.claude_host_auth_active() is True
+    assert config.model.reasoning_effort == "xhigh"
+    assert config.get_claude_fallback_model() == "sonnet,haiku"
+    assert config.agent.claude.always_thinking is True
+    assert config.agent.claude.max_thinking_tokens == 31999
+
+
 def test_mcp_config():
     """Test MCP server configuration."""
     mcp = MCPConfig(
