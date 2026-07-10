@@ -15,6 +15,7 @@ import sqlite3
 from tempfile import TemporaryDirectory
 from typing import Any, Literal
 
+from .anonymize import TraceAnonymizer, anonymize_file
 from .tool_schema import CURSOR_BUILTIN_TOOLS
 
 ExtractProvider = Literal["claude", "codex", "cursor", "hermes", "pi"]
@@ -39,10 +40,39 @@ class ExtractResult:
     destination_dir: Path
     copied_files: list[Path] = field(default_factory=list)
     source_paths: list[Path] = field(default_factory=list)
+    anonymize_totals: dict[str, int] | None = None
 
     @property
     def count(self) -> int:
         return len(self.copied_files)
+
+
+class _InlineAnonymizer:
+    """Anonymize traces as they are written, one TraceAnonymizer per file."""
+
+    def __init__(self) -> None:
+        self.totals: dict[str, int] = {"email": 0, "username": 0, "api_key": 0}
+
+    def _add(self, counts: dict[str, int]) -> None:
+        for key, count in counts.items():
+            self.totals[key] = self.totals.get(key, 0) + count
+
+    def copy_file(self, source: Path, destination: Path) -> None:
+        report = anonymize_file(source, destination)
+        self._add(report.replacements)
+
+    def anonymize_events(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        anonymizer = TraceAnonymizer()
+        events = [anonymizer.anonymize_value(event) for event in events]
+        self._add(anonymizer.counts)
+        return events
+
+    def anonymize_remaining_files(self, root: Path, excluded: Iterable[Path]) -> None:
+        """Scrub pre-existing output files without re-reading newly written traces."""
+        excluded_paths = {path.resolve() for path in excluded}
+        for path in sorted(candidate for candidate in root.rglob("*") if candidate.is_file()):
+            if path.resolve() not in excluded_paths:
+                self.copy_file(path, path)
 
 
 def default_session_sources(provider: ExtractProvider, home: Path | None = None) -> list[Path]:
@@ -94,6 +124,7 @@ def extract_local_sessions(
     model_filter: str | None = None,
     clear_destination: bool = False,
     progress: ProgressCallback | None = None,
+    anonymize: bool = False,
 ) -> ExtractResult:
     """Extract local sessions for provider into output_dir."""
     source_candidates = list(sources) if sources is not None else default_session_sources(provider, home)
@@ -102,14 +133,18 @@ def extract_local_sessions(
     destination_dir.mkdir(parents=True, exist_ok=True)
     if clear_destination:
         _clear_extract_destination(destination_dir)
+    anonymizer = _InlineAnonymizer() if anonymize else None
     if provider == "hermes":
-        copied_files = _extract_hermes_state_dbs(resolved_sources, destination_dir, model_filter=model_filter)
+        copied_files = _extract_hermes_state_dbs(
+            resolved_sources, destination_dir, model_filter=model_filter, anonymizer=anonymizer
+        )
     elif provider == "cursor":
         copied_files = _extract_cursor_databases(
             resolved_sources,
             destination_dir,
             model_filter=model_filter,
             progress=progress,
+            anonymizer=anonymizer,
         )
     else:
         copied_files = _extract_jsonl_session_files(
@@ -117,12 +152,16 @@ def extract_local_sessions(
             resolved_sources,
             destination_dir,
             model_filter=model_filter,
+            anonymizer=anonymizer,
         )
+    if anonymizer is not None and copied_files:
+        anonymizer.anonymize_remaining_files(destination_dir, copied_files)
     return ExtractResult(
         provider=provider,
         destination_dir=destination_dir,
         copied_files=copied_files,
         source_paths=resolved_sources,
+        anonymize_totals=anonymizer.totals if anonymizer is not None else None,
     )
 
 
@@ -283,6 +322,7 @@ def _extract_cursor_databases(
     *,
     model_filter: str | None = None,
     progress: ProgressCallback | None = None,
+    anonymizer: _InlineAnonymizer | None = None,
 ) -> list[Path]:
     indexed_rows: list[tuple[int, dict[str, Any]]] = []
     row_index = 0
@@ -322,11 +362,13 @@ def _extract_cursor_databases(
     if model_filter:
         rows = [row for row in rows if trace_matches_model([row], model_filter)]
     if not rows:
-        return _extract_cursor_project_files(sources, destination_dir, model_filter=model_filter)
+        return _extract_cursor_project_files(
+            sources, destination_dir, model_filter=model_filter, anonymizer=anonymizer
+        )
     copied: list[Path] = []
     for row_index, row in enumerate(rows, start=1):
         destination = _unique_destination(destination_dir, _cursor_session_file_name(row, row_index))
-        _write_jsonl_dict_events(destination, _cursor_row_to_transcript_events(row, row_index))
+        _write_jsonl_dict_events(destination, _cursor_row_to_transcript_events(row, row_index), anonymizer=anonymizer)
         copied.append(destination)
     return copied
 
@@ -336,6 +378,7 @@ def _extract_cursor_project_files(
     destination_dir: Path,
     *,
     model_filter: str | None = None,
+    anonymizer: _InlineAnonymizer | None = None,
 ) -> list[Path]:
     copied: list[Path] = []
     for source in sources:
@@ -354,7 +397,9 @@ def _extract_cursor_project_files(
                 except ValueError:
                     relative = transcript.name
             destination = _unique_nested_destination(destination_dir / relative)
-            _write_jsonl_dict_events(destination, _cursor_native_transcript_events(events, transcript, project_dir))
+            _write_jsonl_dict_events(
+                destination, _cursor_native_transcript_events(events, transcript, project_dir), anonymizer=anonymizer
+            )
             copied.append(destination)
     return copied
 
@@ -464,12 +509,13 @@ def _extract_jsonl_session_files(
     destination_dir: Path,
     *,
     model_filter: str | None = None,
+    anonymizer: _InlineAnonymizer | None = None,
 ) -> list[Path]:
     copied: list[Path] = []
     for source in sources:
         for path in _jsonl_files(source):
             destination = _unique_destination(destination_dir, path.name)
-            if _copy_provider_jsonl(provider, path, destination, model_filter=model_filter):
+            if _copy_provider_jsonl(provider, path, destination, model_filter=model_filter, anonymizer=anonymizer):
                 copied.append(destination)
     return copied
 
@@ -480,17 +526,24 @@ def _copy_provider_jsonl(
     destination: Path,
     *,
     model_filter: str | None = None,
+    anonymizer: _InlineAnonymizer | None = None,
 ) -> bool:
     events = _read_jsonl_dict_events(source)
     if events is None:
         if model_filter:
             return False
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, destination)
+        if anonymizer is not None:
+            anonymizer.copy_file(source, destination)
+        else:
+            shutil.copy2(source, destination)
         return True
     if model_filter and not trace_matches_model(events, model_filter):
         return False
     destination.parent.mkdir(parents=True, exist_ok=True)
+    if anonymizer is not None:
+        anonymizer.copy_file(source, destination)
+        return True
     shutil.copy2(source, destination)
     try:
         shutil.copystat(source, destination)
@@ -516,7 +569,13 @@ def _read_jsonl_dict_events(path: Path) -> list[dict[str, Any]] | None:
     return events
 
 
-def _write_jsonl_dict_events(path: Path, events: list[dict[str, Any]]) -> None:
+def _write_jsonl_dict_events(
+    path: Path,
+    events: list[dict[str, Any]],
+    anonymizer: _InlineAnonymizer | None = None,
+) -> None:
+    if anonymizer is not None:
+        events = anonymizer.anonymize_events(events)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         for event in events:
@@ -529,11 +588,12 @@ def _write_individual_jsonl_rows(
     destination_dir: Path,
     rows: list[dict[str, Any]],
     file_name_for_row: Callable[[dict[str, Any], int], str],
+    anonymizer: _InlineAnonymizer | None = None,
 ) -> list[Path]:
     copied: list[Path] = []
     for row_index, row in enumerate(rows, start=1):
         destination = _unique_destination(destination_dir, file_name_for_row(row, row_index))
-        _write_jsonl_dict_events(destination, [row])
+        _write_jsonl_dict_events(destination, [row], anonymizer=anonymizer)
         copied.append(destination)
     return copied
 
@@ -2106,13 +2166,16 @@ def _extract_hermes_state_dbs(
     destination_dir: Path,
     *,
     model_filter: str | None = None,
+    anonymizer: _InlineAnonymizer | None = None,
 ) -> list[Path]:
     copied: list[Path] = []
     for source in sources:
         state_dbs = [source] if source.is_file() else sorted(source.rglob("state.db"))
         for state_db in state_dbs:
             rows = _hermes_state_db_session_rows(state_db, model_filter=model_filter)
-            copied.extend(_write_individual_jsonl_rows(destination_dir, rows, _hermes_session_file_name))
+            copied.extend(
+                _write_individual_jsonl_rows(destination_dir, rows, _hermes_session_file_name, anonymizer=anonymizer)
+            )
     return copied
 
 

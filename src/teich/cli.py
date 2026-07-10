@@ -452,6 +452,7 @@ def _run_extract_command(
         sources=sessions_dir,
         model_filter=model_filter,
         clear_destination=True,
+        anonymize=not skip_anonymize,
     )
     if not result.source_paths:
         console.print(f"[red]No local {provider} session folders found.[/red]")
@@ -466,19 +467,18 @@ def _run_extract_command(
     stale_readme_path = output / "README.md"
     if stale_readme_path.exists() and stale_readme_path.is_file():
         stale_readme_path.unlink()
-    anonymize_report = None if skip_anonymize else anonymize_path(output, output, in_place=True)
     readme_path = _write_extract_readme(provider, output, model_filter=model_filter, trace_files=result.copied_files)
     extracted_message = f"Extracted {result.count} {provider} trace{'s' if result.count != 1 else ''}"
     if model_filter:
         extracted_message += f" with {model_filter}"
     console.print(f"[green]{extracted_message}[/green]", soft_wrap=True)
-    if anonymize_report is None:
+    if result.anonymize_totals is None:
         console.print(
             "[yellow]Skipped anonymization because --no-anon was passed. Review the data before sharing or uploading.[/yellow]",
             soft_wrap=True,
         )
     else:
-        totals = anonymize_report.totals
+        totals = result.anonymize_totals
         console.print(
             "[cyan]Automatically scrambled[/cyan] "
             f"{totals.get('api_key', 0)} API keys, "

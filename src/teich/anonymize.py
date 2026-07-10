@@ -84,7 +84,7 @@ def anonymize_path(input_path: Path, output_path: Path, *, in_place: bool = Fals
     report = AnonymizeReport(input_path=input_path, output_path=output_path)
     if input_path.is_file():
         destination = output_path / input_path.name if output_path.exists() and output_path.is_dir() else output_path
-        file_report = _anonymize_file(input_path, destination)
+        file_report = anonymize_file(input_path, destination)
         report.files.append(file_report)
         return report
 
@@ -95,10 +95,10 @@ def anonymize_path(input_path: Path, output_path: Path, *, in_place: bool = Fals
         # Each file is anonymized independently (fresh TraceAnonymizer per
         # file), so files can be processed in parallel safely.
         with ProcessPoolExecutor(max_workers=workers) as executor:
-            report.files.extend(executor.map(_anonymize_file, source_files, destinations))
+            report.files.extend(executor.map(anonymize_file, source_files, destinations))
     else:
         for source_file, destination in zip(source_files, destinations):
-            report.files.append(_anonymize_file(source_file, destination))
+            report.files.append(anonymize_file(source_file, destination))
     return report
 
 
@@ -110,7 +110,7 @@ def _path_contains(parent: Path, child: Path) -> bool:
         return False
 
 
-def _anonymize_file(source: Path, destination: Path) -> AnonymizeFileReport:
+def anonymize_file(source: Path, destination: Path) -> AnonymizeFileReport:
     destination.parent.mkdir(parents=True, exist_ok=True)
     if source.suffix.lower() not in TEXT_EXTENSIONS:
         if source.resolve() != destination.resolve():
