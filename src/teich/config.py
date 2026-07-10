@@ -362,7 +362,7 @@ class Config(BaseModel):
         so it is simply not used there (see ``claude_host_auth_active``).
         """
         if (
-            self.agent.claude.oauth_token
+            _normalize_api_key(self.agent.claude.oauth_token)
             and self.get_agent_provider() in CLAUDE_PROVIDER_ALIASES
             and self.api.base_url
         ):
@@ -461,15 +461,13 @@ class Config(BaseModel):
         Honors an explicit ``agent.claude.oauth_token``, then the
         ``TEICH_CLAUDE_OAUTH_TOKEN`` and ``CLAUDE_CODE_OAUTH_TOKEN`` env vars.
         """
-        token = self.agent.claude.oauth_token
-        if isinstance(token, str) and token.strip():
-            return token.strip()
+        if token := _normalize_api_key(self.agent.claude.oauth_token):
+            return token
         return _get_env_alias(*CLAUDE_OAUTH_TOKEN_ENV_ALIASES)
 
     def get_claude_oauth_token_source(self) -> str | None:
         """Name the source ``get_claude_oauth_token`` resolves from (for CLI messaging)."""
-        token = self.agent.claude.oauth_token
-        if isinstance(token, str) and token.strip():
+        if _normalize_api_key(self.agent.claude.oauth_token):
             return "agent.claude.oauth_token"
         for name in CLAUDE_OAUTH_TOKEN_ENV_ALIASES:
             if _get_env_alias(name):

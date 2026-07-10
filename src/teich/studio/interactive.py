@@ -382,6 +382,7 @@ class InteractiveSession:
             permission_mode = runner._permission_mode()
             if permission_mode:
                 cli.extend(["--permission-mode", permission_mode])
+            cli.extend(runner._claude_passthrough_args())
             return cli
         # hermes
         return [

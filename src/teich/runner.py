@@ -3407,6 +3407,15 @@ class ClaudeCodeRunner(ExternalCliRunner):
         )
         return f"node {shlex.quote(proxy_script)} >/tmp/claude-openrouter-proxy.log 2>&1 & {readiness_probe}"
 
+    def _claude_passthrough_args(self) -> list[str]:
+        """Build model-related flags shared by batch and Studio Claude sessions."""
+        args: list[str] = []
+        if self.config.model.reasoning_effort:
+            args.extend(["--effort", self.config.model.reasoning_effort])
+        if fallback_model := self.config.get_claude_fallback_model():
+            args.extend(["--fallback-model", fallback_model])
+        return args
+
     def _build_shell_command(
         self,
         *,
@@ -3425,11 +3434,7 @@ class ClaudeCodeRunner(ExternalCliRunner):
         permission_mode = self._permission_mode()
         if permission_mode:
             claude_command.extend(["--permission-mode", permission_mode])
-        if self.config.model.reasoning_effort:
-            claude_command.extend(["--effort", self.config.model.reasoning_effort])
-        fallback_model = self.config.get_claude_fallback_model()
-        if fallback_model:
-            claude_command.extend(["--fallback-model", fallback_model])
+        claude_command.extend(self._claude_passthrough_args())
         if self.config.developer_instructions:
             claude_command.extend(["--append-system-prompt", self.config.developer_instructions])
         if resume_session_id:

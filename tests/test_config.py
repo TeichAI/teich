@@ -509,6 +509,31 @@ def test_claude_oauth_token_absent_when_unset(monkeypatch):
     assert Config().get_claude_oauth_token() is None
 
 
+def test_claude_oauth_token_placeholder_is_treated_as_absent(monkeypatch):
+    monkeypatch.delenv("TEICH_CLAUDE_OAUTH_TOKEN", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    config = Config(
+        agent={"provider": "claude-code", "claude": {"oauth_token": " dummy "}},
+        api={"provider": "anthropic", "api_key": "sk-ant-test"},
+    )
+
+    assert config.get_claude_oauth_token() is None
+    assert config.get_claude_oauth_token_source() is None
+    assert config.claude_host_auth_active() is False
+    assert config.get_api_key() == "sk-ant-test"
+
+
+def test_claude_oauth_token_placeholder_allows_base_url(monkeypatch):
+    monkeypatch.delenv("TEICH_CLAUDE_OAUTH_TOKEN", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    config = Config(
+        agent={"provider": "claude-code", "claude": {"oauth_token": "none"}},
+        api={"provider": "openrouter", "base_url": "https://openrouter.ai/api/v1"},
+    )
+
+    assert config.get_claude_oauth_token() is None
+
+
 def test_claude_oauth_token_source_names_the_resolving_source(monkeypatch):
     """The CLI notice reports the source; it must track the getter's resolution order."""
     monkeypatch.delenv("TEICH_CLAUDE_OAUTH_TOKEN", raising=False)
