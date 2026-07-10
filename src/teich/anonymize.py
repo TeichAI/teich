@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 import hashlib
+import os
 import json
 import re
 import shutil
 import string
+import sys
 from tempfile import NamedTemporaryFile
 from typing import Any
 
@@ -23,6 +26,18 @@ TEXT_EXTENSIONS = {
     ".toml",
     ".log",
 }
+
+# ponytail: process startup isn't free — only fan out when there are enough
+# files for the parallelism to pay for itself.
+_MIN_FILES_FOR_PARALLEL = 8
+_WINDOWS_MAX_PROCESS_WORKERS = 61
+
+
+def _process_worker_count(file_count: int) -> int:
+    workers = min(os.cpu_count() or 1, file_count)
+    if sys.platform == "win32":
+        workers = min(workers, _WINDOWS_MAX_PROCESS_WORKERS)
+    return workers
 
 
 @dataclass
@@ -73,11 +88,17 @@ def anonymize_path(input_path: Path, output_path: Path, *, in_place: bool = Fals
         report.files.append(file_report)
         return report
 
-    for source_file in sorted(path for path in input_path.rglob("*") if path.is_file()):
-        relative_path = source_file.relative_to(input_path)
-        destination = source_file if in_place else output_path / relative_path
-        file_report = anonymize_file(source_file, destination)
-        report.files.append(file_report)
+    source_files = sorted(path for path in input_path.rglob("*") if path.is_file())
+    destinations = [source if in_place else output_path / source.relative_to(input_path) for source in source_files]
+    workers = _process_worker_count(len(source_files))
+    if workers > 1 and len(source_files) >= _MIN_FILES_FOR_PARALLEL:
+        # Each file is anonymized independently (fresh TraceAnonymizer per
+        # file), so files can be processed in parallel safely.
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            report.files.extend(executor.map(anonymize_file, source_files, destinations))
+    else:
+        for source_file, destination in zip(source_files, destinations):
+            report.files.append(anonymize_file(source_file, destination))
     return report
 
 
@@ -107,7 +128,8 @@ def anonymize_file(source: Path, destination: Path) -> AnonymizeFileReport:
                 shutil.copy2(source, destination)
             return AnonymizeFileReport(path=source, output_path=destination)
         text = anonymizer.anonymize_text(original)
-        destination.write_text(text, encoding="utf-8")
+        if text != original or source.resolve() != destination.resolve():
+            destination.write_text(text, encoding="utf-8")
 
     return AnonymizeFileReport(
         path=source,
@@ -132,6 +154,7 @@ def _anonymize_jsonl_file(source: Path, destination: Path, anonymizer: "TraceAno
             ) as temp_handle,
         ):
             temp_path = Path(temp_handle.name)
+            changed = False
             for raw_line in handle:
                 stripped = raw_line.strip()
                 if not stripped:
@@ -140,12 +163,16 @@ def _anonymize_jsonl_file(source: Path, destination: Path, anonymizer: "TraceAno
                 try:
                     value = json.loads(raw_line)
                 except json.JSONDecodeError:
-                    temp_handle.write(anonymizer.anonymize_text(raw_line))
+                    anonymized_line = anonymizer.anonymize_text(raw_line)
+                    if anonymized_line != raw_line:
+                        changed = True
+                    temp_handle.write(anonymized_line)
                     continue
                 anonymized = anonymizer.anonymize_value(value)
                 if anonymized == value:
                     temp_handle.write(raw_line)
                     continue
+                changed = True
                 line = json.dumps(anonymized, ensure_ascii=False, separators=(",", ":"))
                 line = line.replace("\u0085", "\\u0085").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
                 temp_handle.write(line + "\n")
@@ -161,7 +188,10 @@ def _anonymize_jsonl_file(source: Path, destination: Path, anonymizer: "TraceAno
         )
         return
     if temp_path is not None:
-        temp_path.replace(destination)
+        if not changed and source.resolve() == destination.resolve():
+            temp_path.unlink()
+        else:
+            temp_path.replace(destination)
 
 
 class TraceAnonymizer:
@@ -432,12 +462,62 @@ class TraceAnonymizer:
         "timer",
     }
 
+    # ponytail: literal gates — each entry pairs the regexes above with cheap
+    # substring checks so the expensive lookbehind patterns only run on text
+    # that could possibly match. Order mirrors _api_key_patterns.
+    _api_key_gates = (
+        ("sk-or-v1-",),
+        ("sk-ant-api03-",),
+        ("sk-proj-",),
+        ("sk-",),
+        ("hf_",),
+        ("gsk_",),
+        ("github_pat_",),
+        ("ghp_", "gho_", "ghu_", "ghs_", "ghr_"),
+        ("glpat-",),
+        ("lin_api_",),
+        ("npm_",),
+        ("pypi-",),
+        ("sk_live_", "sk_test_"),
+        ("rk_live_", "rk_test_", "pk_live_", "pk_test_"),
+        ("whsec_",),
+        ("re_",),
+        ("sq0atp-", "sq0csp-"),
+        ("xoxb-", "xoxa-", "xoxp-", "xoxr-", "xoxs-"),
+        ("AIza",),
+        ("GOCSPX-",),
+        ("ctx7sk-",),
+        ("AKIA", "ASIA"),
+        ("SK",),
+        ("SG.",),
+    )
+    # Every name _is_sensitive_name can fire on contains one of these
+    # substrings (lowercased), so assignment/generic-secret scans are skipped
+    # when none is present.
+    _sensitive_gate_words = (
+        "pass",
+        "pwd",
+        "secret",
+        "credential",
+        "private",
+        "token",
+        "sig",
+        "jwt",
+        "key",
+        "url",
+        "uri",
+        "dsn",
+        "connection",
+    )
+    _jwt_gate = re.compile(r"[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}")
+
     def __init__(self) -> None:
         self.counts = {"email": 0, "username": 0, "api_key": 0}
         self._email_map: dict[str, str] = {}
         self._username_map: dict[str, str] = {}
         self._api_key_map: dict[str, str] = {}
         self._api_replacements: set[str] = set()
+        self._owner_group_patterns: dict[str, re.Pattern[str] | None] = {}
 
     def anonymize_value(self, value: Any) -> Any:
         if isinstance(value, str):
@@ -500,10 +580,14 @@ class TraceAnonymizer:
         return re.fullmatch(r"[A-Za-z0-9+/=\s]+", value) is not None
 
     def anonymize_text(self, text: str) -> str:
-        text = self._replace_emails(text)
-        text = self._replace_usernames_in_paths(text)
-        text = self._replace_encoded_home_usernames(text)
-        text = self._replace_known_unix_owner_group_usernames(text)
+        lowered = text.lower()
+        if "@" in text:
+            text = self._replace_emails(text)
+        if "home" in lowered or "users" in lowered:
+            text = self._replace_usernames_in_paths(text)
+            text = self._replace_encoded_home_usernames(text)
+        if self._username_map:
+            text = self._replace_known_unix_owner_group_usernames(text)
         text = self._replace_api_keys(text)
         return text
 
@@ -601,32 +685,45 @@ class TraceAnonymizer:
 
     def _replace_known_unix_owner_group_usernames(self, text: str) -> str:
         for username, replacement in list(self._username_map.items()):
-            if not re.fullmatch(r"[A-Za-z0-9._-]{3,}", username):
+            if username not in self._owner_group_patterns:
+                if not re.fullmatch(r"[A-Za-z0-9._-]{3,}", username) or username in self._non_person_usernames:
+                    self._owner_group_patterns[username] = None
+                else:
+                    self._owner_group_patterns[username] = re.compile(
+                        rf"(?<!\S){re.escape(username)}\s+{re.escape(username)}(?=\s+\d)",
+                        re.IGNORECASE,
+                    )
+            pattern = self._owner_group_patterns[username]
+            if pattern is None or username.lower() not in text.lower():
                 continue
-            if username in self._non_person_usernames:
-                continue
-            pattern = re.compile(
-                rf"(?<!\S){re.escape(username)}\s+{re.escape(username)}(?=\s+\d)",
-                re.IGNORECASE,
-            )
             text, count = pattern.subn(f"{replacement} {replacement}", text)
             if count:
                 self.counts["username"] += count * 2
         return text
 
     def _replace_api_keys(self, text: str) -> str:
-        text = self._private_key_block_pattern.sub(self._replace_private_key_block, text)
-        for pattern in self._api_key_patterns:
-            text = pattern.sub(self._replace_prefixed_key, text)
-        text = self._jwe_pattern.sub(self._replace_jwt, text)
-        text = self._jwt_pattern.sub(self._replace_jwt, text)
-        text = self._bearer_pattern.sub(self._replace_bearer, text)
-        text = self._credential_url_pattern.sub(self._replace_credential_url_password, text)
-        text = self._query_secret_pattern.sub(self._replace_query_secret, text)
-        text = self._connection_component_secret_pattern.sub(self._replace_connection_component_secret, text)
-        text = self._quoted_assignment_pattern.sub(self._replace_sensitive_quoted_assignment, text)
-        text = self._bare_assignment_pattern.sub(self._replace_sensitive_bare_assignment, text)
-        text = self._generic_secret_pattern.sub(self._replace_generic_secret, text)
+        if "-----BEGIN " in text:
+            text = self._private_key_block_pattern.sub(self._replace_private_key_block, text)
+        for gates, pattern in zip(self._api_key_gates, self._api_key_patterns):
+            if any(gate in text for gate in gates):
+                text = pattern.sub(self._replace_prefixed_key, text)
+        if self._jwt_gate.search(text):
+            text = self._jwe_pattern.sub(self._replace_jwt, text)
+            text = self._jwt_pattern.sub(self._replace_jwt, text)
+        lowered = text.lower()
+        if "bearer" in lowered:
+            text = self._bearer_pattern.sub(self._replace_bearer, text)
+        if "://" in text and "@" in text:
+            text = self._credential_url_pattern.sub(self._replace_credential_url_password, text)
+        if any(word in lowered for word in self._sensitive_gate_words):
+            if "=" in text and ("?" in text or "&" in text):
+                text = self._query_secret_pattern.sub(self._replace_query_secret, text)
+            if "=" in text:
+                text = self._connection_component_secret_pattern.sub(self._replace_connection_component_secret, text)
+            if "=" in text or ":" in text:
+                text = self._quoted_assignment_pattern.sub(self._replace_sensitive_quoted_assignment, text)
+                text = self._bare_assignment_pattern.sub(self._replace_sensitive_bare_assignment, text)
+                text = self._generic_secret_pattern.sub(self._replace_generic_secret, text)
         return text
 
     def _map_username(self, username: str) -> str:

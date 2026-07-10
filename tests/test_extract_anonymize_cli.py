@@ -7,9 +7,10 @@ from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
+from teich import anonymize as anonymize_module
 from teich.converter import convert_traces_to_training_data
 from teich import extract as extract_module
-from teich.extract import CURSOR_EXTRACTION_NOTICE, default_session_sources
+from teich.extract import CURSOR_EXTRACTION_NOTICE, default_session_sources, extract_local_sessions
 from teich.cli import app
 
 runner = CliRunner()
@@ -1219,6 +1220,68 @@ def test_extract_no_anon_skips_automatic_anonymization(tmp_path: Path):
     assert original_key in text
 
 
+def test_extract_inline_anonymization_scrubs_traces_and_leftover_text(tmp_path: Path):
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    original_key = "sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ123456"
+    for index in range(2):
+        (sessions_dir / f"session-{index}.jsonl").write_text(
+            json.dumps(
+                {
+                    "type": "message",
+                    "text": f"/home/alice/project alice@example.com {original_key}",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    stale_text = output_dir / "notes.txt"
+    stale_text.write_text(f"alice@example.com {original_key}\n", encoding="utf-8")
+    stale_binary = output_dir / "archive.bin"
+    stale_binary.write_bytes(b"alice@example.com sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ123456")
+
+    result = extract_local_sessions(
+        "codex",
+        output_dir=output_dir,
+        sources=[sessions_dir],
+        clear_destination=True,
+        anonymize=True,
+    )
+
+    assert result.anonymize_totals == {"email": 3, "username": 2, "api_key": 3}
+    for trace in result.copied_files:
+        text = trace.read_text(encoding="utf-8")
+        assert "/home/user1/project" in text
+        assert "redacted-user1@example.com" in text
+        assert original_key not in text
+    assert "redacted-user1@example.com" in stale_text.read_text(encoding="utf-8")
+    assert original_key not in stale_text.read_text(encoding="utf-8")
+    assert stale_binary.read_bytes() == b"alice@example.com sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ123456"
+
+
+def test_extract_does_not_scrub_leftovers_when_no_trace_was_copied(tmp_path: Path):
+    sessions_dir = tmp_path / "empty-sessions"
+    sessions_dir.mkdir()
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    stale_text = output_dir / "notes.txt"
+    stale_text.write_text("alice@example.com\n", encoding="utf-8")
+
+    result = extract_local_sessions(
+        "codex",
+        output_dir=output_dir,
+        sources=[sessions_dir],
+        clear_destination=True,
+        anonymize=True,
+    )
+
+    assert result.copied_files == []
+    assert stale_text.read_text(encoding="utf-8") == "alice@example.com\n"
+
+
 def test_extract_model_filter_for_codex_claude_cursor_pi_and_hermes(tmp_path: Path):
     codex_dir = tmp_path / "codex"
     claude_dir = tmp_path / "claude"
@@ -1640,6 +1703,13 @@ def test_anonymize_replaces_emails_keys_and_home_usernames_consistently(tmp_path
     assert "email=2" in result.output
     assert "username=7" in result.output
     assert "api_key=1" in result.output
+
+
+def test_anonymize_parallel_worker_count_caps_windows(monkeypatch):
+    monkeypatch.setattr(anonymize_module.os, "cpu_count", lambda: 128)
+    monkeypatch.setattr(anonymize_module.sys, "platform", "win32")
+
+    assert anonymize_module._process_worker_count(100) == 61
 
 
 def test_anonymize_jsonl_preserves_valid_json_after_escaped_path_replacements(tmp_path: Path):

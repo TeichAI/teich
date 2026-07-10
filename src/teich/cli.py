@@ -18,7 +18,7 @@ from rich.table import Table
 from typer.core import TyperCommand, TyperGroup
 
 from .anonymize import anonymize_path
-from .config import Config
+from .config import CLAUDE_PROVIDER_ALIASES, Config
 from .converter import convert_traces_to_training_data
 from .extract import CURSOR_EXTRACTION_NOTICE, ExtractProvider, extract_local_sessions
 from .runner import (
@@ -373,6 +373,7 @@ def _write_extract_readme(
     *,
     model_filter: str | None = None,
     repo_id: str | None = None,
+    trace_files: list[Path] | None = None,
 ) -> Path:
     cfg = _extract_dataset_config(provider, output, model_filter=model_filter, repo_id=repo_id)
     return write_traces_readme(
@@ -382,6 +383,7 @@ def _write_extract_readme(
         model_id=None,
         repo_id=cfg.get_publish_repo_id(),
         extraction_provider=provider,
+        trace_files=trace_files,
     )
 
 
@@ -465,7 +467,7 @@ def _run_extract_command(
     stale_readme_path = output / "README.md"
     if stale_readme_path.exists() and stale_readme_path.is_file():
         stale_readme_path.unlink()
-    readme_path = _write_extract_readme(provider, output, model_filter=model_filter)
+    readme_path = _write_extract_readme(provider, output, model_filter=model_filter, trace_files=result.copied_files)
     extracted_message = f"Extracted {result.count} {provider} trace{'s' if result.count != 1 else ''}"
     if model_filter:
         extracted_message += f" with {model_filter}"
@@ -732,8 +734,21 @@ def generate(
                 )
         elif agent_provider == "pi":
             runner = PiRunner(cfg)
-        elif agent_provider in {"claude", "claude-code", "claude_code"}:
+        elif agent_provider in CLAUDE_PROVIDER_ALIASES:
             runner = ClaudeCodeRunner(cfg)
+            if cfg.claude_host_auth_active():
+                console.print(
+                    f"[yellow]Claude OAuth token found ({cfg.get_claude_oauth_token_source()}): "
+                    "running on your Claude subscription (usage counts against your plan's "
+                    "rate limits, not API credits). Remove the token to use an API key "
+                    "instead.[/yellow]"
+                )
+            elif cfg.get_claude_oauth_token() and cfg.get_base_url():
+                console.print(
+                    "[yellow]Claude OAuth token found but api.base_url is set; using the "
+                    "API/proxy path (subscription auth talks to the first-party Anthropic "
+                    "API only).[/yellow]"
+                )
             if cfg.agent.langfuse.enabled:
                 console.print(
                     "[cyan]Claude Code Langfuse tracing enabled: uploading each session to "
@@ -1054,6 +1069,24 @@ agent:
   #   host_auth_file: null            # default: $CODEX_HOME/auth.json or ~/.codex/auth.json
   #   auth_dir: ./.teich/codex-auth
 
+  # Claude Code-only settings.
+  # Subscription auth (Pro/Max): create a long-lived token with `claude
+  # setup-token` on the host and export CLAUDE_CODE_OAUTH_TOKEN (or set
+  # oauth_token below). When a token is available and api.base_url is unset,
+  # Teich passes it into each container and withholds ANTHROPIC_API_KEY (an API
+  # key silently wins over subscription auth inside Claude Code and would bill
+  # the API). Usage counts against your plan's rate limits, not API credits,
+  # and the token is safe at any max_concurrency.
+  # fallback_model forwards as --fallback-model (a model or list, tried in
+  # order on overload); always_thinking writes alwaysThinkingEnabled into the
+  # container's ~/.claude/settings.json; max_thinking_tokens sets
+  # MAX_THINKING_TOKENS in the container (0 disables thinking where allowed).
+  # claude:
+  #   oauth_token: null               # prefer CLAUDE_CODE_OAUTH_TOKEN in the env
+  #   fallback_model: [sonnet, haiku]
+  #   always_thinking: true
+  #   max_thinking_tokens: null
+
   # Trace each agent session to Langfuse (https://langfuse.com). Works for Codex
   # and Claude Code -- each uses its own native integration (Codex plugin, Claude
   # Code Stop hook) and Teich passes the credentials into the container. Side-
@@ -1080,7 +1113,9 @@ model:
   # Optional reasoning / thinking level.
   # - Codex: forwarded as model_reasoning_effort
   # - Pi: normalized to low / medium / high when supported
-  # - Claude Code / Hermes: model/provider specific
+  # - Claude Code: forwarded as --effort (low | medium | high | xhigh | max on
+  #   supported models)
+  # - Hermes: model/provider specific
   # Hermes also enables built-in toolsets:
   # safe,terminal,file,skills,memory,session_search,delegation
   reasoning_effort: medium

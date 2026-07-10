@@ -67,6 +67,13 @@ class _InlineAnonymizer:
         self._add(anonymizer.counts)
         return events
 
+    def anonymize_remaining_files(self, root: Path, excluded: Iterable[Path]) -> None:
+        """Scrub pre-existing output files without re-reading newly written traces."""
+        excluded_paths = {path.resolve() for path in excluded}
+        for path in sorted(candidate for candidate in root.rglob("*") if candidate.is_file()):
+            if path.resolve() not in excluded_paths:
+                self.copy_file(path, path)
+
 
 def default_session_sources(provider: ExtractProvider, home: Path | None = None) -> list[Path]:
     """Return likely local session stores for a supported provider."""
@@ -147,6 +154,8 @@ def extract_local_sessions(
             model_filter=model_filter,
             anonymizer=anonymizer,
         )
+    if anonymizer is not None and copied_files:
+        anonymizer.anonymize_remaining_files(destination_dir, copied_files)
     return ExtractResult(
         provider=provider,
         destination_dir=destination_dir,
