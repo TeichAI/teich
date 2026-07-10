@@ -432,12 +432,62 @@ class TraceAnonymizer:
         "timer",
     }
 
+    # ponytail: literal gates — each entry pairs the regexes above with cheap
+    # substring checks so the expensive lookbehind patterns only run on text
+    # that could possibly match. Order mirrors _api_key_patterns.
+    _api_key_gates = (
+        ("sk-or-v1-",),
+        ("sk-ant-api03-",),
+        ("sk-proj-",),
+        ("sk-",),
+        ("hf_",),
+        ("gsk_",),
+        ("github_pat_",),
+        ("ghp_", "gho_", "ghu_", "ghs_", "ghr_"),
+        ("glpat-",),
+        ("lin_api_",),
+        ("npm_",),
+        ("pypi-",),
+        ("sk_live_", "sk_test_"),
+        ("rk_live_", "rk_test_", "pk_live_", "pk_test_"),
+        ("whsec_",),
+        ("re_",),
+        ("sq0atp-", "sq0csp-"),
+        ("xoxb-", "xoxa-", "xoxp-", "xoxr-", "xoxs-"),
+        ("AIza",),
+        ("GOCSPX-",),
+        ("ctx7sk-",),
+        ("AKIA", "ASIA"),
+        ("SK",),
+        ("SG.",),
+    )
+    # Every name _is_sensitive_name can fire on contains one of these
+    # substrings (lowercased), so assignment/generic-secret scans are skipped
+    # when none is present.
+    _sensitive_gate_words = (
+        "pass",
+        "pwd",
+        "secret",
+        "credential",
+        "private",
+        "token",
+        "sig",
+        "jwt",
+        "key",
+        "url",
+        "uri",
+        "dsn",
+        "connection",
+    )
+    _jwt_gate = re.compile(r"[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}")
+
     def __init__(self) -> None:
         self.counts = {"email": 0, "username": 0, "api_key": 0}
         self._email_map: dict[str, str] = {}
         self._username_map: dict[str, str] = {}
         self._api_key_map: dict[str, str] = {}
         self._api_replacements: set[str] = set()
+        self._owner_group_patterns: dict[str, re.Pattern[str] | None] = {}
 
     def anonymize_value(self, value: Any) -> Any:
         if isinstance(value, str):
@@ -500,10 +550,14 @@ class TraceAnonymizer:
         return re.fullmatch(r"[A-Za-z0-9+/=\s]+", value) is not None
 
     def anonymize_text(self, text: str) -> str:
-        text = self._replace_emails(text)
-        text = self._replace_usernames_in_paths(text)
-        text = self._replace_encoded_home_usernames(text)
-        text = self._replace_known_unix_owner_group_usernames(text)
+        lowered = text.lower()
+        if "@" in text:
+            text = self._replace_emails(text)
+        if "home" in lowered or "users" in lowered:
+            text = self._replace_usernames_in_paths(text)
+            text = self._replace_encoded_home_usernames(text)
+        if self._username_map:
+            text = self._replace_known_unix_owner_group_usernames(text)
         text = self._replace_api_keys(text)
         return text
 
@@ -601,32 +655,45 @@ class TraceAnonymizer:
 
     def _replace_known_unix_owner_group_usernames(self, text: str) -> str:
         for username, replacement in list(self._username_map.items()):
-            if not re.fullmatch(r"[A-Za-z0-9._-]{3,}", username):
+            if username not in self._owner_group_patterns:
+                if not re.fullmatch(r"[A-Za-z0-9._-]{3,}", username) or username in self._non_person_usernames:
+                    self._owner_group_patterns[username] = None
+                else:
+                    self._owner_group_patterns[username] = re.compile(
+                        rf"(?<!\S){re.escape(username)}\s+{re.escape(username)}(?=\s+\d)",
+                        re.IGNORECASE,
+                    )
+            pattern = self._owner_group_patterns[username]
+            if pattern is None or username.lower() not in text.lower():
                 continue
-            if username in self._non_person_usernames:
-                continue
-            pattern = re.compile(
-                rf"(?<!\S){re.escape(username)}\s+{re.escape(username)}(?=\s+\d)",
-                re.IGNORECASE,
-            )
             text, count = pattern.subn(f"{replacement} {replacement}", text)
             if count:
                 self.counts["username"] += count * 2
         return text
 
     def _replace_api_keys(self, text: str) -> str:
-        text = self._private_key_block_pattern.sub(self._replace_private_key_block, text)
-        for pattern in self._api_key_patterns:
-            text = pattern.sub(self._replace_prefixed_key, text)
-        text = self._jwe_pattern.sub(self._replace_jwt, text)
-        text = self._jwt_pattern.sub(self._replace_jwt, text)
-        text = self._bearer_pattern.sub(self._replace_bearer, text)
-        text = self._credential_url_pattern.sub(self._replace_credential_url_password, text)
-        text = self._query_secret_pattern.sub(self._replace_query_secret, text)
-        text = self._connection_component_secret_pattern.sub(self._replace_connection_component_secret, text)
-        text = self._quoted_assignment_pattern.sub(self._replace_sensitive_quoted_assignment, text)
-        text = self._bare_assignment_pattern.sub(self._replace_sensitive_bare_assignment, text)
-        text = self._generic_secret_pattern.sub(self._replace_generic_secret, text)
+        if "-----BEGIN " in text:
+            text = self._private_key_block_pattern.sub(self._replace_private_key_block, text)
+        for gates, pattern in zip(self._api_key_gates, self._api_key_patterns):
+            if any(gate in text for gate in gates):
+                text = pattern.sub(self._replace_prefixed_key, text)
+        if self._jwt_gate.search(text):
+            text = self._jwe_pattern.sub(self._replace_jwt, text)
+            text = self._jwt_pattern.sub(self._replace_jwt, text)
+        lowered = text.lower()
+        if "bearer" in lowered:
+            text = self._bearer_pattern.sub(self._replace_bearer, text)
+        if "://" in text and "@" in text:
+            text = self._credential_url_pattern.sub(self._replace_credential_url_password, text)
+        if any(word in lowered for word in self._sensitive_gate_words):
+            if "=" in text and ("?" in text or "&" in text):
+                text = self._query_secret_pattern.sub(self._replace_query_secret, text)
+            if "=" in text:
+                text = self._connection_component_secret_pattern.sub(self._replace_connection_component_secret, text)
+            if "=" in text or ":" in text:
+                text = self._quoted_assignment_pattern.sub(self._replace_sensitive_quoted_assignment, text)
+                text = self._bare_assignment_pattern.sub(self._replace_sensitive_bare_assignment, text)
+                text = self._generic_secret_pattern.sub(self._replace_generic_secret, text)
         return text
 
     def _map_username(self, username: str) -> str:
