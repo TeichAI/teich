@@ -11,6 +11,7 @@ import json
 import re
 import shutil
 import string
+import sys
 from tempfile import NamedTemporaryFile
 from typing import Any
 
@@ -29,6 +30,14 @@ TEXT_EXTENSIONS = {
 # ponytail: process startup isn't free — only fan out when there are enough
 # files for the parallelism to pay for itself.
 _MIN_FILES_FOR_PARALLEL = 8
+_WINDOWS_MAX_PROCESS_WORKERS = 61
+
+
+def _process_worker_count(file_count: int) -> int:
+    workers = min(os.cpu_count() or 1, file_count)
+    if sys.platform == "win32":
+        workers = min(workers, _WINDOWS_MAX_PROCESS_WORKERS)
+    return workers
 
 
 @dataclass
@@ -81,7 +90,7 @@ def anonymize_path(input_path: Path, output_path: Path, *, in_place: bool = Fals
 
     source_files = sorted(path for path in input_path.rglob("*") if path.is_file())
     destinations = [source if in_place else output_path / source.relative_to(input_path) for source in source_files]
-    workers = min(os.cpu_count() or 1, len(source_files))
+    workers = _process_worker_count(len(source_files))
     if workers > 1 and len(source_files) >= _MIN_FILES_FOR_PARALLEL:
         # Each file is anonymized independently (fresh TraceAnonymizer per
         # file), so files can be processed in parallel safely.

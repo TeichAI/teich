@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
+from teich import anonymize as anonymize_module
 from teich.converter import convert_traces_to_training_data
 from teich import extract as extract_module
 from teich.extract import CURSOR_EXTRACTION_NOTICE, default_session_sources
@@ -1640,6 +1641,13 @@ def test_anonymize_replaces_emails_keys_and_home_usernames_consistently(tmp_path
     assert "email=2" in result.output
     assert "username=7" in result.output
     assert "api_key=1" in result.output
+
+
+def test_anonymize_parallel_worker_count_caps_windows(monkeypatch):
+    monkeypatch.setattr(anonymize_module.os, "cpu_count", lambda: 128)
+    monkeypatch.setattr(anonymize_module.sys, "platform", "win32")
+
+    assert anonymize_module._process_worker_count(100) == 61
 
 
 def test_anonymize_jsonl_preserves_valid_json_after_escaped_path_replacements(tmp_path: Path):
