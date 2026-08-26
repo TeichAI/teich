@@ -39,6 +39,45 @@ _ASSISTANT_BLOCK_START_TOKENS = (
     "<assistant>",
     "<|start_of_role|>assistant<|end_of_role|>",
 )
+_TURN_BLOCK_START_TOKENS = (
+    "<|im_start|>system\n",
+    "<|im_start|>developer\n",
+    "<|im_start|>user\n",
+    "<|im_start|>assistant\n",
+    "<|im_start|>tool\n",
+    "<|start_header_id|>system<|end_header_id|>\n\n",
+    "<|start_header_id|>developer<|end_header_id|>\n\n",
+    "<|start_header_id|>user<|end_header_id|>\n\n",
+    "<|start_header_id|>assistant<|end_header_id|>\n\n",
+    "<|start_header_id|>tool<|end_header_id|>\n\n",
+    "<|start_header_id|>system<|end_header_id|>",
+    "<|start_header_id|>developer<|end_header_id|>",
+    "<|start_header_id|>user<|end_header_id|>",
+    "<|start_header_id|>assistant<|end_header_id|>",
+    "<|start_header_id|>tool<|end_header_id|>",
+    "<start_of_turn>user\n",
+    "<start_of_turn>model\n",
+    "<|system|>\n",
+    "<|developer|>\n",
+    "<|user|>\n",
+    "<|assistant|>\n",
+    "<|tool|>\n",
+    "<|system|>",
+    "<|developer|>",
+    "<|user|>",
+    "<|assistant|>",
+    "<|tool|>",
+    "<system>",
+    "<developer>",
+    "<user>",
+    "<assistant>",
+    "<tool>",
+    "<|start_of_role|>system<|end_of_role|>",
+    "<|start_of_role|>developer<|end_of_role|>",
+    "<|start_of_role|>user<|end_of_role|>",
+    "<|start_of_role|>assistant<|end_of_role|>",
+    "<|start_of_role|>tool<|end_of_role|>",
+)
 _ASSISTANT_BLOCK_END_TOKENS = (
     "<|im_end|>",
     "<|eot_id|>",
@@ -1506,23 +1545,7 @@ def _resolve_assistant_prompt_prefixes(
 
 
 def _assistant_block_bounds(text: str, start: int, end: int) -> tuple[int, int] | None:
-    block_start = -1
-    for token in _ASSISTANT_BLOCK_START_TOKENS:
-        token_start = text.rfind(token, 0, start)
-        if token_start > block_start:
-            block_start = token_start
-    if block_start < 0:
-        return None
-    block_end = -1
-    for token in _ASSISTANT_BLOCK_END_TOKENS:
-        token_end_start = text.find(token, end)
-        if token_end_start >= 0 and (block_end < 0 or token_end_start < block_end):
-            block_end = token_end_start + len(token)
-    if block_end < 0:
-        return None
-    while block_end < len(text) and text[block_end] in "\r\n":
-        block_end += 1
-    return block_start, block_end
+    return _AssistantBlockIndex.build(text).bounds(start, end)
 
 
 @dataclass(slots=True)
@@ -1532,6 +1555,7 @@ class _AssistantBlockIndex:
     start_prefix_maxima: list[int]
     end_starts: list[int]
     end_positions: list[int]
+    turn_starts: list[int]
 
     @classmethod
     def build(cls, text: str) -> _AssistantBlockIndex:
@@ -1563,24 +1587,42 @@ class _AssistantBlockIndex:
                 end_by_start.setdefault(token_start, token_start + len(token))
                 cursor = token_start + len(token)
         ordered_ends = sorted(end_by_start.items())
+        turn_starts: set[int] = set()
+        for token in _TURN_BLOCK_START_TOKENS:
+            cursor = 0
+            while True:
+                token_start = text.find(token, cursor)
+                if token_start < 0:
+                    break
+                turn_starts.add(token_start)
+                cursor = token_start + len(token)
         return cls(
             text=text,
             start_thresholds=start_thresholds,
             start_prefix_maxima=start_prefix_maxima,
             end_starts=[start for start, _ in ordered_ends],
             end_positions=[end for _, end in ordered_ends],
+            turn_starts=sorted(turn_starts),
         )
 
     def bounds(self, start: int, end: int) -> tuple[int, int] | None:
+        del end
         start_index = bisect_right(self.start_thresholds, start) - 1
         if start_index < 0:
             return None
         block_start = self.start_prefix_maxima[start_index]
-        end_index = bisect_left(self.end_starts, end)
-        if end_index >= len(self.end_starts):
-            return None
-        block_end = self.end_positions[end_index]
-        while block_end < len(self.text) and self.text[block_end] in "\r\n":
+        next_turn_index = bisect_right(self.turn_starts, start)
+        turn_boundary = (
+            self.turn_starts[next_turn_index]
+            if next_turn_index < len(self.turn_starts)
+            else len(self.text)
+        )
+        end_index = bisect_left(self.end_starts, turn_boundary) - 1
+        if end_index >= 0 and self.end_starts[end_index] >= start:
+            block_end = self.end_positions[end_index]
+        else:
+            block_end = turn_boundary
+        while block_end < turn_boundary and self.text[block_end] in "\r\n":
             block_end += 1
         return block_start, block_end
 
@@ -1704,9 +1746,9 @@ def _expand_typed_spans(
         updated["end"] = expanded_end
         updated.setdefault("source_start", start)
         updated.setdefault("source_end", end)
-        if expanded_start < expanded_end:
+        if updated["start"] < updated["end"]:
             expanded_spans.append(updated)
-    return expanded_spans
+    return _clamp_model_spans_to_assistant_turns(text, expanded_spans)
 
 
 def _span_kind_enabled(
@@ -1745,6 +1787,34 @@ def _source_spans_for_kind(spans: list[dict[str, Any]], kind: str) -> list[tuple
     return _merge_spans(source_spans)
 
 
+def _clamp_model_spans_to_assistant_turns(
+    text: str,
+    spans: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Keep model-authored metadata inside the turn containing its source start."""
+    assistant_blocks = _AssistantBlockIndex.build(text)
+    clamped: list[dict[str, Any]] = []
+    for span in spans:
+        updated = dict(span)
+        if updated.get("kind") in {
+            _SPAN_KIND_REASONING,
+            _SPAN_KIND_FINAL_ANSWER,
+            _SPAN_KIND_TOOL_CALL,
+        }:
+            source_start = updated.get("source_start", updated.get("start"))
+            if isinstance(source_start, int):
+                assistant_block = assistant_blocks.bounds(source_start, source_start)
+                if assistant_block is not None:
+                    _, block_end = assistant_block
+                    updated["end"] = min(updated["end"], block_end)
+                    source_end = updated.get("source_end")
+                    if isinstance(source_end, int):
+                        updated["source_end"] = min(source_end, block_end)
+        if updated["start"] < updated["end"]:
+            clamped.append(updated)
+    return clamped
+
+
 def _select_supervised_spans(
     text: str,
     spans: list[dict[str, Any]],
@@ -1757,6 +1827,7 @@ def _select_supervised_spans(
     train_on_developer: bool,
     train_on_tool_responses: bool,
 ) -> list[tuple[int, int]]:
+    spans = _clamp_model_spans_to_assistant_turns(text, spans)
     selected = _merge_spans(
         [
             (span["start"], span["end"])

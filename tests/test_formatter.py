@@ -4684,6 +4684,98 @@ def test_expand_typed_spans_indexes_large_conversations_once():
         assert (final_span["start"], final_span["end"]) == expected
 
 
+def test_expand_typed_spans_clamps_corrupt_granite_spans_to_originating_turn():
+    assistant_prefix = "<|im_start|>assistant\n"
+    assistant_body = (
+        "<think>inspect</think>\n"
+        "I will inspect it.\n"
+        "<tool_call>\n<function=bash>\n</function>\n</tool_call>\n"
+    )
+    first_turn = assistant_prefix + assistant_body + "<|im_end|>\n"
+    user_turn = "<|im_start|>user\nDo something else.<|im_end|>\n"
+    second_turn = assistant_prefix + "Second answer.<|im_end|>\n"
+    text = first_turn + user_turn + second_turn
+    corrupt_end = text.index("Do something else.") + len("Do something else.")
+    spans = [
+        {
+            "start": text.index("inspect"),
+            "end": corrupt_end,
+            "kind": "reasoning",
+            "role": "assistant",
+        },
+        {
+            "start": text.index("I will inspect it."),
+            "end": corrupt_end,
+            "kind": "final_answer",
+            "role": "assistant",
+        },
+        {
+            # Mirrors the observed malformed Granite metadata: its tool-call
+            # marker begins in assistant prose and ends in the next user turn.
+            "start": text.index("I will inspect it."),
+            "end": corrupt_end,
+            "kind": "tool_call",
+            "role": "assistant",
+        },
+    ]
+
+    expanded = _expand_typed_spans(text, spans, (assistant_prefix,))
+
+    assert len(expanded) == 3
+    next_turn_start = text.index("<|im_start|>user")
+    for span in expanded:
+        assert span["end"] <= next_turn_start
+        assert span["source_end"] <= next_turn_start
+        assert "<|im_start|>user" not in text[span["start"] : span["end"]]
+        assert "Do something else." not in text[span["start"] : span["end"]]
+
+
+def test_mask_data_defensively_clamps_external_granite_span_metadata():
+    tokenizer = TrainerStyleTokenizer()
+    first_turn = (
+        "<|im_start|>assistant\nI will inspect it.\n"
+        "<tool_call>bash</tool_call>\n<|im_end|>\n"
+    )
+    user_turn = "<|im_start|>user\nSECRET_USER_MESSAGE<|im_end|>\n"
+    text = first_turn + user_turn
+    encoded = tokenizer(text, add_special_tokens=False)
+    prepared = Dataset.from_list(
+        [
+            {
+                "text": text,
+                "input_ids": encoded["input_ids"],
+                "attention_mask": encoded["attention_mask"],
+                "teich_supervised_spans": [
+                    {
+                        "start": text.index("I will inspect it."),
+                        "end": text.index("SECRET_USER_MESSAGE") + len("SECRET_USER_MESSAGE"),
+                        "source_start": text.index("I will inspect it."),
+                        "source_end": text.index("SECRET_USER_MESSAGE") + len("SECRET_USER_MESSAGE"),
+                        "kind": "tool_call",
+                        "role": "assistant",
+                    }
+                ],
+            }
+        ]
+    )
+    trainer = SimpleNamespace(
+        train_dataset=prepared,
+        eval_dataset=None,
+        processing_class=tokenizer,
+        args=SimpleNamespace(dataset_text_field="text", packing=False, max_length=4096),
+    )
+
+    trainer = mask_data(trainer, tokenizer=tokenizer, audit=True, verbose=False)
+
+    row = trainer.train_dataset[0]
+    supervised_text = tokenizer.decode(
+        [token for token in row["labels"] if token != -100]
+    )
+    assert supervised_text == "I will inspect it.\n<tool_call>bash</tool_call>\n<|im_end|>\n"
+    assert "SECRET_USER_MESSAGE" not in supervised_text
+    assert "<|im_start|>user" not in supervised_text
+
+
 def test_actual_qwen_template_receives_normalized_mapping_tool_arguments():
     jinja2 = pytest.importorskip("jinja2")
     template_path = Path("qwen3.6_chat_template.jinja")

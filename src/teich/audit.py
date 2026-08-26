@@ -111,14 +111,17 @@ def audit_sft_dataset(dataset: Dataset, tokenizer: Any, *, sample_size: int | No
     if dataset.num_rows == 0:
         return SFTAuditReport(ok=False, errors=["dataset contains no rows"])
 
-    limit = dataset.num_rows if sample_size is None else min(max(sample_size, 0), dataset.num_rows)
-    if limit == 0:
-        warnings.append("sample_size is 0; no rows audited")
+    preview_limit = dataset.num_rows if sample_size is None else min(max(sample_size, 0), dataset.num_rows)
+    if preview_limit == 0:
+        warnings.append("sample_size is 0; no row previews retained (all rows were still audited)")
 
-    for row_index in range(limit):
+    # Sampling controls report size only. Correctness checks are deliberately
+    # exhaustive so an audit that returns ok=True is a dataset-wide gate.
+    for row_index in range(dataset.num_rows):
         row_errors, row_warnings, sample = _audit_training_row(dataset[row_index], tokenizer, row_index)
         errors.extend(row_errors)
         warnings.extend(row_warnings)
-        samples.append(sample)
+        if row_index < preview_limit:
+            samples.append(sample)
 
     return SFTAuditReport(ok=not errors, errors=errors, warnings=warnings, samples=samples)
