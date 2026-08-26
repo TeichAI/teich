@@ -4730,14 +4730,79 @@ def test_expand_typed_spans_clamps_corrupt_granite_spans_to_originating_turn():
         assert "Do something else." not in text[span["start"] : span["end"]]
 
 
+def test_expand_typed_spans_ignores_literal_role_headers_in_assistant_content():
+    assistant_prefix = "<|im_start|>assistant\n"
+    literal_headers = "Explain <user> and print <|im_start|>user\n as plain text."
+    first_turn = assistant_prefix + literal_headers + "<|im_end|>\n"
+    next_turn = "<|im_start|>user\nActual next turn.<|im_end|>\n"
+    text = first_turn + next_turn
+    content_start = text.index("Explain")
+    spans = [
+        {
+            "start": content_start,
+            "end": content_start + len(literal_headers),
+            "kind": "final_answer",
+            "role": "assistant",
+        }
+    ]
+
+    expanded = _expand_typed_spans(text, spans, (assistant_prefix,))
+
+    assert len(expanded) == 1
+    supervised = text[expanded[0]["start"] : expanded[0]["end"]]
+    assert literal_headers in supervised
+    assert supervised.endswith("<|im_end|>\n")
+    assert "Actual next turn." not in supervised
+
+
+def test_expand_typed_spans_rejects_model_kind_starting_in_user_turn():
+    user_turn = "<|im_start|>user\nUSER_CONTENT<|im_end|>\n"
+    assistant_turn = "<|im_start|>assistant\nASSISTANT_CONTENT<|im_end|>\n"
+    text = user_turn + assistant_turn
+    user_start = text.index("USER_CONTENT")
+    spans = [
+        {
+            "start": user_start,
+            "end": user_start + len("USER_CONTENT"),
+            "kind": "final_answer",
+            "role": "assistant",
+        }
+    ]
+
+    assert _expand_typed_spans(text, spans, ("<|im_start|>assistant\n",)) == []
+
+
+def test_expand_typed_spans_clamps_corrupt_gemma_span_to_model_turn():
+    model_prefix = "<|turn>model\n"
+    model_turn = model_prefix + "MODEL_OUTPUT<turn|>\n"
+    user_turn = "<|turn>user\nSECRET_USER_CONTENT<turn|>\n"
+    text = model_turn + user_turn
+    spans = [
+        {
+            "start": text.index("MODEL_OUTPUT"),
+            "end": text.index("SECRET_USER_CONTENT") + len("SECRET_USER_CONTENT"),
+            "kind": "tool_call",
+            "role": "assistant",
+        }
+    ]
+
+    expanded = _expand_typed_spans(text, spans, (model_prefix,))
+
+    assert len(expanded) == 1
+    supervised = text[expanded[0]["start"] : expanded[0]["end"]]
+    assert supervised == "MODEL_OUTPUT<turn|>"
+    assert "SECRET_USER_CONTENT" not in supervised
+
+
 def test_mask_data_defensively_clamps_external_granite_span_metadata():
     tokenizer = TrainerStyleTokenizer()
+    prior_user_turn = "<|im_start|>user\nPRIOR_USER_MESSAGE<|im_end|>\n"
     first_turn = (
         "<|im_start|>assistant\nI will inspect it.\n"
         "<tool_call>bash</tool_call>\n<|im_end|>\n"
     )
     user_turn = "<|im_start|>user\nSECRET_USER_MESSAGE<|im_end|>\n"
-    text = first_turn + user_turn
+    text = prior_user_turn + first_turn + user_turn
     encoded = tokenizer(text, add_special_tokens=False)
     prepared = Dataset.from_list(
         [
@@ -4747,7 +4812,7 @@ def test_mask_data_defensively_clamps_external_granite_span_metadata():
                 "attention_mask": encoded["attention_mask"],
                 "teich_supervised_spans": [
                     {
-                        "start": text.index("I will inspect it."),
+                        "start": text.index("PRIOR_USER_MESSAGE"),
                         "end": text.index("SECRET_USER_MESSAGE") + len("SECRET_USER_MESSAGE"),
                         "source_start": text.index("I will inspect it."),
                         "source_end": text.index("SECRET_USER_MESSAGE") + len("SECRET_USER_MESSAGE"),
