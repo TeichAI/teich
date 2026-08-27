@@ -13,7 +13,7 @@ from datasets import Dataset, Features, Json, List, Value, concatenate_datasets
 from rich.console import Console
 
 from .converter import normalize_training_messages
-from .protocol import first_chatml_structural_turn_boundary_end
+from .protocol import chatml_header_is_source_anchored, first_chatml_structural_turn_boundary_end
 
 
 _GEMMA_TURN_START_PATTERN = re.compile(r"<\|turn>(model|user|system)\n")
@@ -40,7 +40,7 @@ _ASSISTANT_BLOCK_START_TOKENS = (
     "<assistant>",
     "<|start_of_role|>assistant<|end_of_role|>",
 )
-_TURN_ROLES = ("system", "developer", "user", "assistant", "tool")
+_TURN_ROLES = ("system", "developer", "user", "assistant", "tool", "ipython")
 _TURN_BLOCK_STARTS = (
     *((f"<|im_start|>{role}\n", role) for role in _TURN_ROLES),
     *((f"<|start_header_id|>{role}<|end_header_id|>\n\n", role) for role in _TURN_ROLES),
@@ -59,6 +59,7 @@ _ASSISTANT_BLOCK_END_TOKENS = (
     "</assistant>",
     "</s>",
     "<|end_of_text|>",
+    "<|end|>",
 )
 _TURN_BLOCK_END_TOKENS = (
     *_ASSISTANT_BLOCK_END_TOKENS,
@@ -1531,20 +1532,37 @@ def _assistant_block_bounds(text: str, start: int, end: int) -> tuple[int, int] 
     return _AssistantBlockIndex.build(text).bounds(start, end)
 
 
-def _is_valid_turn_header(text: str, start: int) -> bool:
-    prefix = text[:start].rstrip()
-    remaining = prefix
-    while remaining:
+def _is_valid_turn_header(
+    text: str,
+    start: int,
+    role: str,
+    source_spans: Sequence[Mapping[str, Any]] | None = None,
+) -> bool:
+    prefix_end = start
+    while prefix_end > 0 and text[prefix_end - 1].isspace():
+        prefix_end -= 1
+
+    leading_cursor = 0
+    while leading_cursor < prefix_end:
+        while leading_cursor < prefix_end and text[leading_cursor].isspace():
+            leading_cursor += 1
         leading_token = next(
-            (token for token in _TURN_LEADING_TOKENS if remaining.startswith(token)),
+            (token for token in _TURN_LEADING_TOKENS if text.startswith(token, leading_cursor)),
             None,
         )
         if leading_token is None:
             break
-        remaining = remaining[len(leading_token) :].lstrip()
-    if not remaining:
+        leading_cursor += len(leading_token)
+    if leading_cursor == prefix_end:
         return True
-    return any(prefix.endswith(token) for token in _TURN_BLOCK_END_TOKENS)
+    if not any(
+        prefix_end >= len(token) and text.startswith(token, prefix_end - len(token), prefix_end)
+        for token in _TURN_BLOCK_END_TOKENS
+    ):
+        return False
+    if source_spans is not None and text.startswith("<|im_start|>", start):
+        return chatml_header_is_source_anchored(text, start, role, source_spans)
+    return True
 
 
 @dataclass(slots=True)
@@ -1557,7 +1575,11 @@ class _AssistantBlockIndex:
     end_positions: list[int]
 
     @classmethod
-    def build(cls, text: str) -> _AssistantBlockIndex:
+    def build(
+        cls,
+        text: str,
+        source_spans: Sequence[Mapping[str, Any]] | None = None,
+    ) -> _AssistantBlockIndex:
         turn_by_start: dict[int, tuple[int, str]] = {}
         for token, role in _TURN_BLOCK_STARTS:
             cursor = 0
@@ -1565,7 +1587,7 @@ class _AssistantBlockIndex:
                 token_start = text.find(token, cursor)
                 if token_start < 0:
                     break
-                if _is_valid_turn_header(text, token_start):
+                if _is_valid_turn_header(text, token_start, role, source_spans):
                     content_start = token_start + len(token)
                     existing = turn_by_start.get(token_start)
                     if existing is None or content_start > existing[0]:
@@ -1719,7 +1741,7 @@ def _expand_typed_spans(
     assistant_prompt_prefixes: tuple[str, ...],
 ) -> list[dict[str, Any]]:
     span_kinds = {span.get("kind") for span in spans}
-    assistant_blocks = _AssistantBlockIndex.build(text)
+    assistant_blocks = _AssistantBlockIndex.build(text, spans)
     reasoning_spans = _ContainingSpanIndex.build(_reasoning_spans(text)) if _SPAN_KIND_REASONING in span_kinds else None
     tool_call_spans = _ContainingSpanIndex.build(_tool_call_spans(text)) if _SPAN_KIND_TOOL_CALL in span_kinds else None
     tool_response_spans = (
@@ -1809,7 +1831,7 @@ def _clamp_model_spans_to_assistant_turns(
     spans: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """Keep model-authored metadata inside the turn containing its source start."""
-    assistant_blocks = _AssistantBlockIndex.build(text)
+    assistant_blocks = _AssistantBlockIndex.build(text, spans)
     clamped: list[dict[str, Any]] = []
     for span in spans:
         updated = dict(span)
@@ -1826,7 +1848,11 @@ def _clamp_model_spans_to_assistant_turns(
                 # paths, but none may supervise the following turn. A bare or
                 # quoted <|im_start|> is not a boundary unless it immediately
                 # follows <|im_end|> and carries a real role header.
-                structural_end = first_chatml_structural_turn_boundary_end(text, source_start)
+                structural_end = first_chatml_structural_turn_boundary_end(
+                    text,
+                    source_start,
+                    spans,
+                )
                 if structural_end is not None:
                     updated["end"] = min(updated["end"], structural_end)
                     source_end = updated.get("source_end")

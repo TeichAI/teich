@@ -5,7 +5,7 @@ from typing import Any
 
 from datasets import Dataset
 
-from .protocol import iter_chatml_structural_turn_boundaries
+from .protocol import chatml_turn_role_at_start
 
 
 @dataclass
@@ -85,18 +85,16 @@ def _audit_training_row(row: dict[str, Any], tokenizer: Any, row_index: int) -> 
     supervised_text = _decode(tokenizer, supervised_ids)
     sample["supervised_preview"] = supervised_text[:500]
 
-    # Audit the actual contiguous label regions. Concatenating all supervised
-    # tokens can manufacture adjacency across masked gaps, while searching for
-    # a bare <|im_start|> falsely rejects traces that discuss chat protocols.
-    # A real ChatML crossing contains an <|im_end|> immediately followed by a
-    # role-bearing <|im_start|> header inside one supervised run.
+    # A non-assistant header at the beginning of a contiguous label run is
+    # unambiguously context. Protocol-looking strings later in assistant output
+    # may be quoted transcript examples and cannot be classified from labels
+    # alone; Teich's formatter validates those against marker-derived spans.
     for run_start, run_end in _contiguous_supervised_runs(labels):
         run_text = _decode(tokenizer, input_ids[run_start:run_end])
-        boundary = next(iter_chatml_structural_turn_boundaries(run_text), None)
-        if boundary is not None:
+        role = chatml_turn_role_at_start(run_text)
+        if role is not None and role != "assistant":
             errors.append(
-                f"row {row_index}: supervised span crosses structural ChatML turn boundary "
-                f"before {boundary.group('role')!r} turn"
+                f"row {row_index}: supervised run begins at masked-context ChatML {role!r} header"
             )
             break
 

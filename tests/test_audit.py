@@ -24,6 +24,7 @@ class TinyTokenizer:
             8: "<|im_end|>\n",
             9: "<|im_start|>user\n",
             10: '["<|im_start|>", "<|im_end|>"]',
+            11: "EXAMPLE<|im_end|>\n<|im_start|>user\nLITERAL<|im_end|>",
         }
 
     def decode(self, token_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False):
@@ -65,13 +66,13 @@ def test_audit_sft_dataset_rejects_label_input_mismatch():
     assert "labels differ from input_ids" in report.errors[0]
 
 
-def test_audit_sft_dataset_rejects_structural_chatml_turn_crossing():
+def test_audit_sft_dataset_rejects_run_starting_at_chatml_user_header():
     dataset = Dataset.from_list(
         [
             {
                 "input_ids": [1, 8, 9, 2],
                 "attention_mask": [1, 1, 1, 1],
-                "labels": [1, 8, 9, 2],
+                "labels": [-100, -100, 9, 2],
             }
         ]
     )
@@ -79,8 +80,7 @@ def test_audit_sft_dataset_rejects_structural_chatml_turn_crossing():
     report = audit_sft_dataset(dataset, TinyTokenizer())
 
     assert not report.ok
-    assert "crosses structural ChatML turn boundary" in report.errors[0]
-    assert "'user' turn" in report.errors[0]
+    assert "begins at masked-context ChatML 'user' header" in report.errors[0]
 
 
 def test_audit_sft_dataset_allows_quoted_chatml_token_names():
@@ -90,6 +90,23 @@ def test_audit_sft_dataset_allows_quoted_chatml_token_names():
                 "input_ids": [1, 10, 4],
                 "attention_mask": [1, 1, 1],
                 "labels": [1, 10, 4],
+            }
+        ]
+    )
+
+    report = audit_sft_dataset(dataset, TinyTokenizer())
+
+    assert report.ok
+    assert report.errors == []
+
+
+def test_audit_sft_dataset_allows_literal_full_chatml_transcript_in_assistant_output():
+    dataset = Dataset.from_list(
+        [
+            {
+                "input_ids": [1, 11, 4],
+                "attention_mask": [1, 1, 1],
+                "labels": [1, 11, 4],
             }
         ]
     )
