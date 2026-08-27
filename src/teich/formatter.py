@@ -13,6 +13,7 @@ from datasets import Dataset, Features, Json, List, Value, concatenate_datasets
 from rich.console import Console
 
 from .converter import normalize_training_messages
+from .protocol import first_chatml_structural_turn_boundary_end
 
 
 _GEMMA_TURN_START_PATTERN = re.compile(r"<\|turn>(model|user|system)\n")
@@ -1819,6 +1820,18 @@ def _clamp_model_spans_to_assistant_turns(
         }:
             source_start = updated.get("source_start", updated.get("start"))
             if isinstance(source_start, int):
+                # Clamp the final span itself at a structural ChatML boundary.
+                # This is intentionally independent of assistant-block inference:
+                # marker extraction and kind-specific expansion take different
+                # paths, but none may supervise the following turn. A bare or
+                # quoted <|im_start|> is not a boundary unless it immediately
+                # follows <|im_end|> and carries a real role header.
+                structural_end = first_chatml_structural_turn_boundary_end(text, source_start)
+                if structural_end is not None:
+                    updated["end"] = min(updated["end"], structural_end)
+                    source_end = updated.get("source_end")
+                    if isinstance(source_end, int):
+                        updated["source_end"] = min(source_end, structural_end)
                 assistant_turn = assistant_blocks.originating_assistant_turn(source_start)
                 if assistant_turn is None:
                     if assistant_blocks.turn_starts:

@@ -4732,7 +4732,10 @@ def test_expand_typed_spans_clamps_corrupt_granite_spans_to_originating_turn():
 
 def test_expand_typed_spans_ignores_literal_role_headers_in_assistant_content():
     assistant_prefix = "<|im_start|>assistant\n"
-    literal_headers = "Explain <user> and print <|im_start|>user\n as plain text."
+    literal_headers = (
+        'Explain <user> and print ["<|im_start|>", "<|im_end|>"] plus '
+        "<|im_start|>user\n as plain text."
+    )
     first_turn = assistant_prefix + literal_headers + "<|im_end|>\n"
     next_turn = "<|im_start|>user\nActual next turn.<|im_end|>\n"
     text = first_turn + next_turn

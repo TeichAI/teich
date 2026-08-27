@@ -21,6 +21,9 @@ class TinyTokenizer:
             5: "</think>",
             6: "<|turn>user",
             7: "<|tool_response>",
+            8: "<|im_end|>\n",
+            9: "<|im_start|>user\n",
+            10: '["<|im_start|>", "<|im_end|>"]',
         }
 
     def decode(self, token_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False):
@@ -62,13 +65,13 @@ def test_audit_sft_dataset_rejects_label_input_mismatch():
     assert "labels differ from input_ids" in report.errors[0]
 
 
-def test_audit_sft_dataset_rejects_supervised_user_marker():
+def test_audit_sft_dataset_rejects_structural_chatml_turn_crossing():
     dataset = Dataset.from_list(
         [
             {
-                "input_ids": [3, 2],
-                "attention_mask": [1, 1],
-                "labels": [3, 2],
+                "input_ids": [1, 8, 9, 2],
+                "attention_mask": [1, 1, 1, 1],
+                "labels": [1, 8, 9, 2],
             }
         ]
     )
@@ -76,7 +79,25 @@ def test_audit_sft_dataset_rejects_supervised_user_marker():
     report = audit_sft_dataset(dataset, TinyTokenizer())
 
     assert not report.ok
-    assert "<|im_start|>user" in report.errors[0]
+    assert "crosses structural ChatML turn boundary" in report.errors[0]
+    assert "'user' turn" in report.errors[0]
+
+
+def test_audit_sft_dataset_allows_quoted_chatml_token_names():
+    dataset = Dataset.from_list(
+        [
+            {
+                "input_ids": [1, 10, 4],
+                "attention_mask": [1, 1, 1],
+                "labels": [1, 10, 4],
+            }
+        ]
+    )
+
+    report = audit_sft_dataset(dataset, TinyTokenizer())
+
+    assert report.ok
+    assert report.errors == []
 
 
 def test_audit_sft_dataset_rejects_gemma_context_markers():

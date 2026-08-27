@@ -5,6 +5,8 @@ from typing import Any
 
 from datasets import Dataset
 
+from .protocol import iter_chatml_structural_turn_boundaries
+
 
 @dataclass
 class SFTAuditReport:
@@ -29,6 +31,20 @@ def _as_list(value: Any) -> list[Any]:
     if hasattr(value, "tolist"):
         value = value.tolist()
     return list(value)
+
+
+def _contiguous_supervised_runs(labels: list[int]) -> list[tuple[int, int]]:
+    runs: list[tuple[int, int]] = []
+    run_start: int | None = None
+    for index, label in enumerate(labels):
+        if label != -100 and run_start is None:
+            run_start = index
+        elif label == -100 and run_start is not None:
+            runs.append((run_start, index))
+            run_start = None
+    if run_start is not None:
+        runs.append((run_start, len(labels)))
+    return runs
 
 
 def _audit_training_row(row: dict[str, Any], tokenizer: Any, row_index: int) -> tuple[list[str], list[str], dict[str, Any]]:
@@ -69,12 +85,26 @@ def _audit_training_row(row: dict[str, Any], tokenizer: Any, row_index: int) -> 
     supervised_text = _decode(tokenizer, supervised_ids)
     sample["supervised_preview"] = supervised_text[:500]
 
+    # Audit the actual contiguous label regions. Concatenating all supervised
+    # tokens can manufacture adjacency across masked gaps, while searching for
+    # a bare <|im_start|> falsely rejects traces that discuss chat protocols.
+    # A real ChatML crossing contains an <|im_end|> immediately followed by a
+    # role-bearing <|im_start|> header inside one supervised run.
+    for run_start, run_end in _contiguous_supervised_runs(labels):
+        run_text = _decode(tokenizer, input_ids[run_start:run_end])
+        boundary = next(iter_chatml_structural_turn_boundaries(run_text), None)
+        if boundary is not None:
+            errors.append(
+                f"row {row_index}: supervised span crosses structural ChatML turn boundary "
+                f"before {boundary.group('role')!r} turn"
+            )
+            break
+
     masked_ids = [token_id for token_id, label in zip(input_ids, labels) if label == -100]
     masked_text = _decode(tokenizer, masked_ids[-200:]) if masked_ids else ""
     sample["masked_suffix_preview"] = masked_text[-500:]
 
     suspicious_masked_markers = (
-        "<|im_start|>user",
         "<|start_header_id|>user<|end_header_id|>",
         "<start_of_turn>user",
         "<|start_of_role|>user<|end_of_role|>",
