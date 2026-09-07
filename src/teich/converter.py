@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from io import TextIOWrapper
 from pathlib import Path
-from typing import Any, Literal, TextIO
+from typing import Any, Literal, TextIO, TypeGuard
 
 import zstandard
 
@@ -3439,7 +3439,7 @@ def _cursor_event_contains_tool_result(event: dict[str, Any]) -> bool:
     )
 
 
-def _is_deepseek_session_header(event: Any) -> bool:
+def _is_deepseek_session_header(event: Any) -> TypeGuard[dict[str, Any]]:
     return (
         isinstance(event, dict)
         and event.get("type") == "session"
@@ -3523,6 +3523,8 @@ def _convert_deepseek_trace_to_training_example(trace_file: Path, events: list[A
                     "role": "tool", "tool_call_id": call_id,
                     "content": _deepseek_text(block["content"]),
                 }
+                if block.get("isError") is True:
+                    message["is_error"] = True
                 if call_id in calls:
                     message["name"] = calls[call_id]
                 messages.append(message)
@@ -4259,7 +4261,7 @@ def _jsonl_files(source: Path, *, skip_invalid_lines: bool = False) -> list[Path
         if path.name.endswith((".jsonl", ".jsonl.zstd", ".jsonl.zst"))
         and path.is_file() and not {"partials", "failures"}.intersection(path.relative_to(source).parts)
     )
-    sessions: dict[Path, list[tuple[int, Path]]] = {}
+    sessions: dict[tuple[Path, str], list[tuple[int, Path]]] = {}
     ordinary = []
     for path in paths:
         match = re.fullmatch(r"session(?:\.v(\d+))?\.jsonl(?:\.zstd|\.zst)?", path.name)
@@ -4267,7 +4269,7 @@ def _jsonl_files(source: Path, *, skip_invalid_lines: bool = False) -> list[Path
             with _open_trace_file(path) as handle:
                 header = next(_read_trace_events(handle, skip_invalid_lines=skip_invalid_lines), None)
             if _is_deepseek_session_header(header):
-                sessions.setdefault(path.parent, []).append((int(match[1] or 0), path))
+                sessions.setdefault((path.parent, header["id"]), []).append((int(match[1] or 0), path))
                 continue
         ordinary.append(path)
     for versions in sessions.values():

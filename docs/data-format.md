@@ -146,9 +146,9 @@ Teich parses native DeepSeek Harness (`dsh`) session `.jsonl`, `.jsonl.zstd`, an
 teich convert /path/to/session.jsonl.zstd --out teich-training.jsonl
 ```
 
-Native user and assistant messages become chat messages, assistant reasoning becomes `reasoning_content`, and tool calls and results retain their matching call IDs. Streaming chunks and tool execution events are omitted because their content is already represented by completed messages.
+Native user and assistant messages become chat messages, assistant reasoning becomes `reasoning_content`, and tool calls and results retain their matching call IDs. Failed tool results preserve `isError: true` as `is_error: true`. Streaming chunks and tool execution events are omitted because their content is already represented by completed messages.
 
-Conversion applies `surfaceOp` replacements to reconstruct the final effective conversation. The latest `request/header` snapshot supplies system instructions, tool schemas, and configuration when present. Directory loading selects the highest canonical `session.vN` file in each session directory to avoid counting migration copies as separate rollouts. Pass an individual file to select a specific version.
+Conversion applies `surfaceOp` replacements to reconstruct the final effective conversation. The latest `request/header` snapshot supplies system instructions, tool schemas, and configuration when present. Directory loading selects the highest canonical `session.vN` file for each session header ID within a directory to avoid counting migration copies as separate rollouts. Files with different session IDs remain separate rollouts. Pass an individual file to select a specific version.
 
 Unresolved image and file attachments raise an error instead of producing incomplete text-only training data. The supported native format is documented in the [upstream session persistence specification](https://github.com/deepseek-ai/deepseek-harness/blob/d347e703908d0406b7a7ef80e3a0e594d86b2215/packages/session/session-persistence-jsonl/README.md).
 

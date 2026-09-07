@@ -171,6 +171,43 @@ def test_deepseek_directory_uses_latest_migration_only(tmp_path, events, suffix)
     assert convert_trace_to_training_example(original).messages[-1]["content"] == "The file says: Hello, world."
 
 
+@pytest.mark.parametrize("filenames", [
+    ("session.v1.jsonl", "session.v2.jsonl"),
+    ("session.v1.jsonl.zstd", "session.v2.jsonl.zstd"),
+    ("session.jsonl", "session.jsonl.zst"),
+])
+def test_deepseek_directory_preserves_distinct_sessions(tmp_path, events, filenames):
+    for index, filename in enumerate(filenames):
+        events[0].update(id=f"session-{index}", version=index + 1 if ".v" in filename else 0)
+        events[8]["data"]["message"]["content"][0]["text"] = f"Answer {index}."
+        write_trace(tmp_path / filename, events)
+
+    rows = convert_traces_to_training_data(tmp_path)
+
+    assert {row["metadata"]["session_id"]: row["messages"][-1]["content"] for row in rows} == {
+        "session-0": "Answer 0.", "session-1": "Answer 1.",
+    }
+
+
+@pytest.mark.parametrize("is_error", [True, False, None])
+def test_deepseek_tool_error_status_survives_conversion(tmp_path, events, is_error):
+    result = events[7]["data"]["message"]["content"][0]
+    if is_error is None:
+        result.pop("isError")
+    else:
+        result["isError"] = is_error
+    raw_trace = write_trace(tmp_path / "session.jsonl", events)
+
+    row = convert_trace_to_training_example(raw_trace).to_dict()
+    expected = {"role": "tool", "name": "read_file", "tool_call_id": "read-1", "content": "Hello, world."}
+    if is_error is True:
+        expected["is_error"] = True
+    assert row["messages"][3] == expected
+
+    converted = write_trace(tmp_path / "converted.jsonl", [row])
+    assert load_traces(converted)[0]["messages"][3] == expected
+
+
 def test_deepseek_duplicate_plain_and_compressed_version_is_ambiguous(tmp_path, events):
     write_trace(tmp_path / "session.jsonl", events)
     write_trace(tmp_path / "session.jsonl.zstd", events)
