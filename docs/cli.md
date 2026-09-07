@@ -89,6 +89,14 @@ teich convert data --out teich-training.jsonl
 
 Each output line contains `prompt`, `messages`, `tools`, `metadata`, and an optional captured `system` field. Use this when your training stack can consume standalone OpenAI-style message rows without importing Teich. Use `prepare_data()` and `mask_data()` when you want tokenizer-specific rendering and exact response-only labels.
 
+DeepSeek Harness (`dsh`) sessions are detected automatically, including compressed `.jsonl.zstd` and `.jsonl.zst` files:
+
+```bash
+teich convert /path/to/session.jsonl.zstd --out teich-training.jsonl
+```
+
+You can also pass a directory of sessions. See [DeepSeek Harness data](data-format.md#deepseek-harness) for supported content. DeepSeek Harness support is limited to parsing existing rollouts; it is not an option for `teich generate` or `teich extract`.
+
 ## Anonymize
 
 Scrub common secrets and local usernames:

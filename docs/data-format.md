@@ -138,6 +138,22 @@ Local slash-command artifacts such as `/model` are filtered. `/goal` contributes
 
 Advertised native Claude Code / Claude Desktop tools receive schemas even when a tool is only declared through deferred-tool context.
 
+## DeepSeek Harness
+
+Teich parses native DeepSeek Harness (`dsh`) session `.jsonl`, `.jsonl.zstd`, and `.jsonl.zst` files through `teich convert`, `load_traces()`, and `prepare_data()`. Compatible v0, v1, and v2 sessions are detected automatically and converted rows use `metadata.trace_type: "deepseek_harness"`.
+
+```bash
+teich convert /path/to/session.jsonl.zstd --out teich-training.jsonl
+```
+
+Native user and assistant messages become chat messages, assistant reasoning becomes `reasoning_content`, and tool calls and results retain their matching call IDs. Streaming chunks and tool execution events are omitted because their content is already represented by completed messages.
+
+Conversion applies `surfaceOp` replacements to reconstruct the final effective conversation. The latest `request/header` snapshot supplies system instructions, tool schemas, and configuration when present. Directory loading selects the highest canonical `session.vN` file in each session directory to avoid counting migration copies as separate rollouts. Pass an individual file to select a specific version.
+
+Unresolved image and file attachments raise an error instead of producing incomplete text-only training data. The supported native format is documented in the [upstream session persistence specification](https://github.com/deepseek-ai/deepseek-harness/blob/d347e703908d0406b7a7ef80e3a0e594d86b2215/packages/session/session-persistence-jsonl/README.md).
+
+See the [synthetic native session](../examples/example_deepseek_session.jsonl) for a small example. This is support for parsing existing rollouts; DeepSeek Harness is not a generation or extraction provider.
+
 ## Structured Chat Rows
 
 The `chat` provider writes structured training rows directly instead of raw traces.

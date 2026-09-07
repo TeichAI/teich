@@ -126,6 +126,7 @@ Returns one of:
 
 - `codex`
 - `claude_code`
+- `deepseek_harness`
 - `droid`
 - `pi`
 - `openclaw`
@@ -134,6 +135,8 @@ Returns one of:
 - `None`
 
 Factory `droid` CLI sessions are supported as a conversion-only source. Point `prepare_data()` or `load_traces()` at session JSONL files from `~/.factory/sessions/...`; Teich reads the adjacent `<session-id>.settings.json` sidecar for model and token usage metadata when present.
+
+DeepSeek Harness (`dsh`) is also a conversion-only source. `load_traces()` and `prepare_data()` accept native session `.jsonl`, `.jsonl.zstd`, or `.jsonl.zst` files and directories containing them. Parsed native events are detected as `deepseek_harness`; see [DeepSeek Harness data](data-format.md#deepseek-harness).
 
 ## Validation Helpers
 

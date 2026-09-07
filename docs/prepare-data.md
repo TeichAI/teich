@@ -6,6 +6,7 @@ Supported sources:
 
 - local JSONL files
 - folders of JSONL traces
+- DeepSeek Harness (`dsh`) session `.jsonl`, `.jsonl.zstd`, and `.jsonl.zst` files, or folders containing them
 - Hugging Face dataset repos
 - already-loaded `datasets.Dataset` objects
 - source mixes with explicit ratios

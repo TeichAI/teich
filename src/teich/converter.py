@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from io import TextIOWrapper
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TextIO
+
+import zstandard
 
 from .harness_capture import TEICH_HARNESS_CONTEXT_EVENT_TYPE
 from .tool_schema import (
@@ -23,7 +26,7 @@ FIRST_MESSAGE_TIMESTAMP_METADATA_KEY = "first_message_timestamp"
 PI_SYSTEM_PROMPT_CUSTOM_TYPE = "teich-system-prompt"
 TEICH_AVAILABLE_TOOLS_CUSTOM_TYPE = "teich-available-tools"
 TEICH_TRACE_CONTEXT_ITEM_TYPE = "teich_context"
-TraceType = Literal["claude_code", "codex", "cursor", "droid", "external_agent", "hermes", "openclaw", "pi"]
+TraceType = Literal["claude_code", "codex", "cursor", "deepseek_harness", "droid", "external_agent", "hermes", "openclaw", "pi"]
 _TIMESTAMP_KEYS = ("timestamp", "created_at", "createdAt")
 _CURSOR_METADATA_KEYS = frozenset(
     {
@@ -1847,6 +1850,14 @@ def _is_cursor_trace_row(event: Any) -> bool:
 
 
 def _detect_trace_type(events: list[Any], default: TraceType | None = "codex") -> TraceType | None:
+    if any(
+        _is_deepseek_session_header(event)
+        or isinstance(event, dict)
+        and event.get("type") in {"user/message", "assistant/message", "tool/result", "request/header"}
+        and isinstance(event.get("data"), dict)
+        for event in events
+    ):
+        return "deepseek_harness"
     first_event = next((event for event in events if isinstance(event, dict)), None)
     if _is_openclaw_session_header(first_event):
         return "openclaw"
@@ -3428,25 +3439,190 @@ def _cursor_event_contains_tool_result(event: dict[str, Any]) -> bool:
     )
 
 
+def _is_deepseek_session_header(event: Any) -> bool:
+    return (
+        isinstance(event, dict)
+        and event.get("type") == "session"
+        and isinstance(event.get("id"), str)
+        and isinstance(event.get("version"), int)
+        and isinstance(event.get("createdAt"), (int, float))
+    )
+
+
+def _deepseek_surface(events: list[Any]) -> list[dict[str, Any]]:
+    """Fold the native model-visible surface, including compaction replacements."""
+    surface: list[dict[str, Any]] = []
+    for event in events:
+        if not isinstance(event, dict) or "surfaceOp" not in event:
+            continue
+        if event.get("type") not in {"user/message", "assistant/message", "tool/result"}:
+            raise ValueError(f"Unsupported DeepSeek Harness surface event: {event.get('type')}")
+        operation = event["surfaceOp"]
+        if operation == "append":
+            surface.append(event)
+        elif isinstance(operation, dict) and operation.get("op") == "replace":
+            seqs = [node["seq"] for node in surface]
+            try:
+                start = seqs.index(operation.get("start"))
+                end = seqs.index(operation.get("end"))
+            except ValueError as exc:
+                raise ValueError("Invalid DeepSeek Harness surface replacement range") from exc
+            if start > end:
+                raise ValueError("Invalid DeepSeek Harness surface replacement range")
+            surface[start:end + 1] = [event]
+        else:
+            raise ValueError(f"Unsupported DeepSeek Harness surface operation: {operation}")
+    return surface
+
+
+def _deepseek_text(blocks: list[dict[str, Any]]) -> str:
+    for block in blocks:
+        if block.get("type") != "text":
+            raise ValueError(f"Unsupported DeepSeek Harness content block: {block.get('type')}")
+    return "".join(block["text"] for block in blocks)
+
+
+def _convert_deepseek_trace_to_training_example(trace_file: Path, events: list[Any]) -> TrainingExample:
+    session: dict[str, Any] = next((event for event in events if _is_deepseek_session_header(event)), {})
+    if session and session["version"] not in {0, 1, 2}:
+        raise ValueError(f"Unsupported DeepSeek Harness session version: {session['version']}")
+    header: dict[str, Any] = {}
+    end_reason = None
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") == "request/header":
+            header = event["data"]["header"]
+        elif event.get("type") == "turn/end":
+            end_reason = event["data"].get("reason")
+
+    tool_names: set[str] = set()
+    tool_schemas: dict[str, dict[str, Any]] = {}
+    explicit_tools: dict[str, dict[str, Any]] = {}
+    tool_argument_samples: dict[str, list[Any]] = {}
+    _add_explicit_tools(header.get("tools"), explicit_tools, tool_names, tool_schemas)
+    messages: list[dict[str, Any]] = []
+    system = header.get("system")
+    if system:
+        messages.append({"role": "system", "content": system})
+    calls: dict[str, str] = {}
+    usage: dict[str, int] = {}
+    first_message_timestamp = None
+    interrupted = False
+    model_source: dict[str, Any] = {}
+    for event in _deepseek_surface(events):
+        data = event["data"]
+        native = data if event["type"] == "user/message" else data["message"]
+        blocks = native["content"]
+        if event["type"] == "tool/result":
+            for block in blocks:
+                if block.get("type") != "tool-result":
+                    raise ValueError("Expected a DeepSeek Harness tool-result block")
+                call_id = block["toolCallId"]
+                message: dict[str, Any] = {
+                    "role": "tool", "tool_call_id": call_id,
+                    "content": _deepseek_text(block["content"]),
+                }
+                if call_id in calls:
+                    message["name"] = calls[call_id]
+                messages.append(message)
+        elif event["type"] == "user/message":
+            content = _deepseek_text(blocks)
+            messages.append({"role": "user", "content": content})
+            if first_message_timestamp is None:
+                first_message_timestamp = _normalize_timestamp_value(event.get("time"))
+        else:
+            text_blocks = []
+            reasoning = []
+            tool_calls = []
+            for block in blocks:
+                block_type = block.get("type")
+                if block_type == "text":
+                    text_blocks.append(block)
+                elif block_type == "reasoning":
+                    reasoning.append(block["text"])
+                elif block_type == "tool-call":
+                    name = block["name"]
+                    try:
+                        arguments = json.loads(block["arguments"])
+                    except json.JSONDecodeError:
+                        arguments = block["arguments"]
+                    calls[block["id"]] = name
+                    tool_names.add(name)
+                    tool_argument_samples.setdefault(name, []).append(arguments)
+                    tool_calls.append({
+                        "id": block["id"], "type": "function",
+                        "function": {"name": name, "arguments": arguments},
+                    })
+                else:
+                    raise ValueError(f"Unsupported DeepSeek Harness content block: {block_type}")
+            message = {"role": "assistant", "content": _deepseek_text(text_blocks)}
+            if reasoning:
+                message["reasoning_content"] = "".join(reasoning)
+            if tool_calls:
+                message["tool_calls"] = tool_calls
+            if blocks:
+                messages.append(message)
+            model_source = native.get("source", {})
+            interrupted |= data.get("interrupted") is True
+            for key, value in data.get("usage", {}).items():
+                usage[key] = usage.get(key, 0) + value
+
+    config = header.get("config", {})
+    metadata = {
+        "source_file": trace_file.name,
+        "trace_type": "deepseek_harness",
+        "session_id": session.get("id") or trace_file.stem,
+        "session_version": session.get("version"),
+        "cwd": session.get("cwd"),
+        "parent_session_id": session.get("parentSession"),
+        "seed_length": session.get("seedLength"),
+        "is_seeded": session.get("isSeeded"),
+        "model_provider": config.get("provider") or model_source.get("provider"),
+        "model": config.get("model") or model_source.get("model"),
+        "system_prompt": system,
+        "turn_count": sum(message["role"] == "user" for message in messages),
+        "usage": usage,
+        "interrupted": interrupted,
+        "end_reason": end_reason,
+    }
+    _add_first_message_timestamp(metadata, first_message_timestamp)
+    tools = _build_tools_from_snapshots_and_calls(
+        tool_names, tool_schemas, tool_argument_samples, explicit_tools,
+    )
+    return TrainingExample(trace_file, _prompt_from_messages(messages), messages, tools, metadata)
+
+
+def _open_trace_file(trace_file: Path) -> TextIO:
+    if trace_file.name.endswith((".jsonl.zstd", ".jsonl.zst")):
+        reader = zstandard.ZstdDecompressor().stream_reader(
+            trace_file.open("rb"), read_across_frames=True,
+        )
+        return TextIOWrapper(reader, encoding="utf-8")
+    return trace_file.open("r", encoding="utf-8")
+
+
 def load_trace_file(trace_file: Path) -> list[Any]:
     return _load_trace_file(trace_file)
 
 
 def _load_trace_file(trace_file: Path, *, skip_invalid_lines: bool = False) -> list[Any]:
-    events: list[Any] = []
-    with trace_file.open("r", encoding="utf-8") as handle:
-        for raw_line in handle:
-            line = raw_line.strip()
-            if not line:
+    with _open_trace_file(trace_file) as handle:
+        return list(_read_trace_events(handle, skip_invalid_lines=skip_invalid_lines))
+
+
+def _read_trace_events(handle: TextIO, *, skip_invalid_lines: bool = False) -> Iterator[Any]:
+    for raw_line in handle:
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            if skip_invalid_lines:
                 continue
-            try:
-                value = json.loads(line)
-            except json.JSONDecodeError:
-                if skip_invalid_lines:
-                    continue
-                raise
-            events.append(value)
-    return events
+            raise
+        yield value
 
 
 def _is_codex_runtime_context(text: str) -> bool:
@@ -4055,6 +4231,8 @@ def convert_trace_to_training_example(trace_file: Path) -> TrainingExample:
     trace_type = _detect_trace_type(events)
     if trace_type == "claude_code":
         example = _convert_claude_code_trace_to_training_example(trace_file, events)
+    elif trace_type == "deepseek_harness":
+        example = _convert_deepseek_trace_to_training_example(trace_file, events)
     elif trace_type == "droid":
         example = _convert_droid_trace_to_training_example(trace_file, events)
     elif trace_type == "hermes":
@@ -4072,14 +4250,33 @@ def convert_trace_to_training_example(trace_file: Path) -> TrainingExample:
     return _apply_harness_context_capture(example, events)
 
 
-def _jsonl_files(source: Path) -> list[Path]:
+def _jsonl_files(source: Path, *, skip_invalid_lines: bool = False) -> list[Path]:
     if source.is_file():
         return [source]
-    return sorted(
+    paths = sorted(
         path
-        for path in source.rglob("*.jsonl")
-        if path.is_file() and not {"partials", "failures"}.intersection(path.relative_to(source).parts)
+        for path in source.rglob("*.jsonl*")
+        if path.name.endswith((".jsonl", ".jsonl.zstd", ".jsonl.zst"))
+        and path.is_file() and not {"partials", "failures"}.intersection(path.relative_to(source).parts)
     )
+    sessions: dict[Path, list[tuple[int, Path]]] = {}
+    ordinary = []
+    for path in paths:
+        match = re.fullmatch(r"session(?:\.v(\d+))?\.jsonl(?:\.zstd|\.zst)?", path.name)
+        if match:
+            with _open_trace_file(path) as handle:
+                header = next(_read_trace_events(handle, skip_invalid_lines=skip_invalid_lines), None)
+            if _is_deepseek_session_header(header):
+                sessions.setdefault(path.parent, []).append((int(match[1] or 0), path))
+                continue
+        ordinary.append(path)
+    for versions in sessions.values():
+        latest = max(version for version, _ in versions)
+        candidates = [path for version, path in versions if version == latest]
+        if len(candidates) != 1:
+            raise ValueError(f"Ambiguous DeepSeek Harness session files: {candidates}")
+        ordinary.append(candidates[0])
+    return sorted(ordinary)
 
 
 def _convert_jsonl_file_to_training_rows(jsonl_file: Path, *, skip_invalid_lines: bool = False) -> list[dict[str, Any]]:
@@ -4094,6 +4291,9 @@ def _convert_jsonl_file_to_training_rows(jsonl_file: Path, *, skip_invalid_lines
     trace_type = _detect_trace_type(rows)
     if trace_type == "claude_code":
         example = _convert_claude_code_trace_to_training_example(jsonl_file, rows)
+        return [_apply_harness_context_capture(example, rows).to_dict()]
+    if trace_type == "deepseek_harness":
+        example = _convert_deepseek_trace_to_training_example(jsonl_file, rows)
         return [_apply_harness_context_capture(example, rows).to_dict()]
     if trace_type == "droid":
         return [_convert_droid_trace_to_training_example(jsonl_file, rows).to_dict()]
@@ -4123,7 +4323,7 @@ def _convert_jsonl_file_to_training_rows(jsonl_file: Path, *, skip_invalid_lines
 
 def convert_traces_to_training_data(traces_dir: Path | str, *, skip_invalid_lines: bool = False) -> list[dict[str, Any]]:
     source = Path(traces_dir) if not isinstance(traces_dir, Path) else traces_dir
-    trace_files = _jsonl_files(source)
+    trace_files = _jsonl_files(source, skip_invalid_lines=skip_invalid_lines)
     rows: list[dict[str, Any]] = []
     for path in trace_files:
         rows.extend(_convert_jsonl_file_to_training_rows(path, skip_invalid_lines=skip_invalid_lines))

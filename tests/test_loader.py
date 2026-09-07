@@ -93,7 +93,10 @@ def test_load_traces_downloads_dataset_repo_and_converts_split(tmp_path: Path):
         token=None,
         cache_dir=None,
         local_dir=None,
-        allow_patterns=["*.jsonl", "**/*.jsonl", "README.md", "tools.json", "**/tools.json"],
+        allow_patterns=[
+            "*.jsonl", "**/*.jsonl", "*.jsonl.zstd", "**/*.jsonl.zstd",
+            "*.jsonl.zst", "**/*.jsonl.zst", "README.md", "tools.json", "**/tools.json",
+        ],
     )
     assert dataset.num_rows == 1
     assert dataset[0]["prompt"] == "Inspect repo"
