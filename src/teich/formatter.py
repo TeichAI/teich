@@ -13,6 +13,7 @@ from datasets import Dataset, Features, Json, List, Value, concatenate_datasets
 from rich.console import Console
 
 from .converter import normalize_training_messages
+from .protocol import chatml_header_is_source_anchored, first_chatml_structural_turn_boundary_end
 
 
 _GEMMA_TURN_START_PATTERN = re.compile(r"<\|turn>(model|user|system)\n")
@@ -39,6 +40,18 @@ _ASSISTANT_BLOCK_START_TOKENS = (
     "<assistant>",
     "<|start_of_role|>assistant<|end_of_role|>",
 )
+_TURN_ROLES = ("system", "developer", "user", "assistant", "tool", "ipython")
+_TURN_BLOCK_STARTS = (
+    *((f"<|im_start|>{role}\n", role) for role in _TURN_ROLES),
+    *((f"<|start_header_id|>{role}<|end_header_id|>\n\n", role) for role in _TURN_ROLES),
+    *((f"<|start_header_id|>{role}<|end_header_id|>", role) for role in _TURN_ROLES),
+    ("<start_of_turn>user\n", "user"),
+    ("<start_of_turn>model\n", "assistant"),
+    *((f"<|{role}|>\n", role) for role in _TURN_ROLES),
+    *((f"<|{role}|>", role) for role in _TURN_ROLES),
+    *((f"<{role}>", role) for role in _TURN_ROLES),
+    *((f"<|start_of_role|>{role}<|end_of_role|>", role) for role in _TURN_ROLES),
+)
 _ASSISTANT_BLOCK_END_TOKENS = (
     "<|im_end|>",
     "<|eot_id|>",
@@ -46,7 +59,17 @@ _ASSISTANT_BLOCK_END_TOKENS = (
     "</assistant>",
     "</s>",
     "<|end_of_text|>",
+    "<|end|>",
 )
+_TURN_BLOCK_END_TOKENS = (
+    *_ASSISTANT_BLOCK_END_TOKENS,
+    _GEMMA_TURN_END,
+    "</system>",
+    "</developer>",
+    "</user>",
+    "</tool>",
+)
+_TURN_LEADING_TOKENS = ("<s>", "<bos>", "<|begin_of_text|>")
 _REASONING_BLOCK_PATTERNS = (
     re.compile(r"<think>\n.*?</think>\n\n?", re.DOTALL),
     re.compile(r"<think>.*?</think>", re.DOTALL),
@@ -1506,55 +1529,83 @@ def _resolve_assistant_prompt_prefixes(
 
 
 def _assistant_block_bounds(text: str, start: int, end: int) -> tuple[int, int] | None:
-    block_start = -1
-    for token in _ASSISTANT_BLOCK_START_TOKENS:
-        token_start = text.rfind(token, 0, start)
-        if token_start > block_start:
-            block_start = token_start
-    if block_start < 0:
-        return None
-    block_end = -1
-    for token in _ASSISTANT_BLOCK_END_TOKENS:
-        token_end_start = text.find(token, end)
-        if token_end_start >= 0 and (block_end < 0 or token_end_start < block_end):
-            block_end = token_end_start + len(token)
-    if block_end < 0:
-        return None
-    while block_end < len(text) and text[block_end] in "\r\n":
-        block_end += 1
-    return block_start, block_end
+    return _AssistantBlockIndex.build(text).bounds(start, end)
+
+
+def _is_valid_turn_header(
+    text: str,
+    start: int,
+    role: str,
+    source_spans: Sequence[Mapping[str, Any]] | None = None,
+) -> bool:
+    prefix_end = start
+    while prefix_end > 0 and text[prefix_end - 1].isspace():
+        prefix_end -= 1
+
+    leading_cursor = 0
+    while leading_cursor < prefix_end:
+        while leading_cursor < prefix_end and text[leading_cursor].isspace():
+            leading_cursor += 1
+        leading_token = next(
+            (token for token in _TURN_LEADING_TOKENS if text.startswith(token, leading_cursor)),
+            None,
+        )
+        if leading_token is None:
+            break
+        leading_cursor += len(leading_token)
+    if leading_cursor == prefix_end:
+        return True
+    if not any(
+        prefix_end >= len(token) and text.startswith(token, prefix_end - len(token), prefix_end)
+        for token in _TURN_BLOCK_END_TOKENS
+    ):
+        return False
+    if source_spans is not None and text.startswith("<|im_start|>", start):
+        return chatml_header_is_source_anchored(text, start, role, source_spans)
+    return True
 
 
 @dataclass(slots=True)
 class _AssistantBlockIndex:
     text: str
-    start_thresholds: list[int]
-    start_prefix_maxima: list[int]
+    turn_starts: list[int]
+    turn_content_starts: list[int]
+    turn_roles: list[str]
     end_starts: list[int]
     end_positions: list[int]
 
     @classmethod
-    def build(cls, text: str) -> _AssistantBlockIndex:
-        start_events: list[tuple[int, int]] = []
-        for token in _ASSISTANT_BLOCK_START_TOKENS:
+    def build(
+        cls,
+        text: str,
+        source_spans: Sequence[Mapping[str, Any]] | None = None,
+    ) -> _AssistantBlockIndex:
+        turn_by_start: dict[int, tuple[int, str]] = {}
+        for token, role in _TURN_BLOCK_STARTS:
             cursor = 0
             while True:
                 token_start = text.find(token, cursor)
                 if token_start < 0:
                     break
-                start_events.append((token_start + len(token), token_start))
+                if _is_valid_turn_header(text, token_start, role, source_spans):
+                    content_start = token_start + len(token)
+                    existing = turn_by_start.get(token_start)
+                    if existing is None or content_start > existing[0]:
+                        turn_by_start[token_start] = (content_start, role)
                 cursor = token_start + len(token)
-        start_events.sort()
-        start_thresholds: list[int] = []
-        start_prefix_maxima: list[int] = []
-        max_start = -1
-        for threshold, token_start in start_events:
-            max_start = max(max_start, token_start)
-            start_thresholds.append(threshold)
-            start_prefix_maxima.append(max_start)
+
+        # Gemma's parser advances from each real <turn|> terminator, so role-like
+        # strings inside message content never become structural turn starts.
+        for match in _gemma_turn_matches(text):
+            role = "assistant" if match.group(1) == "model" else match.group(1)
+            turn_by_start[match.start()] = (match.end(), role)
+        ordered_turns = sorted(
+            (turn_start, content_start, role)
+            for turn_start, (content_start, role) in turn_by_start.items()
+        )
 
         end_by_start: dict[int, int] = {}
-        for token in _ASSISTANT_BLOCK_END_TOKENS:
+        for token in _TURN_BLOCK_END_TOKENS:
             cursor = 0
             while True:
                 token_start = text.find(token, cursor)
@@ -1565,23 +1616,50 @@ class _AssistantBlockIndex:
         ordered_ends = sorted(end_by_start.items())
         return cls(
             text=text,
-            start_thresholds=start_thresholds,
-            start_prefix_maxima=start_prefix_maxima,
+            turn_starts=[start for start, _, _ in ordered_turns],
+            turn_content_starts=[content_start for _, content_start, _ in ordered_turns],
+            turn_roles=[role for _, _, role in ordered_turns],
             end_starts=[start for start, _ in ordered_ends],
             end_positions=[end for _, end in ordered_ends],
         )
 
+    def originating_assistant_turn(self, position: int) -> tuple[int, int, int] | None:
+        turn_index = bisect_right(self.turn_starts, position) - 1
+        if turn_index < 0:
+            return None
+        block_start = self.turn_starts[turn_index]
+        content_start = self.turn_content_starts[turn_index]
+        if content_start > position or self.turn_roles[turn_index] != "assistant":
+            return None
+        next_turn_index = turn_index + 1
+        turn_boundary = (
+            self.turn_starts[next_turn_index]
+            if next_turn_index < len(self.turn_starts)
+            else len(self.text)
+        )
+        end_index = bisect_left(self.end_starts, turn_boundary) - 1
+        if end_index >= 0 and self.end_starts[end_index] >= content_start:
+            block_end = self.end_positions[end_index]
+        else:
+            block_end = turn_boundary
+        if not self.text.startswith(_GEMMA_ASSISTANT_TURN_PREFIX, block_start):
+            while block_end < turn_boundary and self.text[block_end] in "\r\n":
+                block_end += 1
+        return block_start, content_start, block_end
+
+    def is_gemma_assistant_turn(self, position: int) -> bool:
+        assistant_turn = self.originating_assistant_turn(position)
+        return (
+            assistant_turn is not None
+            and self.text.startswith(_GEMMA_ASSISTANT_TURN_PREFIX, assistant_turn[0])
+        )
+
     def bounds(self, start: int, end: int) -> tuple[int, int] | None:
-        start_index = bisect_right(self.start_thresholds, start) - 1
-        if start_index < 0:
+        del end
+        assistant_turn = self.originating_assistant_turn(start)
+        if assistant_turn is None:
             return None
-        block_start = self.start_prefix_maxima[start_index]
-        end_index = bisect_left(self.end_starts, end)
-        if end_index >= len(self.end_starts):
-            return None
-        block_end = self.end_positions[end_index]
-        while block_end < len(self.text) and self.text[block_end] in "\r\n":
-            block_end += 1
+        block_start, _, block_end = assistant_turn
         return block_start, block_end
 
     def following_end(self, position: int) -> tuple[int, int] | None:
@@ -1623,6 +1701,8 @@ def _expand_supervised_span(
     if assistant_block is None:
         return span
     block_start, block_end = assistant_block
+    if assistant_blocks.is_gemma_assistant_turn(start):
+        return span
     if not assistant_prompt_prefixes:
         return block_start, block_end
     block_text = text[block_start:block_end]
@@ -1661,7 +1741,7 @@ def _expand_typed_spans(
     assistant_prompt_prefixes: tuple[str, ...],
 ) -> list[dict[str, Any]]:
     span_kinds = {span.get("kind") for span in spans}
-    assistant_blocks = _AssistantBlockIndex.build(text)
+    assistant_blocks = _AssistantBlockIndex.build(text, spans)
     reasoning_spans = _ContainingSpanIndex.build(_reasoning_spans(text)) if _SPAN_KIND_REASONING in span_kinds else None
     tool_call_spans = _ContainingSpanIndex.build(_tool_call_spans(text)) if _SPAN_KIND_TOOL_CALL in span_kinds else None
     tool_response_spans = (
@@ -1691,11 +1771,12 @@ def _expand_typed_spans(
         elif kind == _SPAN_KIND_TOOL_CALL:
             if tool_call_spans is not None:
                 expanded_start, expanded_end = tool_call_spans.containing((start, end))
-            expanded_start, expanded_end = _extend_span_to_following_assistant_end(
-                text,
-                (expanded_start, expanded_end),
-                assistant_blocks,
-            )
+            if not assistant_blocks.is_gemma_assistant_turn(start):
+                expanded_start, expanded_end = _extend_span_to_following_assistant_end(
+                    text,
+                    (expanded_start, expanded_end),
+                    assistant_blocks,
+                )
         elif kind == _SPAN_KIND_TOOL_RESPONSE:
             if tool_response_spans is not None:
                 expanded_start, expanded_end = tool_response_spans.containing((start, end))
@@ -1704,9 +1785,9 @@ def _expand_typed_spans(
         updated["end"] = expanded_end
         updated.setdefault("source_start", start)
         updated.setdefault("source_end", end)
-        if expanded_start < expanded_end:
+        if updated["start"] < updated["end"]:
             expanded_spans.append(updated)
-    return expanded_spans
+    return _clamp_model_spans_to_assistant_turns(text, expanded_spans)
 
 
 def _span_kind_enabled(
@@ -1745,6 +1826,54 @@ def _source_spans_for_kind(spans: list[dict[str, Any]], kind: str) -> list[tuple
     return _merge_spans(source_spans)
 
 
+def _clamp_model_spans_to_assistant_turns(
+    text: str,
+    spans: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Keep model-authored metadata inside the turn containing its source start."""
+    assistant_blocks = _AssistantBlockIndex.build(text, spans)
+    clamped: list[dict[str, Any]] = []
+    for span in spans:
+        updated = dict(span)
+        if updated.get("kind") in {
+            _SPAN_KIND_REASONING,
+            _SPAN_KIND_FINAL_ANSWER,
+            _SPAN_KIND_TOOL_CALL,
+        }:
+            source_start = updated.get("source_start", updated.get("start"))
+            if isinstance(source_start, int):
+                # Clamp the final span itself at a structural ChatML boundary.
+                # This is intentionally independent of assistant-block inference:
+                # marker extraction and kind-specific expansion take different
+                # paths, but none may supervise the following turn. A bare or
+                # quoted <|im_start|> is not a boundary unless it immediately
+                # follows <|im_end|> and carries a real role header.
+                structural_end = first_chatml_structural_turn_boundary_end(
+                    text,
+                    source_start,
+                    spans,
+                )
+                if structural_end is not None:
+                    updated["end"] = min(updated["end"], structural_end)
+                    source_end = updated.get("source_end")
+                    if isinstance(source_end, int):
+                        updated["source_end"] = min(source_end, structural_end)
+                assistant_turn = assistant_blocks.originating_assistant_turn(source_start)
+                if assistant_turn is None:
+                    if assistant_blocks.turn_starts:
+                        continue
+                else:
+                    _, content_start, block_end = assistant_turn
+                    updated["start"] = max(updated["start"], content_start)
+                    updated["end"] = min(updated["end"], block_end)
+                    source_end = updated.get("source_end")
+                    if isinstance(source_end, int):
+                        updated["source_end"] = min(source_end, block_end)
+        if updated["start"] < updated["end"]:
+            clamped.append(updated)
+    return clamped
+
+
 def _select_supervised_spans(
     text: str,
     spans: list[dict[str, Any]],
@@ -1757,6 +1886,7 @@ def _select_supervised_spans(
     train_on_developer: bool,
     train_on_tool_responses: bool,
 ) -> list[tuple[int, int]]:
+    spans = _clamp_model_spans_to_assistant_turns(text, spans)
     selected = _merge_spans(
         [
             (span["start"], span["end"])

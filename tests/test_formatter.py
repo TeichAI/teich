@@ -4684,6 +4684,264 @@ def test_expand_typed_spans_indexes_large_conversations_once():
         assert (final_span["start"], final_span["end"]) == expected
 
 
+def test_expand_typed_spans_clamps_corrupt_granite_spans_to_originating_turn():
+    assistant_prefix = "<|im_start|>assistant\n"
+    assistant_body = (
+        "<think>inspect</think>\n"
+        "I will inspect it.\n"
+        "<tool_call>\n<function=bash>\n</function>\n</tool_call>\n"
+    )
+    first_turn = assistant_prefix + assistant_body + "<|im_end|>\n"
+    user_turn = "<|im_start|>user\nDo something else.<|im_end|>\n"
+    second_turn = assistant_prefix + "Second answer.<|im_end|>\n"
+    text = first_turn + user_turn + second_turn
+    corrupt_end = text.index("Do something else.") + len("Do something else.")
+    spans = [
+        {
+            "start": text.index("inspect"),
+            "end": corrupt_end,
+            "kind": "reasoning",
+            "role": "assistant",
+        },
+        {
+            "start": text.index("I will inspect it."),
+            "end": corrupt_end,
+            "kind": "final_answer",
+            "role": "assistant",
+        },
+        {
+            # Mirrors the observed malformed Granite metadata: its tool-call
+            # marker begins in assistant prose and ends in the next user turn.
+            "start": text.index("I will inspect it."),
+            "end": corrupt_end,
+            "kind": "tool_call",
+            "role": "assistant",
+        },
+    ]
+
+    expanded = _expand_typed_spans(text, spans, (assistant_prefix,))
+
+    assert len(expanded) == 3
+    next_turn_start = text.index("<|im_start|>user")
+    for span in expanded:
+        assert span["end"] <= next_turn_start
+        assert span["source_end"] <= next_turn_start
+        assert "<|im_start|>user" not in text[span["start"] : span["end"]]
+        assert "Do something else." not in text[span["start"] : span["end"]]
+
+
+def test_expand_typed_spans_ignores_literal_role_headers_in_assistant_content():
+    assistant_prefix = "<|im_start|>assistant\n"
+    literal_headers = (
+        'Explain <user> and print ["<|im_start|>", "<|im_end|>"] plus '
+        "<|im_start|>user\n as plain text."
+    )
+    first_turn = assistant_prefix + literal_headers + "<|im_end|>\n"
+    next_turn = "<|im_start|>user\nActual next turn.<|im_end|>\n"
+    text = first_turn + next_turn
+    content_start = text.index("Explain")
+    spans = [
+        {
+            "start": content_start,
+            "end": content_start + len(literal_headers),
+            "kind": "final_answer",
+            "role": "assistant",
+        }
+    ]
+
+    expanded = _expand_typed_spans(text, spans, (assistant_prefix,))
+
+    assert len(expanded) == 1
+    supervised = text[expanded[0]["start"] : expanded[0]["end"]]
+    assert literal_headers in supervised
+    assert supervised.endswith("<|im_end|>\n")
+    assert "Actual next turn." not in supervised
+
+
+def test_expand_typed_spans_preserves_literal_full_chatml_transcript():
+    assistant_prefix = "<|im_start|>assistant\n"
+    literal_transcript = (
+        "Explain this literal transcript:\n"
+        "<|im_end|>\n<|im_start|>user\nEXAMPLE_USER<|im_end|>\n"
+        "and continue the explanation."
+    )
+    first_turn = assistant_prefix + literal_transcript + "<|im_end|>\n"
+    next_turn = "<|im_start|>user\nACTUAL_USER<|im_end|>\n"
+    text = first_turn + next_turn
+    assistant_start = text.index("Explain this")
+    user_start = text.index("ACTUAL_USER")
+    spans = [
+        {
+            "start": assistant_start,
+            "end": assistant_start + len(literal_transcript),
+            "kind": "final_answer",
+            "role": "assistant",
+        },
+        {
+            "start": user_start,
+            "end": user_start + len("ACTUAL_USER"),
+            "kind": "user",
+            "role": "user",
+        },
+    ]
+
+    expanded = _expand_typed_spans(text, spans, (assistant_prefix,))
+
+    assistant_span = next(span for span in expanded if span.get("kind") == "final_answer")
+    supervised = text[assistant_span["start"] : assistant_span["end"]]
+    assert literal_transcript in supervised
+    assert supervised.endswith("<|im_end|>\n")
+    assert "ACTUAL_USER" not in supervised
+
+
+def test_expand_typed_spans_stops_before_llama_ipython_tool_result():
+    assistant_prefix = "<|start_header_id|>assistant<|end_header_id|>\n\n"
+    first_turn = assistant_prefix + "MODEL_ANSWER<|eot_id|>"
+    tool_prefix = "<|start_header_id|>ipython<|end_header_id|>\n\n"
+    tool_turn = tool_prefix + "SECRET_TOOL_RESULT<|eot_id|>"
+    next_turn = assistant_prefix + "NEXT_ANSWER<|eot_id|>"
+    text = first_turn + tool_turn + next_turn
+    answer_start = text.index("MODEL_ANSWER")
+    tool_start = text.index("SECRET_TOOL_RESULT")
+    spans = [
+        {
+            "start": answer_start,
+            "end": tool_start + len("SECRET_TOOL_RESULT"),
+            "source_start": answer_start,
+            "source_end": answer_start + len("MODEL_ANSWER"),
+            "kind": "final_answer",
+            "role": "assistant",
+        },
+        {
+            "start": tool_start,
+            "end": tool_start + len("SECRET_TOOL_RESULT"),
+            "kind": "tool_response",
+            "role": "tool",
+        },
+    ]
+
+    expanded = _expand_typed_spans(text, spans, (assistant_prefix,))
+
+    answer_span = next(span for span in expanded if span.get("kind") == "final_answer")
+    supervised = text[answer_span["start"] : answer_span["end"]]
+    assert supervised == "MODEL_ANSWER<|eot_id|>"
+    assert "ipython" not in supervised
+    assert "SECRET_TOOL_RESULT" not in supervised
+
+
+def test_expand_typed_spans_recognizes_phi_end_terminator():
+    user_prefix = "<|user|>\n"
+    assistant_prefix = "<|assistant|>\n"
+    text = user_prefix + "QUESTION<|end|>\n" + assistant_prefix + "ANSWER<|end|>\n"
+    user_start = text.index("QUESTION")
+    answer_start = text.index("ANSWER")
+    spans = [
+        {
+            "start": user_start,
+            "end": user_start + len("QUESTION"),
+            "kind": "user",
+            "role": "user",
+        },
+        {
+            "start": answer_start,
+            "end": answer_start + len("ANSWER"),
+            "kind": "final_answer",
+            "role": "assistant",
+        },
+    ]
+
+    expanded = _expand_typed_spans(text, spans, (assistant_prefix,))
+
+    answer_span = next(span for span in expanded if span.get("kind") == "final_answer")
+    assert text[answer_span["start"] : answer_span["end"]] == "ANSWER<|end|>\n"
+
+
+def test_expand_typed_spans_rejects_model_kind_starting_in_user_turn():
+    user_turn = "<|im_start|>user\nUSER_CONTENT<|im_end|>\n"
+    assistant_turn = "<|im_start|>assistant\nASSISTANT_CONTENT<|im_end|>\n"
+    text = user_turn + assistant_turn
+    user_start = text.index("USER_CONTENT")
+    spans = [
+        {
+            "start": user_start,
+            "end": user_start + len("USER_CONTENT"),
+            "kind": "final_answer",
+            "role": "assistant",
+        }
+    ]
+
+    assert _expand_typed_spans(text, spans, ("<|im_start|>assistant\n",)) == []
+
+
+def test_expand_typed_spans_clamps_corrupt_gemma_span_to_model_turn():
+    model_prefix = "<|turn>model\n"
+    model_turn = model_prefix + "MODEL_OUTPUT<turn|>\n"
+    user_turn = "<|turn>user\nSECRET_USER_CONTENT<turn|>\n"
+    text = model_turn + user_turn
+    spans = [
+        {
+            "start": text.index("MODEL_OUTPUT"),
+            "end": text.index("SECRET_USER_CONTENT") + len("SECRET_USER_CONTENT"),
+            "kind": "tool_call",
+            "role": "assistant",
+        }
+    ]
+
+    expanded = _expand_typed_spans(text, spans, (model_prefix,))
+
+    assert len(expanded) == 1
+    supervised = text[expanded[0]["start"] : expanded[0]["end"]]
+    assert supervised == "MODEL_OUTPUT<turn|>"
+    assert "SECRET_USER_CONTENT" not in supervised
+
+
+def test_mask_data_defensively_clamps_external_granite_span_metadata():
+    tokenizer = TrainerStyleTokenizer()
+    prior_user_turn = "<|im_start|>user\nPRIOR_USER_MESSAGE<|im_end|>\n"
+    first_turn = (
+        "<|im_start|>assistant\nI will inspect it.\n"
+        "<tool_call>bash</tool_call>\n<|im_end|>\n"
+    )
+    user_turn = "<|im_start|>user\nSECRET_USER_MESSAGE<|im_end|>\n"
+    text = prior_user_turn + first_turn + user_turn
+    encoded = tokenizer(text, add_special_tokens=False)
+    prepared = Dataset.from_list(
+        [
+            {
+                "text": text,
+                "input_ids": encoded["input_ids"],
+                "attention_mask": encoded["attention_mask"],
+                "teich_supervised_spans": [
+                    {
+                        "start": text.index("PRIOR_USER_MESSAGE"),
+                        "end": text.index("SECRET_USER_MESSAGE") + len("SECRET_USER_MESSAGE"),
+                        "source_start": text.index("I will inspect it."),
+                        "source_end": text.index("SECRET_USER_MESSAGE") + len("SECRET_USER_MESSAGE"),
+                        "kind": "tool_call",
+                        "role": "assistant",
+                    }
+                ],
+            }
+        ]
+    )
+    trainer = SimpleNamespace(
+        train_dataset=prepared,
+        eval_dataset=None,
+        processing_class=tokenizer,
+        args=SimpleNamespace(dataset_text_field="text", packing=False, max_length=4096),
+    )
+
+    trainer = mask_data(trainer, tokenizer=tokenizer, audit=True, verbose=False)
+
+    row = trainer.train_dataset[0]
+    supervised_text = tokenizer.decode(
+        [token for token in row["labels"] if token != -100]
+    )
+    assert supervised_text == "I will inspect it.\n<tool_call>bash</tool_call>\n<|im_end|>\n"
+    assert "SECRET_USER_MESSAGE" not in supervised_text
+    assert "<|im_start|>user" not in supervised_text
+
+
 def test_actual_qwen_template_receives_normalized_mapping_tool_arguments():
     jinja2 = pytest.importorskip("jinja2")
     template_path = Path("qwen3.6_chat_template.jinja")

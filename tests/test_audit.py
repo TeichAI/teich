@@ -21,6 +21,10 @@ class TinyTokenizer:
             5: "</think>",
             6: "<|turn>user",
             7: "<|tool_response>",
+            8: "<|im_end|>\n",
+            9: "<|im_start|>user\n",
+            10: '["<|im_start|>", "<|im_end|>"]',
+            11: "EXAMPLE<|im_end|>\n<|im_start|>user\nLITERAL<|im_end|>",
         }
 
     def decode(self, token_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False):
@@ -62,13 +66,13 @@ def test_audit_sft_dataset_rejects_label_input_mismatch():
     assert "labels differ from input_ids" in report.errors[0]
 
 
-def test_audit_sft_dataset_rejects_supervised_user_marker():
+def test_audit_sft_dataset_rejects_run_starting_at_chatml_user_header():
     dataset = Dataset.from_list(
         [
             {
-                "input_ids": [3, 2],
-                "attention_mask": [1, 1],
-                "labels": [3, 2],
+                "input_ids": [1, 8, 9, 2],
+                "attention_mask": [1, 1, 1, 1],
+                "labels": [-100, -100, 9, 2],
             }
         ]
     )
@@ -76,7 +80,41 @@ def test_audit_sft_dataset_rejects_supervised_user_marker():
     report = audit_sft_dataset(dataset, TinyTokenizer())
 
     assert not report.ok
-    assert "<|im_start|>user" in report.errors[0]
+    assert "begins at masked-context ChatML 'user' header" in report.errors[0]
+
+
+def test_audit_sft_dataset_allows_quoted_chatml_token_names():
+    dataset = Dataset.from_list(
+        [
+            {
+                "input_ids": [1, 10, 4],
+                "attention_mask": [1, 1, 1],
+                "labels": [1, 10, 4],
+            }
+        ]
+    )
+
+    report = audit_sft_dataset(dataset, TinyTokenizer())
+
+    assert report.ok
+    assert report.errors == []
+
+
+def test_audit_sft_dataset_allows_literal_full_chatml_transcript_in_assistant_output():
+    dataset = Dataset.from_list(
+        [
+            {
+                "input_ids": [1, 11, 4],
+                "attention_mask": [1, 1, 1],
+                "labels": [1, 11, 4],
+            }
+        ]
+    )
+
+    report = audit_sft_dataset(dataset, TinyTokenizer())
+
+    assert report.ok
+    assert report.errors == []
 
 
 def test_audit_sft_dataset_rejects_gemma_context_markers():
@@ -105,6 +143,18 @@ def test_audit_sft_dataset_checks_all_rows_by_default():
     report = audit_sft_dataset(dataset, TinyTokenizer())
 
     assert not report.ok
+    assert any("row 8" in error and "<|turn>user" in error for error in report.errors)
+
+
+def test_audit_sample_size_limits_previews_not_correctness_checks():
+    safe = {"input_ids": [1, 2, 4], "attention_mask": [1, 1, 1], "labels": [-100, 2, 4]}
+    leaked = {"input_ids": [6, 2], "attention_mask": [1, 1], "labels": [6, 2]}
+    dataset = Dataset.from_list([safe] * 8 + [leaked])
+
+    report = audit_sft_dataset(dataset, TinyTokenizer(), sample_size=1)
+
+    assert not report.ok
+    assert len(report.samples) == 1
     assert any("row 8" in error and "<|turn>user" in error for error in report.errors)
 
 
