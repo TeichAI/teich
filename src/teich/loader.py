@@ -198,7 +198,10 @@ def load_traces(
                 token=effective_token,
                 cache_dir=str(cache_dir) if cache_dir is not None else None,
                 local_dir=str(local_dir) if local_dir is not None else None,
-                allow_patterns=["*.jsonl", "**/*.jsonl", "README.md", "tools.json", "**/tools.json"],
+                allow_patterns=[
+                    "*.jsonl", "**/*.jsonl", "*.jsonl.zstd", "**/*.jsonl.zstd",
+                    "*.jsonl.zst", "**/*.jsonl.zst", "README.md", "tools.json", "**/tools.json",
+                ],
             )
         )
     traces_dir = root if root.is_file() else _trace_directory(root, split)
