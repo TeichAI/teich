@@ -45,12 +45,14 @@ def _free_tcp_port() -> int:
 
 def _wait_for_tcp_port(
     port: int,
-    timeout: float = 5.0,
+    timeout: float = 30.0,
     *,
     process: subprocess.Popen[str] | None = None,
 ) -> None:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+    # Node may take more than five seconds to start on a busy CI runner.
+    # Poll readiness so healthy starts stay fast, and fail immediately on exit.
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         if process is not None and process.poll() is not None:
             stdout, stderr = process.communicate()
             raise RuntimeError(
@@ -61,8 +63,57 @@ def _wait_for_tcp_port(
             with socket.create_connection(("127.0.0.1", port), timeout=0.1):
                 return
         except OSError:
-                time.sleep(0.05)
-    raise TimeoutError(f"port {port} did not open")
+            time.sleep(0.05)
+    raise TimeoutError(f"port {port} did not open within {timeout:g} seconds")
+
+
+def test_proxy_startup_wait_allows_slow_live_process(monkeypatch):
+    elapsed = [0.0]
+
+    def sleep(seconds):
+        elapsed[0] += seconds
+
+    def connect(*_args, **_kwargs):
+        if elapsed[0] < 6.0:
+            raise ConnectionRefusedError("proxy is still starting")
+        return MagicMock()
+
+    monkeypatch.setattr(time, "time", lambda: elapsed[0])
+    monkeypatch.setattr(time, "monotonic", lambda: elapsed[0])
+    monkeypatch.setattr(time, "sleep", sleep)
+    monkeypatch.setattr(socket, "create_connection", connect)
+    process = MagicMock()
+    process.poll.return_value = None
+
+    _wait_for_tcp_port(17891, process=process)
+
+    assert 6.0 <= elapsed[0] < 6.1
+    process.communicate.assert_not_called()
+
+
+def test_proxy_startup_wait_remains_bounded(monkeypatch):
+    elapsed = [0.0]
+
+    def sleep(seconds):
+        elapsed[0] += seconds
+
+    monkeypatch.setattr(time, "monotonic", lambda: elapsed[0])
+    monkeypatch.setattr(time, "sleep", sleep)
+    with patch.object(socket, "create_connection", side_effect=ConnectionRefusedError):
+        with pytest.raises(TimeoutError, match="port 17891 did not open"):
+            _wait_for_tcp_port(17891, timeout=0.2)
+
+    assert 0.2 <= elapsed[0] < 0.3
+
+
+def test_proxy_startup_wait_reports_exited_process():
+    process = MagicMock()
+    process.poll.return_value = 1
+    process.returncode = 1
+    process.communicate.return_value = ("startup output", "EADDRINUSE")
+
+    with pytest.raises(RuntimeError, match="(?s)process exited with code 1.*EADDRINUSE"):
+        _wait_for_tcp_port(17891, process=process)
 
 
 def test_windows_owned_process_cleanup_kills_entire_tree():
