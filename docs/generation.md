@@ -224,6 +224,36 @@ Copies native Codex session JSONL from mounted `CODEX_HOME/sessions` and normali
 
 Teich appends configured `tool_schema` metadata so tools remain available for training even if the model did not call them.
 
+#### Custom endpoints
+
+When `api.base_url` is set, Teich registers a Codex custom model provider and selects it with `model_provider`. Point that provider at a Responses endpoint and opt it into the capabilities the endpoint actually supports:
+
+```yaml
+agent:
+  provider: codex
+
+api:
+  provider: gateway
+  base_url: https://example.com/v1
+  wire_api: responses
+  supports_websockets: true
+  supports_standalone_web_search: true
+```
+
+Teich writes those fields onto `model_providers.<id>`:
+
+| Config | Codex provider field |
+|--------|----------------------|
+| `api.wire_api` | `wire_api` |
+| `api.supports_websockets` | `supports_websockets` |
+| `api.supports_standalone_web_search` | `supports_standalone_web_search` |
+
+`wire_api` defaults to `"responses"`. Codex accepts only that value for custom providers.
+
+`supports_websockets` opts the provider into the Responses WebSocket transport. `supports_standalone_web_search` advertises a compatible standalone web-search endpoint. Leave either field unset (or `null`) to keep Codex's default of `false`. Setting `supports_standalone_web_search: true` does not enable search by itself; Codex still requires web search to be enabled and the selected model and runtime to support it.
+
+Built-in local providers (`lmstudio`, `ollama`) use Codex's `--oss` path and ignore these fields. Other Teich agents ignore the two capability flags.
+
 #### Using your ChatGPT subscription (host auth)
 
 By default Codex runs on an API key. To run it on your ChatGPT subscription instead, point Teich at your host Codex login:

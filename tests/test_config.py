@@ -8,6 +8,40 @@ import pytest
 from teich.config import Config, MCPConfig, ModelConfig
 
 
+def test_api_config_codex_provider_capabilities_default_unset():
+    config = Config()
+    assert config.api.wire_api == "responses"
+    assert config.api.supports_websockets is None
+    assert config.api.supports_standalone_web_search is None
+
+
+def test_api_config_loads_codex_provider_capabilities(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("TEICH_MODEL", raising=False)
+    monkeypatch.delenv("TEICH_BASE_URL", raising=False)
+    monkeypatch.delenv("TEICH_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("TEICH_PROVIDER", raising=False)
+
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text("""
+api:
+  provider: gateway
+  base_url: https://example.com/v1
+  wire_api: responses
+  supports_websockets: true
+  supports_standalone_web_search: true
+""")
+
+    config = Config.from_yaml(config_file)
+
+    assert config.api.provider == "gateway"
+    assert config.api.base_url == "https://example.com/v1"
+    assert config.api.wire_api == "responses"
+    assert config.api.supports_websockets is True
+    assert config.api.supports_standalone_web_search is True
+
+
 def test_default_config():
     """Test default configuration values."""
     config = Config()

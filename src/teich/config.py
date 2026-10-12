@@ -102,11 +102,22 @@ class MCPConfig(StrictConfigModel):
 
 
 class APIConfig(StrictConfigModel):
-    """API configuration for OpenAI-compatible endpoints."""
+    """API configuration for OpenAI-compatible endpoints.
+
+    ``wire_api`` is the protocol Teich asks the endpoint to speak. Codex custom
+    providers accept only ``"responses"`` and receive that value as
+    ``model_providers.<id>.wire_api``.
+
+    ``supports_websockets`` and ``supports_standalone_web_search`` are forwarded
+    only to that Codex custom provider. Leave them unset to keep Codex's
+    defaults (both false). Other agents ignore them.
+    """
     provider: str = "openai"  # openai, openrouter, azure, etc.
     base_url: str | None = None  # e.g., https://openrouter.ai/api/v1
     api_key: str | None = None  # Override global api_key for this provider
     wire_api: str = "responses"
+    supports_websockets: bool | None = None
+    supports_standalone_web_search: bool | None = None
 
 
 class LangfuseConfig(StrictConfigModel):
