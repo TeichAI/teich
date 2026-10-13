@@ -318,6 +318,36 @@ def test_status_reports_config_error_for_invalid_config(client):
     assert payload["prompts_file"].endswith("prompts.jsonl")
 
 
+def test_config_saves_codex_endpoint_capabilities(client):
+    response = client.put(
+        "/api/config",
+        json={
+            "config": {
+                "agent": {"provider": "codex"},
+                "api": {
+                    "provider": "gateway",
+                    "base_url": "https://example.com/v1",
+                    "wire_api": "responses",
+                    "supports_websockets": True,
+                    "supports_standalone_web_search": True,
+                },
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    api = response.json()["config"]["api"]
+    assert api["provider"] == "gateway"
+    assert api["base_url"] == "https://example.com/v1"
+    assert api["wire_api"] == "responses"
+    assert api["supports_websockets"] is True
+    assert api["supports_standalone_web_search"] is True
+    reloaded = client.get("/api/config").json()["config"]["api"]
+    assert reloaded["wire_api"] == "responses"
+    assert reloaded["supports_websockets"] is True
+    assert reloaded["supports_standalone_web_search"] is True
+
+
 def test_config_endpoints(client):
     config = client.get("/api/config").json()["config"]
     assert config["agent"]["provider"]
