@@ -70,6 +70,16 @@ That means you can:
 
 For `chat`, Studio uses a message-by-message loop over the configured OpenAI-compatible API instead of a terminal.
 
+## Codex endpoints
+
+When Codex is the selected agent, the Configure tab shows endpoint settings for the custom model provider:
+
+- **Wire API**, set to `responses`
+- **Supports websockets**
+- **Supports standalone web search**
+
+Saving writes `api.wire_api`, `api.supports_websockets`, and `api.supports_standalone_web_search`. Teich forwards them when a base URL is set. Other agents hide these controls and leave the saved values unchanged.
+
 Saved Studio traces go through the same converter path as batch traces, including provider-specific normalization, tool-schema preservation, and incomplete-trace filtering.
 
 ## Batch Generation

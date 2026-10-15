@@ -2311,6 +2311,10 @@ class CodexRunner(DockerRuntimeRunner):
         return "{" + items + "}"
 
     @staticmethod
+    def _toml_bool(value: bool) -> str:
+        return "true" if value else "false"
+
+    @staticmethod
     def _provider_key(provider: str) -> str:
         normalized = re.sub(r"[^a-zA-Z0-9_]+", "_", provider.strip().lower())
         return normalized or "openai"
@@ -2833,13 +2837,10 @@ class CodexRunner(DockerRuntimeRunner):
             codex_cmd.append("--dangerously-bypass-hook-trust")
         if base_url and not self._is_oss_local_provider(provider_name):
             provider_key = self._custom_provider_key(provider_name)
-            provider_literal = (
-                "{"
-                f"name={self._toml_string(provider_key)},"
-                f"base_url={self._toml_string(base_url)},"
-                f"env_key={self._toml_string(provider_env_key)},"
-                f"wire_api={self._toml_string(self.config.api.wire_api)}"
-                "}"
+            provider_literal = self._codex_custom_provider_literal(
+                provider_key,
+                base_url,
+                provider_env_key,
             )
             codex_cmd.extend(
                 [
@@ -2851,6 +2852,29 @@ class CodexRunner(DockerRuntimeRunner):
             )
         codex_cmd.append("-")
         return codex_cmd
+
+    def _codex_custom_provider_literal(
+        self,
+        provider_key: str,
+        base_url: str,
+        provider_env_key: str,
+    ) -> str:
+        """Inline TOML table for Codex's custom ``model_providers`` entry."""
+        fields = [
+            f"name={self._toml_string(provider_key)}",
+            f"base_url={self._toml_string(base_url)}",
+            f"env_key={self._toml_string(provider_env_key)}",
+            f"wire_api={self._toml_string(self.config.api.wire_api)}",
+        ]
+        api = self.config.api
+        if api.supports_websockets is not None:
+            fields.append(f"supports_websockets={self._toml_bool(api.supports_websockets)}")
+        if api.supports_standalone_web_search is not None:
+            fields.append(
+                "supports_standalone_web_search="
+                f"{self._toml_bool(api.supports_standalone_web_search)}"
+            )
+        return "{" + ",".join(fields) + "}"
 
     def _build_codex_command(
         self,

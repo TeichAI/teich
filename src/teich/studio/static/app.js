@@ -370,6 +370,31 @@ function syncApiProviderOptions() {
     $("#cfg-base-url").value = API_DEFAULT_URLS.openrouter;
     delete select.dataset.customValue;
   }
+  syncCodexEndpointPanel();
+}
+
+function isCodexAgent() {
+  return String(get(state.config, "agent.provider", "pi")).trim().toLowerCase() === "codex";
+}
+
+function syncCodexEndpointPanel() {
+  $("#cfg-codex-endpoint").hidden = !isCodexAgent();
+}
+
+function setWireApiSelect(value) {
+  const select = $("#cfg-wire-api");
+  const normalized = String(value || "responses").trim() || "responses";
+  for (const option of Array.from(select.options)) {
+    if (option.dataset.custom === "true") option.remove();
+  }
+  if (!Array.from(select.options).some((option) => option.value === normalized)) {
+    const option = document.createElement("option");
+    option.value = normalized;
+    option.textContent = normalized;
+    option.dataset.custom = "true";
+    select.appendChild(option);
+  }
+  select.value = normalized;
 }
 
 function fillConfigForm() {
@@ -382,6 +407,9 @@ function fillConfigForm() {
   select.value = ["openrouter", "openai", "anthropic"].includes(apiProvider) ? apiProvider : "custom";
   if (select.value === "custom") select.dataset.customValue = apiProvider;
   $("#cfg-base-url").value = get(c, "api.base_url", "") || "";
+  setWireApiSelect(get(c, "api.wire_api", "responses"));
+  $("#cfg-supports-websockets").checked = Boolean(get(c, "api.supports_websockets", false));
+  $("#cfg-supports-web-search").checked = Boolean(get(c, "api.supports_standalone_web_search", false));
   syncApiProviderOptions();
   $("#cfg-api-key").value = get(c, "api.api_key", "") || "";
   $("#cfg-concurrency").value = get(c, "max_concurrency", 1);
@@ -406,17 +434,23 @@ function collectConfigUpdates() {
   const apiProvider = apiProviderSelect.value === "custom"
     ? (apiProviderSelect.dataset.customValue || "openai")
     : apiProviderSelect.value;
+  const api = {
+    provider: apiProvider,
+    base_url: $("#cfg-base-url").value.trim() || null,
+    api_key: $("#cfg-api-key").value.trim() || null,
+  };
+  if (isCodexAgent()) {
+    api.wire_api = $("#cfg-wire-api").value || "responses";
+    api.supports_websockets = $("#cfg-supports-websockets").checked;
+    api.supports_standalone_web_search = $("#cfg-supports-web-search").checked;
+  }
   return {
     agent: { provider: get(state.config, "agent.provider", "pi") },
     model: {
       model: $("#cfg-model").value.trim(),
       reasoning_effort: $("#cfg-reasoning").value || null,
     },
-    api: {
-      provider: apiProvider,
-      base_url: $("#cfg-base-url").value.trim() || null,
-      api_key: $("#cfg-api-key").value.trim() || null,
-    },
+    api,
     output: {
       traces_dir: $("#cfg-traces-dir").value.trim() || "./output",
       pretty_name: $("#cfg-pretty-name").value.trim() || "My Agent Traces",

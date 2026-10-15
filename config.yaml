@@ -67,7 +67,17 @@ api:
   api_key: null
   # Pi uses OpenRouter through chat/completions even if this is set to responses;
   # the Responses adapter can stall before the first native session event.
+  # Codex custom providers accept only "responses" and receive this value as
+  # model_providers.<id>.wire_api.
   wire_api: responses
+
+  # Optional Codex custom-provider capabilities, forwarded as
+  # model_providers.<id>.supports_websockets and supports_standalone_web_search.
+  # Leave null for Codex's defaults (false). Set true when the endpoint
+  # supports the Responses WebSocket transport or a compatible standalone
+  # web-search API. Other agents ignore these fields.
+  supports_websockets: null
+  supports_standalone_web_search: null
 
 # Optional MCP servers exposed inside the agent runtime.
 # mcp_servers:

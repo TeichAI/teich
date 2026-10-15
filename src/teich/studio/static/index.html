@@ -107,6 +107,29 @@
               <small id="api-key-hint"></small>
             </label>
           </div>
+          <div id="cfg-codex-endpoint" class="codex-endpoint" hidden>
+            <div class="codex-endpoint-head">
+              <h3>Codex endpoint</h3>
+              <p>Applied to the custom model provider when a base URL is set.</p>
+            </div>
+            <div class="form-grid">
+              <label class="field">
+                <span>Wire API</span>
+                <select id="cfg-wire-api">
+                  <option value="responses">responses</option>
+                </select>
+                <small>Codex custom providers accept only <code>responses</code>.</small>
+              </label>
+              <div class="field">
+                <span>Capabilities</span>
+                <div class="capability-list">
+                  <label class="checkbox"><input type="checkbox" id="cfg-supports-websockets" /> Supports websockets</label>
+                  <label class="checkbox"><input type="checkbox" id="cfg-supports-web-search" /> Supports standalone web search</label>
+                </div>
+                <small>Turn these on when the endpoint supports the Responses WebSocket transport or a compatible standalone web-search API. Off keeps Codex's defaults.</small>
+              </div>
+            </div>
+          </div>
         </div>
 
         <details class="card collapsible">

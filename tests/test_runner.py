@@ -4353,8 +4353,80 @@ def test_custom_api_provider_command():
         assert 'model_provider="openrouter"' in cmd_str
         assert 'env_key="OPENROUTER_API_KEY"' in cmd_str
         assert 'wire_api="responses"' in cmd_str
+        assert 'supports_websockets' not in cmd_str
+        assert 'supports_standalone_web_search' not in cmd_str
         assert 'OPENROUTER_API_KEY=sk-or-test123' in call_args
         assert '--oss' not in call_args
+
+
+def _codex_provider_literal(command: list[str], provider_key: str) -> str:
+    prefix = f"model_providers.{provider_key}="
+    return next(part.removeprefix(prefix) for part in command if part.startswith(prefix))
+
+
+def test_codex_custom_provider_forwards_endpoint_capabilities():
+    config = Config(
+        model=ModelConfig(model="my-model"),
+        api=APIConfig(
+            provider="gateway",
+            base_url="https://example.com/v1",
+            api_key="sk-test",
+            wire_api="responses",
+            supports_websockets=True,
+            supports_standalone_web_search=True,
+        ),
+    )
+
+    with patch.object(CodexRunner, "_ensure_image"):
+        runner = CodexRunner(config)
+
+    command = runner._build_codex_agent_command()
+    assert _codex_provider_literal(command, "gateway") == (
+        '{name="gateway",base_url="https://example.com/v1",'
+        'env_key="GATEWAY_API_KEY",wire_api="responses",'
+        "supports_websockets=true,supports_standalone_web_search=true}"
+    )
+    assert 'model_provider="gateway"' in command
+
+
+def test_codex_custom_provider_can_disable_endpoint_capabilities():
+    config = Config(
+        api=APIConfig(
+            provider="gateway",
+            base_url="https://example.com/v1",
+            wire_api="responses",
+            supports_websockets=False,
+            supports_standalone_web_search=False,
+        ),
+    )
+
+    with patch.object(CodexRunner, "_ensure_image"):
+        runner = CodexRunner(config)
+
+    provider = _codex_provider_literal(runner._build_codex_agent_command(), "gateway")
+    assert 'wire_api="responses"' in provider
+    assert "supports_websockets=false" in provider
+    assert "supports_standalone_web_search=false" in provider
+
+
+def test_codex_local_provider_ignores_endpoint_capabilities():
+    config = Config(
+        api=APIConfig(
+            provider="ollama",
+            base_url="http://localhost:11434/v1",
+            wire_api="responses",
+            supports_websockets=True,
+            supports_standalone_web_search=True,
+        ),
+    )
+
+    with patch.object(CodexRunner, "_ensure_image"):
+        runner = CodexRunner(config)
+
+    command = runner._build_codex_agent_command()
+    assert not any(part.startswith("model_providers.") for part in command)
+    assert "supports_websockets" not in command
+    assert "supports_standalone_web_search" not in command
 
 
 def test_openai_custom_base_url_uses_non_reserved_provider_alias():

@@ -248,6 +248,18 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
 .checkbox { display: flex; align-items: center; gap: 7px; color: var(--text-dim); font-size: 13px; cursor: pointer; user-select: none; }
 .checkbox input { width: auto; accent-color: var(--accent); }
 
+.codex-endpoint {
+  margin-top: 16px;
+  padding: 14px 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.02);
+}
+.codex-endpoint-head { margin-bottom: 12px; }
+.codex-endpoint-head h3 { margin: 0; font-size: 13px; }
+.codex-endpoint-head p { margin: 2px 0 0; color: var(--text-faint); font-size: 12px; }
+.capability-list { display: flex; flex-direction: column; gap: 8px; }
+
 /* ----------------------------- Buttons ----------------------------- */
 
 .btn {
