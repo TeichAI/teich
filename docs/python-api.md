@@ -132,9 +132,12 @@ Returns one of:
 - `openclaw`
 - `hermes`
 - `external_agent`
+- `sts`
 - `None`
 
 Factory `droid` CLI sessions are supported as a conversion-only source. Point `prepare_data()` or `load_traces()` at session JSONL files from `~/.factory/sessions/...`; Teich reads the adjacent `<session-id>.settings.json` sidecar for model and token usage metadata when present.
+
+Sessions in the Hugging Face [Session Trace Simple Format](https://huggingface.co/docs/hub/session-traces-format) (STS) are supported as a conversion-only source, for example HuggingChat or llama.app exports. The header's `harness` id is kept in `metadata.harness`.
 
 DeepSeek Harness (`dsh`) is also a conversion-only source. `load_traces()` and `prepare_data()` accept native session `.jsonl`, `.jsonl.zstd`, or `.jsonl.zst` files and directories containing them. Parsed native events are detected as `deepseek_harness`; see [DeepSeek Harness data](data-format.md#deepseek-harness).
 

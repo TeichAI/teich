@@ -26,7 +26,9 @@ FIRST_MESSAGE_TIMESTAMP_METADATA_KEY = "first_message_timestamp"
 PI_SYSTEM_PROMPT_CUSTOM_TYPE = "teich-system-prompt"
 TEICH_AVAILABLE_TOOLS_CUSTOM_TYPE = "teich-available-tools"
 TEICH_TRACE_CONTEXT_ITEM_TYPE = "teich_context"
-TraceType = Literal["claude_code", "codex", "cursor", "deepseek_harness", "droid", "external_agent", "hermes", "openclaw", "pi"]
+TraceType = Literal[
+    "claude_code", "codex", "cursor", "deepseek_harness", "droid", "external_agent", "hermes", "openclaw", "pi", "sts"
+]
 _TIMESTAMP_KEYS = ("timestamp", "created_at", "createdAt")
 _CURSOR_METADATA_KEYS = frozenset(
     {
@@ -1827,6 +1829,28 @@ def _is_openclaw_session_header(event: Any) -> bool:
     return isinstance(cwd, str) and ".openclaw" in cwd
 
 
+def _is_sts_session(events: list[Any]) -> bool:
+    """Session Trace Simple Format: https://huggingface.co/docs/hub/session-traces-format"""
+    first_event = next((event for event in events if isinstance(event, dict)), None)
+    if (
+        first_event is None
+        or first_event.get("type") != "session"
+        or not isinstance(first_event.get("harness"), str)
+        or not isinstance(first_event.get("id"), str)
+    ):
+        return False
+    # Pi session headers may also carry a `harness` field, but Pi messages hold content blocks or toolResult roles.
+    messages = [
+        event["message"]
+        for event in events
+        if isinstance(event, dict) and event.get("type") == "message" and isinstance(event.get("message"), dict)
+    ]
+    return bool(messages) and all(
+        message.get("role") in {"user", "assistant", "system", "tool"} and not isinstance(message.get("content"), list)
+        for message in messages
+    )
+
+
 def _external_session_source(event: dict[str, Any]) -> str:
     payload = event.get("payload")
     source = payload.get("source") if isinstance(payload, dict) else None
@@ -1850,6 +1874,9 @@ def _is_cursor_trace_row(event: Any) -> bool:
 
 
 def _detect_trace_type(events: list[Any], default: TraceType | None = "codex") -> TraceType | None:
+    # STS headers may carry any extra metadata (cwd, version, ...), so check them before header-only heuristics.
+    if _is_sts_session(events):
+        return "sts"
     if any(
         _is_deepseek_session_header(event)
         or isinstance(event, dict)
@@ -2846,6 +2873,112 @@ def _convert_droid_trace_to_training_example(
         prompt=prompt,
         messages=messages,
         tools=tools,
+        metadata=metadata,
+    )
+
+
+def _is_sts_user_message(event: dict[str, Any]) -> bool:
+    message = event.get("message")
+    return event.get("type") == "message" and isinstance(message, dict) and message.get("role") == "user"
+
+
+def _convert_sts_trace_to_training_example(
+    trace_file: Path,
+    events: list[dict[str, Any]],
+) -> TrainingExample:
+    header = next(event for event in events if isinstance(event, dict))
+    messages: list[dict[str, Any]] = []
+    tool_names: set[str] = set()
+    tool_argument_samples: dict[str, list[Any]] = {}
+    tool_names_by_call_id: dict[str, str] = {}
+    model: str | None = None
+
+    for event in events:
+        if not isinstance(event, dict) or event.get("type") != "message":
+            continue
+        payload = event.get("message")
+        if not isinstance(payload, dict):
+            continue
+        role = payload.get("role")
+        raw_content = payload.get("content")
+        content = raw_content if isinstance(raw_content, str) else ""
+
+        if role == "user":
+            messages.append({"role": "user", "content": content})
+            continue
+        if role == "system":
+            if content.strip():
+                messages.append({"role": "system", "content": content})
+            continue
+
+        if role == "tool":
+            tool_call_id = payload.get("toolCallId")
+            if not isinstance(tool_call_id, str) or not tool_call_id:
+                continue
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "name": tool_names_by_call_id.get(tool_call_id, "unknown_tool"),
+                    "content": content,
+                }
+            )
+            continue
+
+        if role != "assistant":
+            continue
+        if isinstance(payload.get("model"), str) and payload["model"].strip():
+            model = payload["model"].strip()
+        message: dict[str, Any] = {"role": "assistant", "content": content}
+        reasoning_content = payload.get("reasoningContent")
+        if isinstance(reasoning_content, str) and reasoning_content.strip():
+            message["reasoning_content"] = reasoning_content
+        tool_calls: list[dict[str, Any]] = []
+        for tool_call in payload.get("toolCalls") or []:
+            if not isinstance(tool_call, dict) or not isinstance(tool_call.get("function"), dict):
+                continue
+            function = tool_call["function"]
+            tool_call_id = tool_call.get("id")
+            tool_name = function.get("name")
+            if not isinstance(tool_call_id, str) or not tool_call_id or not isinstance(tool_name, str) or not tool_name:
+                continue
+            arguments = _parse_function_arguments(function.get("arguments"))
+            if not isinstance(arguments, dict):
+                # Freeform tools such as Codex's apply_patch export raw text instead of a JSON object.
+                arguments = _custom_tool_arguments(tool_name, arguments)
+            tool_names.add(tool_name)
+            tool_names_by_call_id[tool_call_id] = tool_name
+            tool_argument_samples.setdefault(tool_name, []).append(arguments)
+            tool_calls.append(
+                {"id": tool_call_id, "type": "function", "function": {"name": tool_name, "arguments": arguments}}
+            )
+        if tool_calls:
+            message["tool_calls"] = tool_calls
+        if content.strip() or "reasoning_content" in message or tool_calls:
+            _append_or_merge_assistant_message(messages, message)
+
+    harness = header.get("harness")
+    title = header.get("name")
+    cwd = header.get("cwd")
+    metadata: dict[str, Any] = {
+        "source_file": trace_file.name,
+        "session_id": header.get("id") or trace_file.stem,
+        "trace_type": "sts",
+        "harness": harness,
+        "model_provider": None,
+        "model": model,
+        "cwd": cwd if isinstance(cwd, str) and cwd.strip() else None,
+        "title": title if isinstance(title, str) and title.strip() else None,
+        "turn_count": sum(1 for message in messages if message.get("role") == "user"),
+    }
+    _add_first_message_timestamp(
+        metadata, _first_message_timestamp_from_events(events, _is_sts_user_message)
+    )
+    return TrainingExample(
+        source_file=trace_file,
+        prompt=next((message["content"] for message in messages if message["role"] == "user" and message["content"]), ""),
+        messages=messages,
+        tools=_build_tools_from_snapshots_and_calls(tool_names, {}, tool_argument_samples),
         metadata=metadata,
     )
 
@@ -4237,6 +4370,8 @@ def convert_trace_to_training_example(trace_file: Path) -> TrainingExample:
         example = _convert_deepseek_trace_to_training_example(trace_file, events)
     elif trace_type == "droid":
         example = _convert_droid_trace_to_training_example(trace_file, events)
+    elif trace_type == "sts":
+        example = _convert_sts_trace_to_training_example(trace_file, events)
     elif trace_type == "hermes":
         example = _convert_hermes_trace_to_training_example(trace_file, events)
     elif trace_type == "cursor":
@@ -4299,6 +4434,8 @@ def _convert_jsonl_file_to_training_rows(jsonl_file: Path, *, skip_invalid_lines
         return [_apply_harness_context_capture(example, rows).to_dict()]
     if trace_type == "droid":
         return [_convert_droid_trace_to_training_example(jsonl_file, rows).to_dict()]
+    if trace_type == "sts":
+        return [_convert_sts_trace_to_training_example(jsonl_file, rows).to_dict()]
     if trace_type == "hermes":
         if all(_is_hermes_trace_row(row) for row in rows):
             return [

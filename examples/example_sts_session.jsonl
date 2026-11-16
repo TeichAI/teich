@@ -1,0 +1,9 @@
+{"type": "session", "harness": "chat-ui", "id": "6936f1aa0c1d", "name": "Weekend weather in two cities", "chatUi": {"model": "moonshotai/Kimi-K2-Instruct", "exportedAt": "2026-11-14T21:40:00Z"}}
+{"type": "message", "message": {"role": "system", "content": "You are HuggingChat, a helpful assistant."}}
+{"type": "message", "message": {"role": "user", "content": "Compare the weekend weather in Paris and Lyon.", "timestamp": 1794691865000}}
+{"type": "message", "message": {"role": "assistant", "content": "", "model": "moonshotai/Kimi-K2-Instruct", "reasoningContent": "I need forecasts for both cities. I can fetch them in parallel.", "toolCalls": [{"id": "call_paris", "function": {"name": "get_forecast", "arguments": "{\"city\": \"Paris\", \"days\": 2}"}}, {"id": "call_lyon", "function": {"name": "get_forecast", "arguments": "{\"city\": \"Lyon\", \"days\": 2}"}}], "timestamp": 1794691867000}}
+{"type": "message", "message": {"role": "tool", "content": "{\"city\": \"Paris\", \"sat\": \"14C rain\", \"sun\": \"16C cloudy\"}", "toolCallId": "call_paris", "timestamp": 1794691868000}}
+{"type": "message", "message": {"role": "tool", "content": "{\"city\": \"Lyon\", \"sat\": \"19C sunny\", \"sun\": \"21C sunny\"}", "toolCallId": "call_lyon", "timestamp": 1794691868000}}
+{"type": "message", "message": {"role": "assistant", "content": "Lyon wins: sunny, 19\u201321\u00b0C. Paris looks wet on Saturday (14\u00b0C, rain) and cloudy Sunday (16\u00b0C).", "model": "moonshotai/Kimi-K2-Instruct", "timestamp": 1794691870000}}
+{"type": "message", "message": {"role": "user", "content": "Should I pack an umbrella for Paris?", "timestamp": 1794691895000}}
+{"type": "message", "message": {"role": "assistant", "content": "Yes, Saturday has rain in the forecast.", "model": "moonshotai/Kimi-K2-Instruct", "reasoningContent": "Saturday Paris = rain.", "timestamp": 1794691896000}}

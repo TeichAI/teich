@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from teich import detect_trace_type
+from teich import detect_trace_type, validate_tool_calls
 from teich.converter import (
     convert_trace_to_training_example,
     convert_traces_to_training_data,
@@ -26,6 +26,7 @@ def _read_jsonl_events(path: Path) -> list[dict]:
         ("example_pi_session.jsonl", "pi"),
         ("example_cursor_session.jsonl", "cursor"),
         ("example_openclaw_session.jsonl", "openclaw"),
+        ("example_sts_session.jsonl", "sts"),
     ],
 )
 def test_detect_trace_type_matches_checked_in_examples(example_file: str, expected_trace_type: str):
@@ -75,6 +76,42 @@ def test_detect_trace_type_returns_known_trace_type():
                 {"type": "message", "id": "message-1", "message": {"role": "user", "content": [{"type": "text", "text": "hello"}]}},
             ],
             "droid",
+        ),
+        (
+            [
+                {"type": "session", "harness": "my-agent", "id": "sts-session"},
+                {"type": "message", "message": {"role": "user", "content": "hello"}},
+            ],
+            "sts",
+        ),
+        (
+            [
+                {"type": "session", "harness": "my-agent", "id": "s", "cwd": "/home/user/.openclaw/workspace"},
+                {"type": "message", "message": {"role": "user", "content": "hello"}},
+            ],
+            "sts",
+        ),
+        (
+            [
+                {"type": "session", "harness": "my-agent", "id": "s", "version": 1, "createdAt": 1794691865000},
+                {"type": "message", "message": {"role": "user", "content": "hello"}},
+            ],
+            "sts",
+        ),
+        (
+            [
+                {"type": "session", "harness": "my-agent", "id": "s"},
+                {"type": "message", "message": {"role": "user", "content": "hello"}},
+                {"type": "message", "message": {"role": "assistant", "content": None, "toolCalls": []}},
+            ],
+            "sts",
+        ),
+        (
+            [
+                {"type": "session", "harness": "my-agent", "id": "pi-session", "version": 3},
+                {"type": "message", "message": {"role": "user", "content": [{"type": "text", "text": "hello"}]}},
+            ],
+            "pi",
         ),
     ]
 
@@ -1102,6 +1139,69 @@ def test_convert_droid_trace(tmp_path: Path):
     assert example.messages[3] == {"role": "assistant", "content": "The project contains README.md and src."}
     tool_names = {tool["function"]["name"] for tool in example.tools}
     assert "LS" in tool_names
+
+
+def test_convert_sts_trace(tmp_path: Path):
+    trace_file = tmp_path / "sts.jsonl"
+    events = [
+        {"type": "session", "harness": "chat-ui", "id": "sts-session", "name": "What time is it"},
+        {"type": "message", "message": {"role": "system", "content": "You are helpful."}},
+        {"type": "message", "message": {"role": "user", "content": "what time is it?", "timestamp": 1782918000000}},
+        {
+            "type": "message",
+            "message": {
+                "role": "assistant",
+                "content": "",
+                "reasoningContent": "I should check the clock.",
+                "toolCalls": [
+                    {"id": "t1", "function": {"name": "get_time", "arguments": '{"tz": "UTC"}'}},
+                    {"id": "t2", "function": {"name": "apply_patch", "arguments": "*** Begin Patch"}},
+                ],
+                "model": "moonshotai/Kimi-K2-Instruct",
+            },
+        },
+        {"type": "message", "message": {"role": "tool", "toolCallId": "t1", "content": "2026-07-01T15:00:00Z"}},
+        {"type": "message", "message": {"role": "tool", "toolCallId": "t2", "content": "Done!"}},
+        {"type": "message", "message": {"role": "assistant", "content": "it is 15:00 UTC"}},
+        {"type": "message", "message": {"role": "user", "content": ""}},
+        {"type": "message", "message": {"role": "assistant", "content": "anything else?"}},
+    ]
+    trace_file.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
+
+    example = convert_trace_to_training_example(trace_file)
+
+    assert example.metadata["trace_type"] == "sts"
+    assert example.metadata["harness"] == "chat-ui"
+    assert example.metadata["session_id"] == "sts-session"
+    assert example.metadata["title"] == "What time is it"
+    assert example.metadata["model"] == "moonshotai/Kimi-K2-Instruct"
+    assert example.metadata["first_message_timestamp"] == "2026-07-01T15:00:00Z"
+    assert example.metadata["turn_count"] == 2
+    assert example.prompt == "what time is it?"
+    assert example.messages == [
+        {"role": "system", "content": "You are helpful."},
+        {"role": "user", "content": "what time is it?"},
+        {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "I should check the clock.",
+            "tool_calls": [
+                {"id": "t1", "type": "function", "function": {"name": "get_time", "arguments": {"tz": "UTC"}}},
+                {
+                    "id": "t2",
+                    "type": "function",
+                    "function": {"name": "apply_patch", "arguments": {"patch": "*** Begin Patch"}},
+                },
+            ],
+        },
+        {"role": "tool", "tool_call_id": "t1", "name": "get_time", "content": "2026-07-01T15:00:00Z"},
+        {"role": "tool", "tool_call_id": "t2", "name": "apply_patch", "content": "Done!"},
+        {"role": "assistant", "content": "it is 15:00 UTC"},
+        {"role": "user", "content": ""},
+        {"role": "assistant", "content": "anything else?"},
+    ]
+    assert [tool["function"]["name"] for tool in example.tools] == ["apply_patch", "get_time"]
+    assert validate_tool_calls(example.to_dict()).ok
 
 
 def test_convert_droid_trace_reads_settings_sidecar(tmp_path: Path):
