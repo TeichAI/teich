@@ -1,10 +1,15 @@
 import json
+import time
 from pathlib import Path
 
 import pytest
 
 from teich import detect_trace_type, validate_tool_calls
 from teich.converter import (
+    _claude_local_command_parts,
+    _extract_xml_blocks,
+    _split_inline_thinking,
+    _unwrap_teich_prompt_file,
     convert_trace_to_training_example,
     convert_traces_to_training_data,
     normalize_claude_code_trace_events,
@@ -3126,3 +3131,47 @@ def test_codex_skips_injected_runtime_context(tmp_path: Path):
         for m in example.messages
         for tag in ("<environment_context>", "<user_instructions>")
     )
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("a<think>x</think>b<thinking>y</thinking>c", ("abc", "x\n\ny")),
+        ("<think>a<think>b</think>c</think>d", ("c</think>d", "a<think>b")),
+        ("<thinking>a<think>b</think>c</thinking>d", ("d", "a<think>b</think>c")),
+        ("<think>open only", ("<think>open only", None)),
+        ("<think>  </think>hi", ("hi", None)),
+    ],
+)
+def test_split_inline_thinking_takes_leftmost_shortest_blocks(text: str, expected: tuple[str, str | None]):
+    assert _split_inline_thinking(text) == expected
+
+
+def test_tag_helpers_keep_regex_semantics():
+    assert _extract_xml_blocks("pre <tool_response>  r  </tool_response> post", "tool_response") == (["r"], "pre  post")
+    assert _extract_xml_blocks("<tool_call>{}</tool_call><tool_call>bad", "tool_call") == (["{}"], "<tool_call>bad")
+    assert _claude_local_command_parts(
+        "<command-args>a</command-args><command-name> /go\n al </command-name>"
+    ) == ("/go al", "a")
+    assert _claude_local_command_parts("<command-name>/goal</command-name>") is None
+    assert _unwrap_teich_prompt_file('<file name="a.teich-prompt.txt">\n hi \n</file>') == "hi"
+    assert _unwrap_teich_prompt_file('<file name="a.teich-prompt.txt">hi</file> tail') == (
+        '<file name="a.teich-prompt.txt">hi</file> tail'
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "<think>" * 50_000,
+        "<think>" + " " * 50_000 + "x",
+        "<command-name> " * 50_000 + "<command-args>",
+        '<file name="a.teich-prompt.txt">' + " " * 50_000 + "x",
+    ],
+)
+def test_tag_parsing_is_linear_on_unclosed_tags(text: str):
+    start = time.perf_counter()
+    _split_inline_thinking(text)
+    _claude_local_command_parts(text)
+    _unwrap_teich_prompt_file(text)
+    assert time.perf_counter() - start < 1

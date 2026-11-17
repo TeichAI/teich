@@ -21,7 +21,6 @@ from .tool_schema import (
     PI_BUILTIN_TOOLS,
 )
 
-_INLINE_THINKING_BLOCK_PATTERN = re.compile(r"<(think|thinking)>(.*?)</\1>", re.DOTALL)
 FIRST_MESSAGE_TIMESTAMP_METADATA_KEY = "first_message_timestamp"
 PI_SYSTEM_PROMPT_CUSTOM_TYPE = "teich-system-prompt"
 TEICH_AVAILABLE_TOOLS_CUSTOM_TYPE = "teich-available-tools"
@@ -1039,27 +1038,16 @@ def _first_text_block(content_blocks: Any) -> str:
 
 def _unwrap_teich_prompt_file(prompt: str) -> str:
     normalized = prompt.strip()
-    match = re.fullmatch(
-        r'<file\s+name=["\'][^"\']*\.teich-prompt\.txt["\']>\s*(?P<prompt>.*?)\s*</file>',
-        normalized,
-        flags=re.DOTALL,
-    )
-    if match:
-        return match.group("prompt")
+    # Match only the opening tag with a regex: `\s*(.*?)\s*</file>` backtracks cubically on long whitespace runs.
+    opening = re.match(r'<file\s+name=["\'][^"\']*\.teich-prompt\.txt["\']>', normalized)
+    if opening and normalized.endswith("</file>"):
+        return normalized[opening.end() : -len("</file>")].strip()
     return prompt
 
 
 def _split_inline_thinking(text: str) -> tuple[str, str | None]:
-    reasoning_parts: list[str] = []
-
-    def _remove_match(match: re.Match[str]) -> str:
-        reasoning = match.group(2).strip()
-        if reasoning:
-            reasoning_parts.append(reasoning)
-        return ""
-
-    content = _INLINE_THINKING_BLOCK_PATTERN.sub(_remove_match, text).strip()
-    reasoning = "\n\n".join(reasoning_parts).strip()
+    blocks, content = _extract_xml_blocks(text, "think", "thinking")
+    reasoning = "\n\n".join(block for block in blocks if block)
     return content, reasoning or None
 
 
@@ -2211,14 +2199,11 @@ def _claude_tool_result_text(block: dict[str, Any]) -> str:
 
 
 def _claude_local_command_parts(text: str) -> tuple[str, str] | None:
-    stripped = text.strip()
-    name_match = re.search(r"<command-name>\s*(?P<name>.*?)\s*</command-name>", stripped, flags=re.DOTALL)
-    args_match = re.search(r"<command-args>\s*(?P<args>.*?)\s*</command-args>", stripped, flags=re.DOTALL)
-    if not name_match or not args_match:
+    names, _ = _extract_xml_blocks(text, "command-name")
+    args, _ = _extract_xml_blocks(text, "command-args")
+    if not names or not args:
         return None
-    name = re.sub(r"\s+", " ", name_match.group("name")).strip()
-    args = args_match.group("args").strip()
-    return name, args
+    return re.sub(r"\s+", " ", names[0]), args[0]
 
 
 def _is_claude_local_command_artifact(text: str) -> bool:
@@ -3190,11 +3175,35 @@ def _is_hermes_trace_row(value: Any) -> bool:
     )
 
 
-def _extract_xml_blocks(value: str, tag: str) -> tuple[list[str], str]:
-    pattern = re.compile(rf"<{tag}>\s*(.*?)\s*</{tag}>", re.DOTALL)
-    blocks = [match.group(1).strip() for match in pattern.finditer(value)]
-    stripped = pattern.sub("", value).strip()
-    return blocks, stripped
+def _extract_xml_blocks(value: str, *tags: str) -> tuple[list[str], str]:
+    """Remove `<tag>...</tag>` blocks (leftmost first, shortest match) and return their stripped contents.
+
+    Scans with str.find instead of a `<tag>(.*?)</tag>` regex, which backtracks quadratically or worse on
+    unclosed tags.
+    """
+    next_open = {tag: value.find(f"<{tag}>") for tag in tags}
+    blocks: list[str] = []
+    remaining: list[str] = []
+    position = 0
+    while True:
+        for tag, index in next_open.items():
+            if 0 <= index < position:
+                next_open[tag] = value.find(f"<{tag}>", position)
+        candidates = [(index, tag) for tag, index in next_open.items() if index != -1]
+        if not candidates:
+            break
+        start, tag = min(candidates)
+        content_start = start + len(tag) + 2
+        close = value.find(f"</{tag}>", content_start)
+        if close == -1:
+            # no closing tag after this one, so no later opening tag of the same name can close either
+            next_open[tag] = -1
+            continue
+        blocks.append(value[content_start:close].strip())
+        remaining.append(value[position:start])
+        position = close + len(tag) + 3
+    remaining.append(value[position:])
+    return blocks, "".join(remaining).strip()
 
 
 def _hermes_conversation_to_events(conversation: Any) -> list[dict[str, Any]]:
